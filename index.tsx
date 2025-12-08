@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 // Application State
 const appState = {
     currentView: 'upload-view', // upload-view, loading-view, define-symbols-view, order-view, sync-view, result-view
+    mode: 'karaoke', // 'karaoke' | 'board'
     songTitle: '', // New: Store song title
     files: {
         images: [] as File[],
@@ -81,6 +82,7 @@ function init() {
             input: document.getElementById('unified-file-input'),
             btnBrowse: document.querySelector('.browse-btn'),
             btnGenerate: document.getElementById('generate-button'),
+            btnCreateBoard: document.getElementById('btn-create-board'),
             statusSongboard: document.getElementById('status-songboard'),
             statusVocal: document.getElementById('status-vocal'),
             statusBacking: document.getElementById('status-backing'),
@@ -106,7 +108,21 @@ function init() {
             inputSensitivity: document.getElementById('grid-sensitivity'),
             labelSensitivity: document.getElementById('grid-sensitivity-val'),
             btnPanUp: document.getElementById('btn-pan-up'),
-            btnPanDown: document.getElementById('btn-pan-down')
+            btnPanDown: document.getElementById('btn-pan-down'),
+            
+            // Tools containers
+            karaokeTools: document.getElementById('karaoke-tools'),
+            boardTools: document.getElementById('board-tools'),
+            btnAddTile: document.getElementById('btn-add-tile'),
+            btnDownloadPdf: document.getElementById('btn-download-pdf'),
+            btnDownloadZip: document.getElementById('btn-download-zip'),
+            
+            // AI Creator
+            aiPrompt: document.getElementById('ai-prompt'),
+            btnAiGenerate: document.getElementById('btn-ai-generate'),
+            btnAiEdit: document.getElementById('btn-ai-edit'),
+            aiLoading: document.getElementById('ai-loading'),
+            aiMultiToggle: document.getElementById('ai-multi-toggle')
         },
         order: {
             canvasContainer: document.getElementById('order-canvas-container'),
@@ -203,6 +219,7 @@ function setupEventListeners() {
         appState.songTitle = (e.target as HTMLInputElement).value;
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
+    dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
     
     // Assignment swapping logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
@@ -255,6 +272,29 @@ function setupEventListeners() {
     });
     dom.define.btnPanUp.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
     dom.define.btnPanDown.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
+    
+    // Board Mode Buttons
+    dom.define.btnAddTile.addEventListener('click', addEmptyTile);
+    dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
+    dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
+
+    // AI Creator Events
+    dom.define.btnAiGenerate.addEventListener('click', generateAiSymbol);
+    dom.define.btnAiEdit.addEventListener('click', editAiSymbol);
+    
+    // AI Chips
+    const chipsContainer = document.getElementById('ai-prompt-chips');
+    if (chipsContainer) {
+        chipsContainer.querySelectorAll('.chip').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const text = (e.target as HTMLElement).textContent;
+                const promptInput = dom.define.aiPrompt as HTMLTextAreaElement;
+                promptInput.value = text || '';
+                promptInput.focus();
+            });
+        });
+    }
+
 
     // --- Order View ---
     dom.order.btnPrev.addEventListener('click', () => { changePage(-1); setupOrderView(); });
@@ -468,7 +508,129 @@ function checkReadyToStart() {
     dom.upload.btnGenerate.disabled = !(hasVisuals && hasAudio);
 }
 
+// --- Board Mode Logic ---
+function startBoardMode() {
+    appState.mode = 'board';
+    appState.pages = [];
+    
+    // Create a blank A4 canvas (794x1123 px approx @ 96 DPI)
+    // We'll scale it down slightly for screen viewing
+    const width = 794; 
+    const height = 1123;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, width, height);
+    }
+    
+    // Create Image from blank canvas
+    const img = new Image();
+    img.src = canvas.toDataURL();
+    img.onload = () => {
+        appState.pages.push({ image: img, width, height, symbols: [], sequence: [] });
+        switchView('define-symbols-view');
+        setTimeout(() => { resizeCanvas(); drawCanvas(); }, 100);
+    };
+}
+
+function addEmptyTile() {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+    
+    const size = 150;
+    const x = Math.max(0, (page.width / 2) - (size / 2));
+    const y = Math.max(0, (page.height / 2) - (size / 2));
+    
+    page.symbols.push({
+        x, y, width: size, height: size,
+        customImage: null // Empty placeholder
+    });
+    
+    // Select it
+    appState.interaction.selectedIndices.clear();
+    appState.interaction.selectedIndices.add(page.symbols.length - 1);
+    drawCanvas(); updateToolbarUI();
+}
+
+async function downloadBoardPdf() {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+    
+    // Render the page with symbols to a canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = page.width;
+    canvas.height = page.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Draw background
+    ctx.drawImage(page.image, 0, 0);
+    
+    // Draw symbols
+    page.symbols.forEach((sym: any) => {
+        if (sym.customImage) {
+            ctx.drawImage(sym.customImage, sym.x, sym.y, sym.width, sym.height);
+        } else {
+            // Draw placeholder outline if empty
+            ctx.strokeStyle = '#ccc';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sym.x, sym.y, sym.width, sym.height);
+        }
+    });
+
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    // FIX: Correct way to access jsPDF constructor from UMD build
+    const { jsPDF } = (window as any).jspdf;
+    const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'px',
+        format: [page.width, page.height]
+    });
+    
+    pdf.addImage(imgData, 'JPEG', 0, 0, page.width, page.height);
+    pdf.save("symbol-board.pdf");
+}
+
+async function downloadBoardImages() {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page || page.symbols.length === 0) {
+        alert("No symbols to download.");
+        return;
+    }
+
+    const JSZip = (window as any).JSZip;
+    const saveAs = (window as any).saveAs;
+    const zip = new JSZip();
+    
+    page.symbols.forEach((sym: any, i: number) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = sym.width;
+        canvas.height = sym.height;
+        const ctx = canvas.getContext('2d');
+        
+        if (ctx) {
+            if (sym.customImage) {
+                ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+            } else {
+                // If it's a cropped symbol from the background
+                ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+            }
+            
+            const data = canvas.toDataURL('image/png').split(',')[1];
+            zip.file(`symbol_${i+1}.png`, data, {base64: true});
+        }
+    });
+    
+    const content = await zip.generateAsync({type:"blob"});
+    saveAs(content, "symbol_images.zip");
+}
+
+
 async function startProject() {
+    appState.mode = 'karaoke';
     switchView('loading-view');
     try {
         appState.pages = [];
@@ -543,10 +705,262 @@ function switchView(viewId: string) {
               viewId === 'sync-view' ? 'sync' : 'result'].style.display = 'block';
     appState.currentView = viewId;
     
-    if (viewId === 'define-symbols-view') setTimeout(resizeCanvas, 50);
+    // Toggle Mode-Specific UI elements
+    if (viewId === 'define-symbols-view') {
+        const isBoard = appState.mode === 'board';
+        if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'block';
+        if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'block' : 'none';
+        dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
+        
+        setTimeout(resizeCanvas, 50);
+    }
+
     if (viewId === 'order-view') setTimeout(setupOrderView, 50);
     if (viewId === 'sync-view') setupSyncView();
     if (viewId === 'result-view') setupResultView();
+}
+
+// --- AI Generation Logic (Nano Banana) ---
+
+// Helper to get a reference image of the current style
+function getCurrentPageStyleReference(): string {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return "";
+    
+    // Capture a sample of the page (e.g., top-left 1024x1024 or full page scaled down)
+    // We want the AI to see the line weight, color palette, and vector style.
+    const canvas = document.createElement('canvas');
+    const size = Math.min(page.width, 1024); // Limit size for API efficiency
+    canvas.width = size;
+    canvas.height = size; // Square crop is fine for style ref
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return "";
+    
+    // Draw the top portion of the page as reference
+    ctx.drawImage(page.image, 0, 0, size, size, 0, 0, size, size);
+    
+    return canvas.toDataURL('image/png').split(',')[1];
+}
+
+async function generateAiSymbol() {
+    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
+    if (!promptText) { alert("Please enter a prompt."); return; }
+    
+    const isMulti = (dom.define.aiMultiToggle as HTMLInputElement).checked;
+
+    // Check for API Key first (Required for gemini-3-pro-image-preview)
+    const win = window as any;
+    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
+        try {
+            await win.aistudio.openSelectKey();
+        } catch (e) {
+            alert("API Key selection failed or was cancelled.");
+            return;
+        }
+    }
+    
+    // Create new AI instance with current key
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    
+    setAiLoading(true);
+    try {
+        const page = appState.pages[appState.currentPageIndex];
+        const styleRefBase64 = getCurrentPageStyleReference();
+
+        // Prompt engineering to enforce style consistency
+        const strictPrompt = `
+        Create a communication symbol for: "${promptText}".
+        
+        CRITICAL STYLE INSTRUCTIONS:
+        - The generated image MUST match the visual style of the provided reference image EXACTLY.
+        - Use the same line weight (thick black outlines).
+        - Use the same flat color palette found in the reference.
+        - Simple, 2D, iconographic, vector-art style.
+        - Pure white background.
+        - No shading, no gradients, no realism, no complexity.
+        - It must look like a standard Widgit/communication symbol.
+        `;
+
+        const parts: any[] = [{ text: strictPrompt }];
+        if (styleRefBase64) {
+            parts.unshift({ inlineData: { mimeType: 'image/png', data: styleRefBase64 } });
+        }
+
+        // Generate Multiple Loop
+        const count = isMulti ? 3 : 1;
+        const promises = [];
+        
+        for (let i = 0; i < count; i++) {
+             promises.push(ai.models.generateContent({
+                model: 'gemini-3-pro-image-preview', // High quality model
+                contents: { parts: parts },
+                config: { 
+                    imageConfig: { 
+                        aspectRatio: "1:1",
+                        imageSize: "1K" // Force high resolution
+                    } 
+                },
+            }));
+        }
+        
+        const responses = await Promise.all(promises);
+
+        let createdCount = 0;
+        appState.interaction.selectedIndices.clear();
+
+        for (let i = 0; i < responses.length; i++) {
+            const response = responses[i];
+            let imgBase64 = null;
+            if (response.candidates && response.candidates[0].content.parts) {
+                for (const part of response.candidates[0].content.parts) {
+                    if (part.inlineData) imgBase64 = part.inlineData.data;
+                }
+            }
+
+            if (imgBase64) {
+                const img = new Image();
+                // Fix Image Loading Race Condition: Set onload BEFORE src
+                await new Promise<void>((resolve) => {
+                    img.onload = () => {
+                        // Add new symbol to current page
+                        const size = 200;
+                        // Stagger positions if multi
+                        const offsetX = (i * 220) - ((count-1)*110);
+                        const x = Math.max(0, (page.width / 2) - (size / 2) + offsetX);
+                        const y = Math.max(0, (page.height / 2) - (size / 2));
+                        
+                        page.symbols.push({
+                            x: x, y: y, width: size, height: size,
+                            customImage: img // Store the custom image element
+                        });
+                        
+                        // Select all new ones
+                        appState.interaction.selectedIndices.add(page.symbols.length - 1);
+                        createdCount++;
+                        resolve();
+                    };
+                    img.src = `data:image/png;base64,${imgBase64}`;
+                });
+            }
+        }
+
+        if (createdCount > 0) {
+            updateToolbarUI();
+            drawCanvas();
+            // Ensure new symbol is visible
+            dom.define.canvasContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            alert("No images generated.");
+        }
+
+    } catch (e) {
+        console.error(e);
+        alert("Generation failed: " + e.message);
+    } finally {
+        setAiLoading(false);
+    }
+}
+
+async function editAiSymbol() {
+    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
+    if (!promptText) { alert("Please enter a prompt."); return; }
+    if (appState.interaction.selectedIndices.size !== 1) {
+        alert("Please select exactly one tile to edit."); return;
+    }
+    
+    // Check for API Key first (Required for gemini-3-pro-image-preview)
+    const win = window as any;
+    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
+        try {
+            await win.aistudio.openSelectKey();
+        } catch (e) {
+            alert("API Key selection failed or was cancelled.");
+            return;
+        }
+    }
+
+    // Create new AI instance with current key
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+    setAiLoading(true);
+    try {
+        const page = appState.pages[appState.currentPageIndex];
+        const idx = appState.interaction.selectedIndices.values().next().value;
+        const sym = page.symbols[idx];
+
+        // 1. Get current symbol image as base64
+        const canvas = document.createElement('canvas');
+        canvas.width = sym.width;
+        canvas.height = sym.height;
+        const ctx = canvas.getContext('2d');
+        
+        if (sym.customImage) {
+            ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+        } else {
+            ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+        }
+        
+        const base64Data = canvas.toDataURL('image/png').split(',')[1];
+        
+        // 2. Strict Prompt for Editing
+        const strictPrompt = `
+        Edit this symbol to: "${promptText}".
+        
+        CRITICAL STYLE INSTRUCTIONS:
+        - PRESERVE the exact visual style of the original image and the reference document.
+        - Maintain thick black outlines, flat colors, and simple vector look.
+        - Do not change the art style. Do not make it realistic.
+        - Keep white background.
+        `;
+
+        const parts: any[] = [
+             { inlineData: { mimeType: 'image/png', data: base64Data } },
+             { text: strictPrompt }
+        ];
+
+        // 3. Call API
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-pro-image-preview', // High quality model
+            contents: { parts: parts },
+            config: { 
+                imageConfig: { 
+                    aspectRatio: "1:1",
+                    imageSize: "1K" // Force high resolution
+                } 
+            },
+        });
+
+         // 4. Parse result
+        let imgBase64 = null;
+        for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) imgBase64 = part.inlineData.data;
+        }
+
+        if (imgBase64) {
+            const img = new Image();
+            // Fix Image Loading Race Condition
+            img.onload = () => {
+                // Update symbol
+                sym.customImage = img;
+                drawCanvas();
+            };
+            img.src = `data:image/png;base64,${imgBase64}`;
+        } else {
+            alert("No image returned from edit.");
+        }
+
+    } catch (e) {
+        console.error(e);
+        alert("Edit failed: " + e.message);
+    } finally {
+        setAiLoading(false);
+    }
+}
+
+function setAiLoading(loading: boolean) {
+    dom.define.aiLoading.style.display = loading ? 'flex' : 'none';
+    dom.define.btnAiGenerate.disabled = loading;
+    dom.define.btnAiEdit.disabled = loading;
 }
 
 // --- Define Symbols Logic ---
@@ -651,6 +1065,11 @@ function drawCanvas() {
     
     ctx.lineWidth = 4 / appState.interaction.zoomLevel;
     page.symbols.forEach((s: any, idx: number) => {
+        // Render Custom AI Image if present
+        if (s.customImage) {
+            ctx.drawImage(s.customImage, s.x, s.y, s.width, s.height);
+        }
+
         if (appState.interaction.selectedIndices.has(idx)) {
             ctx.strokeStyle = '#00ffff'; ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
         } else {
@@ -825,7 +1244,13 @@ function drawOrderCanvas() {
     }
 
     page.symbols.forEach((sym, idx) => {
+        // Draw Custom image in order view too
         const x = sym.x * scale, y = sym.y * scale, w = sym.width * scale, h = sym.height * scale;
+
+        if (sym.customImage) {
+            ctx.drawImage(sym.customImage, x, y, w, h);
+        }
+
         const seqIdx = page.sequence.indexOf(idx);
         
         ctx.strokeStyle = '#999';
@@ -906,7 +1331,13 @@ function finishOrderingSymbols() {
             const canvas = document.createElement('canvas');
             canvas.width = sym.width; canvas.height = sym.height;
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+            
+            // Check for Custom AI Image
+            if (sym.customImage) {
+                 ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+            } else {
+                 ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+            }
             
             appState.symbols.push({
                 globalIndex: appState.symbols.length,

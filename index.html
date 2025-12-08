@@ -2,10 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Widgit Karaoke Video Creator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>Mr. Bunn's Widget Machine</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     <script type="importmap">
 {
   "imports": {
@@ -30,7 +33,7 @@
             overscroll-behavior-y: none; /* Prevent pull-to-refresh on mobile */
         }
 
-        .container {
+        main.container {
             max-width: 1000px;
             margin: 0 auto;
             padding: 20px;
@@ -94,7 +97,7 @@
         }
 
         .unified-upload-area p.sub-text {
-            color: #70757a;
+            color: #5f6368;
             font-size: 0.9rem;
             margin: 0;
         }
@@ -210,6 +213,24 @@
             flex-wrap: wrap;
             justify-content: center;
             margin: 20px 0;
+        }
+
+        /* Chips for AI Prompt */
+        .chip {
+            background: #e8f0fe;
+            border: 1px solid #d2e3fc;
+            border-radius: 16px;
+            padding: 6px 14px;
+            font-size: 0.85rem;
+            color: #174ea6;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: inline-block;
+            user-select: none;
+        }
+        
+        .chip:hover {
+            background: #d2e3fc;
         }
 
         /* Error Box */
@@ -494,7 +515,7 @@
 
         /* --- Mobile Optimization --- */
         @media (max-width: 600px) {
-            .container {
+            main.container {
                 padding: 10px;
             }
 
@@ -590,9 +611,9 @@
 </head>
 <body>
 
-<div class="container">
+<main class="container">
     <div class="header">
-        <h1>Widgit Karaoke Creator</h1>
+        <h1>Mr. Bunn's Widget Machine</h1>
         <p>Convert symbol charts into animated karaoke videos</p>
     </div>
 
@@ -627,7 +648,10 @@
             </div>
         </div>
 
-        <button id="generate-button" class="button" disabled>Start Project</button>
+        <div class="button-group">
+            <button id="generate-button" class="button" disabled>Start Project (Karaoke)</button>
+            <button id="btn-create-board" class="button secondary" style="background-color: #fbbc04; color: #333;">Create Symbol Board (No Audio)</button>
+        </div>
     </div>
 
     <!-- 2. Loading View -->
@@ -656,17 +680,62 @@
             </div>
         </div>
 
-        <details open>
-            <summary>Tools</summary>
-            <div class="toolbar" style="background: white; border: none; padding-left: 0; padding-right: 0;">
-                <button id="btn-autocomplete-grid" class="button small">Auto-Complete</button>
-                <button id="btn-select-matching-color" class="button secondary small">Select Color Match</button>
-                <button id="btn-clear-page" class="button secondary small" style="color: #c5221f;">Clear Page</button>
+        <!-- AI Creator -->
+        <details>
+            <summary>✨ AI Creator (Nano Banana)</summary>
+            <div style="padding: 15px; background: #f8f9fa; border-radius: 4px;">
+                <p style="font-size: 0.85rem; margin-top:0;">Generate new symbols or edit existing ones using Gemini 2.5 Flash Image.</p>
+                
+                <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
+                    placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'"></textarea>
+                
+                <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                     <input type="checkbox" id="ai-multi-toggle" style="width:16px; height:16px;"> 
+                     <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500;">Generate 3 Variations</label>
+                </div>
+
+                <div id="ai-prompt-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px;">
+                    <span style="font-size: 0.8rem; color: #666; align-self: center;">Suggestions:</span>
+                    <button class="chip">Person walking</button>
+                    <button class="chip">Happy face</button>
+                    <button class="chip">Question mark</button>
+                    <button class="chip">Remove background</button>
+                    <button class="chip">Make it blue</button>
+                </div>
+
+                <div class="button-group" style="margin: 0; justify-content: flex-start;">
+                     <button id="btn-ai-generate" class="button small">Generate New Tile</button>
+                     <button id="btn-ai-edit" class="button secondary small">Edit Selected Tile</button>
+                </div>
+                <div id="ai-loading" style="display:none; font-size: 0.8rem; color: #1a73e8; margin-top: 10px; align-items: center; gap: 5px;">
+                    <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
+                </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 10px; padding: 10px;">
-                <label for="grid-sensitivity" style="font-size: 0.9rem; font-weight: 500;">Grid Sensitivity:</label>
-                <input type="range" id="grid-sensitivity" min="150" max="250" value="240" step="5" style="flex-grow: 1;">
-                <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: #666;">High</span>
+        </details>
+
+        <details>
+            <summary>Tools</summary>
+            <div id="karaoke-tools">
+                <div class="toolbar" style="background: white; border: none; padding-left: 0; padding-right: 0;">
+                    <button id="btn-autocomplete-grid" class="button small">Auto-Complete</button>
+                    <button id="btn-select-matching-color" class="button secondary small">Select Color Match</button>
+                    <button id="btn-clear-page" class="button secondary small" style="color: #c5221f;">Clear Page</button>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px; padding: 10px;">
+                    <label for="grid-sensitivity" style="font-size: 0.9rem; font-weight: 500;">Grid Sensitivity:</label>
+                    <input type="range" id="grid-sensitivity" min="150" max="250" value="240" step="5" style="flex-grow: 1;">
+                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: #666;">High</span>
+                </div>
+            </div>
+
+            <!-- Board Mode Tools -->
+            <div id="board-tools" style="display:none; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
+                <p style="font-size: 0.85rem; color: #666; margin-bottom: 10px;">Board Creator Mode</p>
+                <div class="toolbar" style="background: white; border: none; padding-left: 0; padding-right: 0;">
+                     <button id="btn-add-tile" class="button small" style="background-color: #34a853;">+ Add Empty Tile</button>
+                     <button id="btn-download-pdf" class="button secondary small">Download PDF</button>
+                     <button id="btn-download-zip" class="button secondary small">Download Images (ZIP)</button>
+                </div>
             </div>
         </details>
 
@@ -855,7 +924,7 @@
         <p id="rendering-progress-text" style="color: #ddd;">0%</p>
     </div>
 
-</div>
+</main>
 
 <script type="module" src="index.tsx"></script>
 </body>
