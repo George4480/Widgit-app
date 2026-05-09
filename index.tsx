@@ -27,7 +27,7 @@ const appState = {
         colBreakThreshold: 10,
         minSymbolWidth: 20,
         minSymbolHeight: 20,
-        contentThreshold: 240
+        contentThreshold: 245
     },
     styleConfig: {
         backgroundColor: '#f0f8ff',
@@ -121,6 +121,8 @@ function init() {
             aiPrompt: document.getElementById('ai-prompt'),
             btnAiGenerate: document.getElementById('btn-ai-generate'),
             btnAiEdit: document.getElementById('btn-ai-edit'),
+            btnUploadSymbol: document.getElementById('btn-upload-symbol'),
+            inputUploadSymbol: document.getElementById('input-upload-symbol'),
             aiLoading: document.getElementById('ai-loading'),
             aiMultiToggle: document.getElementById('ai-multi-toggle')
         },
@@ -200,14 +202,34 @@ function init() {
 
 function setupEventListeners() {
     // --- Upload View ---
+    const triggerUpload = () => {
+        // Create a new input on each click to prevent iOS/Safari file invalidation
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.multiple = true;
+        input.accept = 'audio/*,.mp3,.wav,application/pdf,.pdf,image/*';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        
+        input.addEventListener('change', (e: Event) => {
+            handleFiles((e.target as HTMLInputElement).files);
+            document.body.removeChild(input); // Cleanup
+        });
+        input.click();
+    };
+
     dom.upload.dropZone.addEventListener('click', (e: Event) => {
-        if (e.target !== dom.upload.input) dom.upload.input.click();
+        // Only trigger if we aren't clicking labels or inputs explicitly
+        if ((e.target as HTMLElement).tagName !== 'INPUT') {
+            triggerUpload();
+        }
     });
     dom.upload.btnBrowse.addEventListener('click', (e: Event) => {
         e.stopPropagation();
-        dom.upload.input.click();
+        triggerUpload();
     });
-    dom.upload.input.addEventListener('change', (e: Event) => handleFiles((e.target as HTMLInputElement).files));
+    // Remove old input listener as we no longer use it
+    
     dom.upload.dropZone.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.add('drag-over'); });
     dom.upload.dropZone.addEventListener('dragleave', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.remove('drag-over'); });
     dom.upload.dropZone.addEventListener('drop', (e: DragEvent) => {
@@ -267,7 +289,7 @@ function setupEventListeners() {
     dom.define.inputSensitivity.addEventListener('input', (e: Event) => {
         const val = parseInt((e.target as HTMLInputElement).value);
         appState.gridConfig.contentThreshold = val;
-        dom.define.labelSensitivity.textContent = val > 240 ? "High" : val > 200 ? "Medium" : "Low";
+        dom.define.labelSensitivity.textContent = val > 245 ? "Very High" : val > 230 ? "High" : val > 200 ? "Medium" : "Low";
         runGridDetection(); // Auto re-detect on slider change
     });
     dom.define.btnPanUp.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
@@ -281,6 +303,8 @@ function setupEventListeners() {
     // AI Creator Events
     dom.define.btnAiGenerate.addEventListener('click', generateAiSymbol);
     dom.define.btnAiEdit.addEventListener('click', editAiSymbol);
+    dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
+    dom.define.inputUploadSymbol.addEventListener('change', (e: Event) => handleSymbolUpload((e.target as HTMLInputElement).files));
     
     // AI Chips
     const chipsContainer = document.getElementById('ai-prompt-chips');
@@ -393,9 +417,12 @@ function getPointerPos(e: MouseEvent | TouchEvent, canvas: HTMLCanvasElement) {
         clientY = (e as MouseEvent).clientY;
     }
     
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
     return {
-        x: clientX - rect.left,
-        y: clientY - rect.top
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
     };
 }
 
@@ -410,12 +437,11 @@ function setupCanvasInteractions() {
     window.addEventListener('mouseup', handleDefineCanvasUp);
 
     // Order View Canvas
-    dom.order.canvas.addEventListener('mousedown', handleOrderCanvasClick);
-    dom.order.canvas.addEventListener('touchstart', handleOrderCanvasClick, { passive: false });
+    dom.order.canvas.addEventListener('click', handleOrderCanvasClick);
     // Add touchmove listener to order canvas for pinch zoom support
     dom.order.canvas.addEventListener('touchmove', (e: TouchEvent) => {
         if (e.touches.length === 2) {
-            e.preventDefault();
+            if (e.cancelable) e.preventDefault();
             handlePinchZoom(e);
         }
     }, { passive: false });
@@ -748,7 +774,7 @@ async function generateAiSymbol() {
     
     const isMulti = (dom.define.aiMultiToggle as HTMLInputElement).checked;
 
-    // Check for API Key first (Required for gemini-3-pro-image-preview)
+    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
     const win = window as any;
     if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
         try {
@@ -792,7 +818,7 @@ async function generateAiSymbol() {
         
         for (let i = 0; i < count; i++) {
              promises.push(ai.models.generateContent({
-                model: 'gemini-3-pro-image-preview', // High quality model
+                model: 'gemini-3.1-flash-image-preview', // High quality model
                 contents: { parts: parts },
                 config: { 
                     imageConfig: { 
@@ -868,7 +894,7 @@ async function editAiSymbol() {
         alert("Please select exactly one tile to edit."); return;
     }
     
-    // Check for API Key first (Required for gemini-3-pro-image-preview)
+    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
     const win = window as any;
     if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
         try {
@@ -920,7 +946,7 @@ async function editAiSymbol() {
 
         // 3. Call API
         const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-image-preview', // High quality model
+            model: 'gemini-3.1-flash-image-preview', // High quality model
             contents: { parts: parts },
             config: { 
                 imageConfig: { 
@@ -955,6 +981,40 @@ async function editAiSymbol() {
     } finally {
         setAiLoading(false);
     }
+}
+
+async function handleSymbolUpload(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const file = fileList[0];
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+
+    const img = new Image();
+    img.onload = () => {
+        if (appState.interaction.selectedIndices.size === 1) {
+            // Replace selected
+            const idx = appState.interaction.selectedIndices.values().next().value;
+            page.symbols[idx].customImage = img;
+        } else {
+            // Add new
+            const size = 200;
+            const x = Math.max(0, (page.width / 2) - (size / 2));
+            const y = Math.max(0, (page.height / 2) - (size / 2));
+            
+            page.symbols.push({
+                x, y, width: size, height: size,
+                customImage: img
+            });
+            
+            appState.interaction.selectedIndices.clear();
+            appState.interaction.selectedIndices.add(page.symbols.length - 1);
+        }
+        drawCanvas();
+        updateToolbarUI();
+        // Reset input
+        dom.define.inputUploadSymbol.value = '';
+    };
+    img.src = URL.createObjectURL(file);
 }
 
 function setAiLoading(loading: boolean) {
@@ -1077,6 +1137,13 @@ function drawCanvas() {
         }
         ctx.beginPath(); ctx.rect(s.x, s.y, s.width, s.height);
         ctx.fill(); ctx.stroke();
+
+        // Draw Resize Handle for selected
+        if (appState.interaction.selectedIndices.has(idx)) {
+            const handleSize = 10 / appState.interaction.zoomLevel;
+            ctx.fillStyle = '#1a73e8';
+            ctx.fillRect(s.x + s.width - handleSize/2, s.y + s.height - handleSize/2, handleSize, handleSize);
+        }
     });
     ctx.restore();
     // Marquee
@@ -1107,8 +1174,11 @@ function runGridDetection() {
     let rows = [], inRow = false, startY = 0;
     for (let y = 0; y < h; y++) {
         let count = 0;
-        for (let x=0; x<w; x+=5) if (data[(y*w+x)*4] < threshold) count++;
-        if (count > w*0.005) { if(!inRow) { inRow=true; startY=y; } }
+        for (let x=0; x<w; x+=2) {
+            const idx = (y*w+x)*4;
+            if (data[idx] < threshold || data[idx+1] < threshold || data[idx+2] < threshold) count++;
+        }
+        if (count > w*0.002) { if(!inRow) { inRow=true; startY=y; } }
         else { if(inRow) { inRow=false; if(y-startY > 20) rows.push({s:startY, e:y}); } }
     }
     if(inRow) rows.push({s:startY, e:h});
@@ -1117,8 +1187,11 @@ function runGridDetection() {
         let inCol = false, startX = 0;
         for (let x=0; x<w; x++) {
             let count=0;
-            for (let y=r.s; y<r.e; y+=5) if (data[(y*w+x)*4] < threshold) count++;
-            if (count > (r.e-r.s)*0.01) { if(!inCol) { inCol=true; startX=x; } }
+            for (let y=r.s; y<r.e; y+=2) {
+                const idx = (y*w+x)*4;
+                if (data[idx] < threshold || data[idx+1] < threshold || data[idx+2] < threshold) count++;
+            }
+            if (count > (r.e-r.s)*0.002) { if(!inCol) { inCol=true; startX=x; } }
             else { if(inCol) { inCol=false; if(x-startX > 20) page.symbols.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
         }
         if(inCol && w-startX>20) page.symbols.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
@@ -1131,7 +1204,6 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
             appState.interaction.lastTouchDistance = 0;
             return;
         }
-        e.preventDefault();
     }
 
     const pos = getPointerPos(e, dom.define.canvas);
@@ -1140,9 +1212,29 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     const y = pos.y / scale;
     
     const page = appState.pages[appState.currentPageIndex];
+
+    // Check for Resize Handle first
+    let resizeIdx = -1;
+    const handleSize = 30 / scale; // Generous hit area for mobile
+    appState.interaction.selectedIndices.forEach(idx => {
+        const s = page.symbols[idx];
+        const hX = s.x + s.width - handleSize/2;
+        const hY = s.y + s.height - handleSize/2;
+        if (x >= hX && x <= hX + handleSize && y >= hY && y <= hY + handleSize) resizeIdx = idx;
+    });
+
+    if (resizeIdx !== -1) {
+        if (e.cancelable) e.preventDefault();
+        appState.interaction.dragAction = 'resize';
+        appState.interaction.dragStart = {x, y};
+        appState.interaction.isDragging = true;
+        return;
+    }
+
     let hitIndex = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
 
     if (hitIndex !== -1) {
+        if (e.type === 'touchstart' && e.cancelable) e.preventDefault();
         if (e.shiftKey) {
             if (appState.interaction.selectedIndices.has(hitIndex)) appState.interaction.selectedIndices.delete(hitIndex);
             else appState.interaction.selectedIndices.add(hitIndex);
@@ -1155,11 +1247,15 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
         appState.interaction.dragAction = 'move';
         appState.interaction.dragStart = {x, y};
     } else {
-        if (!e.shiftKey) appState.interaction.selectedIndices.clear();
-        appState.interaction.dragAction = 'marquee';
-        appState.interaction.marqueeStart = {x, y};
-        appState.interaction.marqueeCurrent = {x, y};
-        appState.interaction.initialSelection = new Set(appState.interaction.selectedIndices);
+        if (e.type === 'touchstart') {
+            appState.interaction.dragAction = 'none';
+        } else {
+            if (!e.shiftKey) appState.interaction.selectedIndices.clear();
+            appState.interaction.dragAction = 'marquee';
+            appState.interaction.marqueeStart = {x, y};
+            appState.interaction.marqueeCurrent = {x, y};
+            appState.interaction.initialSelection = new Set(appState.interaction.selectedIndices);
+        }
     }
     appState.interaction.isDragging = true;
     drawCanvas(); updateToolbarUI();
@@ -1167,13 +1263,15 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
 function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchmove') {
         if ((e as TouchEvent).touches.length === 2) {
-             e.preventDefault();
+             if (e.cancelable) e.preventDefault();
              handlePinchZoom(e as TouchEvent);
              return;
         }
-        e.preventDefault();
+        if (appState.interaction.dragAction !== 'none' && e.cancelable) {
+             e.preventDefault();
+        }
     }
-    if (!appState.interaction.isDragging) return;
+    if (!appState.interaction.isDragging || appState.interaction.dragAction === 'none') return;
     
     const pos = getPointerPos(e, dom.define.canvas);
     const scale = appState.interaction.zoomLevel;
@@ -1186,6 +1284,15 @@ function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
         const dy = y - appState.interaction.dragStart.y;
         appState.interaction.selectedIndices.forEach(idx => {
             page.symbols[idx].x += dx; page.symbols[idx].y += dy;
+        });
+        appState.interaction.dragStart = {x, y};
+    } else if (appState.interaction.dragAction === 'resize') {
+        const dx = x - appState.interaction.dragStart.x;
+        const dy = y - appState.interaction.dragStart.y;
+        appState.interaction.selectedIndices.forEach(idx => {
+            const s = page.symbols[idx];
+            s.width = Math.max(10, s.width + dx);
+            s.height = Math.max(10, s.height + dy);
         });
         appState.interaction.dragStart = {x, y};
     } else if (appState.interaction.dragAction === 'marquee') {
@@ -1280,11 +1387,6 @@ function drawOrderCanvas() {
     });
 }
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
-    if (e.type === 'touchstart') {
-        if ((e as TouchEvent).touches.length === 2) return; // Allow pinch gesture logic
-        e.preventDefault();
-    }
-    
     const pos = getPointerPos(e, dom.order.canvas);
     const page = appState.pages[appState.currentPageIndex];
     const scale = dom.order.canvas.width / page.width;

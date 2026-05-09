@@ -266,19 +266,17 @@
         .canvas-container {
             border: 1px solid #dadce0;
             border-radius: 4px;
-            overflow: hidden; /* Changed from auto to hidden for custom pan control */
+            overflow: auto;
             margin-bottom: 20px;
             background-color: #e0e0e0;
             text-align: center;
             position: relative;
             max-height: 60vh;
-            touch-action: none; /* We handle panning/zooming manually */
         }
 
         canvas {
             background-color: white;
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
-            touch-action: none;
         }
 
         /* Sync View */
@@ -567,7 +565,22 @@
 
             /* Canvas */
             .canvas-container {
-                max-height: 50vh;
+                max-height: 70vh;
+                height: 450px;
+            }
+            canvas {
+                max-width: none;
+            }
+            .order-container {
+                flex-direction: column;
+                height: auto;
+            }
+            .sync-main {
+                flex-direction: column;
+            }
+            .sync-tools-panel {
+                width: 100%;
+                flex: none;
             }
 
             /* Sync View */
@@ -608,6 +621,7 @@
             #btn-tl-next { grid-column: 4 / 5; }
         }
     </style>
+<link rel="stylesheet" href="/index.css">
 </head>
 <body>
 
@@ -682,9 +696,9 @@
 
         <!-- AI Creator -->
         <details>
-            <summary>✨ AI Creator (Nano Banana)</summary>
+            <summary>✨ AI Creator</summary>
             <div style="padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <p style="font-size: 0.85rem; margin-top:0;">Generate new symbols or edit existing ones using Gemini 2.5 Flash Image.</p>
+                <p style="font-size: 0.85rem; margin-top:0;">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
                 
                 <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
                     placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'"></textarea>
@@ -706,6 +720,8 @@
                 <div class="button-group" style="margin: 0; justify-content: flex-start;">
                      <button id="btn-ai-generate" class="button small">Generate New Tile</button>
                      <button id="btn-ai-edit" class="button secondary small">Edit Selected Tile</button>
+                     <button id="btn-upload-symbol" class="button secondary small">Upload Image</button>
+                     <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
                 </div>
                 <div id="ai-loading" style="display:none; font-size: 0.8rem; color: #1a73e8; margin-top: 10px; align-items: center; gap: 5px;">
                     <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
@@ -723,8 +739,8 @@
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px; padding: 10px;">
                     <label for="grid-sensitivity" style="font-size: 0.9rem; font-weight: 500;">Grid Sensitivity:</label>
-                    <input type="range" id="grid-sensitivity" min="150" max="250" value="240" step="5" style="flex-grow: 1;">
-                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: #666;">High</span>
+                    <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2" style="flex-grow: 1;">
+                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: #666;">Very High</span>
                 </div>
             </div>
 
@@ -927,5 +943,6 @@
 </main>
 
 <script type="module" src="index.tsx"></script>
+<script type="module" src="/index.tsx"></script>
 </body>
 </html>
