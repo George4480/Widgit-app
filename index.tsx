@@ -1,27 +1,24 @@
 import { GoogleGenAI } from "@google/genai";
 
-// Application State
+// ─── Application State ────────────────────────────────────────────────────────
 const appState = {
-    currentView: 'upload-view', // upload-view, loading-view, define-symbols-view, order-view, sync-view, result-view
-    mode: 'karaoke', // 'karaoke' | 'board'
-    songTitle: '', // New: Store song title
+    currentView: 'upload-view',
+    mode: 'karaoke' as 'karaoke' | 'board',
+    songTitle: '',
     files: {
         images: [] as File[],
         audioVocal: null as File | null,
         audioBacking: null as File | null,
         pdf: null as File | null
     },
-    // pages now includes 'sequence' array for order
     pages: [] as { image: HTMLImageElement, width: number, height: number, symbols: any[], sequence: number[] }[],
     currentPageIndex: 0,
-    symbols: [] as any[], // Flat list for Sync/Result
+    symbols: [] as any[],
     isRecordingSync: false,
-    currentSyncIndex: 0, // Used during recording
+    currentSyncIndex: 0,
     syncData: [] as { symbolIndex: number, time: number }[],
-    audioBuffer: null as AudioBuffer | null, // Decoded audio for waveform
-    stats: {
-        avgDuration: 0
-    },
+    audioBuffer: null as AudioBuffer | null,
+    stats: { avgDuration: 0 },
     gridConfig: {
         rowBreakThreshold: 50,
         colBreakThreshold: 10,
@@ -44,16 +41,16 @@ const appState = {
         dragStart: { x: 0, y: 0 },
         selectedIndices: new Set<number>(),
         initialSelection: new Set<number>(),
-        dragAction: 'none', 
-        zoomLevel: 1.0, 
+        dragAction: 'none',
+        zoomLevel: 1.0,
         marqueeStart: { x: 0, y: 0 },
         marqueeCurrent: { x: 0, y: 0 },
-        timelineZoom: 100, // pixels per second (higher default for detail)
+        timelineZoom: 100,
         timelineDragIndex: -1,
-        selectedSyncIndex: -1, // Currently selected tile in timeline for editing
-        syncScrollX: 0, // TIME (seconds) at left edge of timeline view
-        lastTouchDistance: 0, // For pinch zoom
-        latencyOffset: 0.0 // Global playback offset
+        selectedSyncIndex: -1,
+        syncScrollX: 0,
+        lastTouchDistance: 0,
+        latencyOffset: 0.0
     },
     preview: {
         isPlaying: false,
@@ -63,152 +60,188 @@ const appState = {
     }
 };
 
-// DOM Elements
 let dom = {} as any;
 
+// ─── Toast Notification System ───────────────────────────────────────────────
+function showToast(msg: string, type: 'success' | 'error' | 'warning' | '' = '', duration = 3400) {
+    const container = document.getElementById('toast-container');
+    if (!container) { console.warn('[Toast]', msg); return; }
+    const el = document.createElement('div');
+    el.className = `toast${type ? ' ' + type : ''}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => {
+        el.style.animation = 'toastOut 0.3s cubic-bezier(0.4,0,0.2,1) forwards';
+        setTimeout(() => el.remove(), 320);
+    }, duration);
+}
+
+// ─── Step Progress Indicator ─────────────────────────────────────────────────
+const VIEW_STEP_MAP: Record<string, number> = {
+    'upload-view': 1,
+    'define-symbols-view': 2,
+    'order-view': 3,
+    'sync-view': 4,
+    'result-view': 5
+};
+
+function updateStepProgress(activeStep: number) {
+    for (let i = 1; i <= 5; i++) {
+        const circle = document.getElementById(`step-${i}`);
+        const conn   = i > 1 ? document.getElementById(`conn-${i - 1}-${i}`) : null;
+        if (!circle) continue;
+        circle.classList.remove('active', 'done');
+        if (conn) conn.classList.remove('done');
+        if (i < activeStep) {
+            circle.classList.add('done');
+            if (conn) conn.classList.add('done');
+        } else if (i === activeStep) {
+            circle.classList.add('active');
+        }
+    }
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
 function init() {
-    // Map DOM elements
     dom = {
         views: {
-            upload: document.getElementById('upload-view'),
+            upload:  document.getElementById('upload-view'),
             loading: document.getElementById('loading-view'),
-            define: document.getElementById('define-symbols-view'),
-            order: document.getElementById('order-view'),
-            sync: document.getElementById('sync-view'),
-            result: document.getElementById('result-view'),
+            define:  document.getElementById('define-symbols-view'),
+            order:   document.getElementById('order-view'),
+            sync:    document.getElementById('sync-view'),
+            result:  document.getElementById('result-view'),
         },
         upload: {
-            dropZone: document.getElementById('unified-drop-zone'),
-            input: document.getElementById('unified-file-input'),
-            btnBrowse: document.querySelector('.browse-btn'),
-            btnGenerate: document.getElementById('generate-button'),
+            dropZone:       document.getElementById('unified-drop-zone'),
+            input:          document.getElementById('unified-file-input'),
+            btnBrowse:      document.querySelector('.browse-btn'),
+            btnGenerate:    document.getElementById('generate-button'),
             btnCreateBoard: document.getElementById('btn-create-board'),
             statusSongboard: document.getElementById('status-songboard'),
-            statusVocal: document.getElementById('status-vocal'),
-            statusBacking: document.getElementById('status-backing'),
-            cardSongboard: document.getElementById('card-songboard'),
-            cardVocal: document.getElementById('card-vocal'),
-            cardBacking: document.getElementById('card-backing'),
-            titleInput: document.getElementById('input-song-title')
+            statusVocal:     document.getElementById('status-vocal'),
+            statusBacking:   document.getElementById('status-backing'),
+            cardSongboard:   document.getElementById('card-songboard'),
+            cardVocal:       document.getElementById('card-vocal'),
+            cardBacking:     document.getElementById('card-backing'),
+            titleInput:      document.getElementById('input-song-title')
         },
         define: {
-            canvasContainer: document.getElementById('define-canvas-container'),
-            canvas: document.getElementById('define-canvas') as HTMLCanvasElement,
-            ctx: (document.getElementById('define-canvas') as HTMLCanvasElement)?.getContext('2d'),
-            btnPrev: document.getElementById('btn-prev-page'),
-            btnNext: document.getElementById('btn-next-page'),
-            labelPage: document.getElementById('page-indicator'),
-            btnClear: document.getElementById('btn-clear-page'),
-            btnAuto: document.getElementById('btn-autocomplete-grid'),
-            btnSelectColor: document.getElementById('btn-select-matching-color'),
-            btnGoOrder: document.getElementById('btn-goto-order'),
-            btnZoomIn: document.getElementById('btn-zoom-in'),
-            btnZoomOut: document.getElementById('btn-zoom-out'),
-            btnDelete: document.getElementById('btn-delete-symbol'),
+            canvasContainer:  document.getElementById('define-canvas-container'),
+            canvas:           document.getElementById('define-canvas') as HTMLCanvasElement,
+            ctx:              (document.getElementById('define-canvas') as HTMLCanvasElement)?.getContext('2d'),
+            btnPrev:          document.getElementById('btn-prev-page'),
+            btnNext:          document.getElementById('btn-next-page'),
+            labelPage:        document.getElementById('page-indicator'),
+            btnClear:         document.getElementById('btn-clear-page'),
+            btnAuto:          document.getElementById('btn-autocomplete-grid'),
+            btnSelectColor:   document.getElementById('btn-select-matching-color'),
+            btnGoOrder:       document.getElementById('btn-goto-order'),
+            btnZoomIn:        document.getElementById('btn-zoom-in'),
+            btnZoomOut:       document.getElementById('btn-zoom-out'),
+            btnDelete:        document.getElementById('btn-delete-symbol'),
             inputSensitivity: document.getElementById('grid-sensitivity'),
             labelSensitivity: document.getElementById('grid-sensitivity-val'),
-            btnPanUp: document.getElementById('btn-pan-up'),
-            btnPanDown: document.getElementById('btn-pan-down'),
-            
-            // Tools containers
-            karaokeTools: document.getElementById('karaoke-tools'),
-            boardTools: document.getElementById('board-tools'),
-            btnAddTile: document.getElementById('btn-add-tile'),
-            btnDownloadPdf: document.getElementById('btn-download-pdf'),
-            btnDownloadZip: document.getElementById('btn-download-zip'),
-            
+            btnPanUp:         document.getElementById('btn-pan-up'),
+            btnPanDown:       document.getElementById('btn-pan-down'),
+            karaokeTools:     document.getElementById('karaoke-tools'),
+            boardTools:       document.getElementById('board-tools'),
+            btnAddTile:       document.getElementById('btn-add-tile'),
+            btnDownloadPdf:   document.getElementById('btn-download-pdf'),
+            btnDownloadZip:   document.getElementById('btn-download-zip'),
             // AI Creator
-            aiPrompt: document.getElementById('ai-prompt'),
-            btnAiGenerate: document.getElementById('btn-ai-generate'),
-            btnAiEdit: document.getElementById('btn-ai-edit'),
-            aiLoading: document.getElementById('ai-loading'),
-            aiMultiToggle: document.getElementById('ai-multi-toggle')
+            aiPrompt:         document.getElementById('ai-prompt'),
+            btnAiGenerate:    document.getElementById('btn-ai-generate'),
+            btnAiEdit:        document.getElementById('btn-ai-edit'),
+            btnUploadSymbol:  document.getElementById('btn-upload-symbol'),
+            inputUploadSymbol: document.getElementById('input-upload-symbol'),
+            aiLoading:        document.getElementById('ai-loading'),
+            aiMultiToggle:    document.getElementById('ai-multi-toggle')
         },
         order: {
-            canvasContainer: document.getElementById('order-canvas-container'),
-            canvas: document.getElementById('order-canvas') as HTMLCanvasElement,
-            ctx: (document.getElementById('order-canvas') as HTMLCanvasElement)?.getContext('2d'),
-            btnPrev: document.getElementById('btn-order-prev-page'),
-            btnNext: document.getElementById('btn-order-next-page'),
-            labelPage: document.getElementById('order-page-indicator'),
-            btnAuto: document.getElementById('btn-auto-order'),
-            btnReset: document.getElementById('btn-reset-order'),
-            btnBack: document.getElementById('btn-back-to-define'),
-            btnFinish: document.getElementById('btn-finish-order'),
-            btnPanUp: document.getElementById('btn-order-pan-up'),
-            btnPanDown: document.getElementById('btn-order-pan-down')
+            canvasContainer:  document.getElementById('order-canvas-container'),
+            canvas:           document.getElementById('order-canvas') as HTMLCanvasElement,
+            ctx:              (document.getElementById('order-canvas') as HTMLCanvasElement)?.getContext('2d'),
+            btnPrev:          document.getElementById('btn-order-prev-page'),
+            btnNext:          document.getElementById('btn-order-next-page'),
+            labelPage:        document.getElementById('order-page-indicator'),
+            btnAuto:          document.getElementById('btn-auto-order'),
+            btnReset:         document.getElementById('btn-reset-order'),
+            btnBack:          document.getElementById('btn-back-to-define'),
+            btnFinish:        document.getElementById('btn-finish-order'),
+            btnPanUp:         document.getElementById('btn-order-pan-up'),
+            btnPanDown:       document.getElementById('btn-order-pan-down')
         },
         sync: {
             containerFineTuning: document.getElementById('sync-fine-tuning'),
-            visualCue: document.getElementById('sync-visual-cue'),
-            timelineContainer: document.getElementById('sync-timeline-container'),
-            timelineCanvas: document.getElementById('sync-timeline-canvas') as HTMLCanvasElement,
-            btnRecord: document.getElementById('record-tap-button'),
-            audio: document.getElementById('sync-audio-player') as HTMLAudioElement,
-            labelProgress: document.getElementById('sync-progress-text'),
-            btnReset: document.getElementById('reset-sync-button'),
-            btnBack: document.getElementById('back-to-order-from-sync'),
-            btnFinish: document.getElementById('btn-finish-sync'),
-            btnZoomIn: document.getElementById('btn-sync-zoom-in'),
-            btnZoomOut: document.getElementById('btn-sync-zoom-out'),
-            imgCurrent: document.getElementById('sync-img-current') as HTMLImageElement,
-            imgNext: document.getElementById('sync-img-next') as HTMLImageElement,
-            // Symbol Nav Strip
-            navStrip: document.getElementById('symbol-nav-strip'),
-            // Timeline Tools
-            btnTlPrev: document.getElementById('btn-tl-prev'),
-            btnTlNext: document.getElementById('btn-tl-next'),
-            btnNudgeLBack: document.getElementById('btn-tl-nudge-l-back'),
-            btnNudgeSBack: document.getElementById('btn-tl-nudge-s-back'),
-            btnNudgeSFwd: document.getElementById('btn-tl-nudge-s-fwd'),
-            btnNudgeLFwd: document.getElementById('btn-tl-nudge-l-fwd'),
-            labelTlSelected: document.getElementById('tl-selected-info'),
-            // Direction Input
-            containerProp: document.getElementById('sync-symbol-properties'),
-            inputDirection: document.getElementById('input-sync-direction')
+            visualCue:           document.getElementById('sync-visual-cue'),
+            timelineContainer:   document.getElementById('sync-timeline-container'),
+            timelineCanvas:      document.getElementById('sync-timeline-canvas') as HTMLCanvasElement,
+            btnRecord:           document.getElementById('record-tap-button'),
+            audio:               document.getElementById('sync-audio-player') as HTMLAudioElement,
+            labelProgress:       document.getElementById('sync-progress-text'),
+            btnReset:            document.getElementById('reset-sync-button'),
+            btnBack:             document.getElementById('back-to-order-from-sync'),
+            btnFinish:           document.getElementById('btn-finish-sync'),
+            btnZoomIn:           document.getElementById('btn-sync-zoom-in'),
+            btnZoomOut:          document.getElementById('btn-sync-zoom-out'),
+            imgCurrent:          document.getElementById('sync-img-current') as HTMLImageElement,
+            imgNext:             document.getElementById('sync-img-next')    as HTMLImageElement,
+            navStrip:            document.getElementById('symbol-nav-strip'),
+            btnTlPrev:           document.getElementById('btn-tl-prev'),
+            btnTlNext:           document.getElementById('btn-tl-next'),
+            btnNudgeLBack:       document.getElementById('btn-tl-nudge-l-back'),
+            btnNudgeSBack:       document.getElementById('btn-tl-nudge-s-back'),
+            btnNudgeSFwd:        document.getElementById('btn-tl-nudge-s-fwd'),
+            btnNudgeLFwd:        document.getElementById('btn-tl-nudge-l-fwd'),
+            labelTlSelected:     document.getElementById('tl-selected-info'),
+            containerProp:       document.getElementById('sync-symbol-properties'),
+            inputDirection:      document.getElementById('input-sync-direction')
         },
         result: {
-            canvas: document.getElementById('preview-canvas') as HTMLCanvasElement,
-            btnPlay: document.getElementById('btn-play-preview'),
-            btnPause: document.getElementById('btn-pause-preview'),
-            btnRewind: document.getElementById('btn-rewind-preview'),
-            btnDownloadFull: document.getElementById('download-full-mix'),
+            canvas:           document.getElementById('preview-canvas') as HTMLCanvasElement,
+            btnPlay:          document.getElementById('btn-play-preview'),
+            btnPause:         document.getElementById('btn-pause-preview'),
+            btnRewind:        document.getElementById('btn-rewind-preview'),
+            btnDownloadFull:  document.getElementById('download-full-mix'),
             btnDownloadBacking: document.getElementById('download-backing'),
-            btnBack: document.getElementById('back-to-sync-from-result'),
-            btnReset: document.getElementById('reset-button'),
-            // Latency Slider (Moved to Result View)
-            latencySlider: document.getElementById('latency-slider'),
-            latencyVal: document.getElementById('latency-val'),
-            // Style Controls
-            styleBg: document.getElementById('style-bg-color'),
+            btnBack:          document.getElementById('back-to-sync-from-result'),
+            btnReset:         document.getElementById('reset-button'),
+            latencySlider:    document.getElementById('latency-slider'),
+            latencyVal:       document.getElementById('latency-val'),
+            styleBg:          document.getElementById('style-bg-color'),
             styleActiveScale: document.getElementById('style-active-scale'),
-            styleNextCount: document.getElementById('style-next-count'),
-            styleNextScale: document.getElementById('style-next-scale'),
+            styleNextCount:   document.getElementById('style-next-count'),
+            styleNextScale:   document.getElementById('style-next-scale'),
             styleNextOpacity: document.getElementById('style-next-opacity'),
-            styleSpacing: document.getElementById('style-spacing')
+            styleSpacing:     document.getElementById('style-spacing')
         },
         rendering: {
-            overlay: document.getElementById('rendering-overlay'),
+            overlay:      document.getElementById('rendering-overlay'),
             progressText: document.getElementById('rendering-progress-text')
         },
         loadingMessage: document.getElementById('loading-message'),
-        errorBox: document.getElementById('error-box')
+        errorBox:       document.getElementById('error-box')
     };
 
     setupEventListeners();
 }
 
+// ─── Event Listeners ──────────────────────────────────────────────────────────
 function setupEventListeners() {
-    // --- Upload View ---
+    // Upload View
     dom.upload.dropZone.addEventListener('click', (e: Event) => {
         if (e.target !== dom.upload.input) dom.upload.input.click();
+    });
+    dom.upload.dropZone.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dom.upload.input.click(); }
     });
     dom.upload.btnBrowse.addEventListener('click', (e: Event) => {
         e.stopPropagation();
         dom.upload.input.click();
     });
     dom.upload.input.addEventListener('change', (e: Event) => handleFiles((e.target as HTMLInputElement).files));
-    dom.upload.dropZone.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.add('drag-over'); });
+    dom.upload.dropZone.addEventListener('dragover',  (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.add('drag-over'); });
     dom.upload.dropZone.addEventListener('dragleave', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.remove('drag-over'); });
     dom.upload.dropZone.addEventListener('drop', (e: DragEvent) => {
         e.preventDefault();
@@ -220,112 +253,102 @@ function setupEventListeners() {
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
     dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
-    
-    // Assignment swapping logic
+
+    // Audio card swap logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
-        const other = type === 'vocal' ? 'backing' : 'vocal';
-        const cardType = type === 'vocal' ? dom.upload.cardVocal : dom.upload.cardBacking;
-        const cardOther = type === 'vocal' ? dom.upload.cardBacking : dom.upload.cardVocal;
-        
+        const cardType  = type === 'vocal' ? dom.upload.cardVocal   : dom.upload.cardBacking;
+        const cardOther = type === 'vocal' ? dom.upload.cardBacking  : dom.upload.cardVocal;
+
         if (cardType.classList.contains('selected')) {
-            cardType.classList.remove('selected'); // Deselect
+            cardType.classList.remove('selected');
+        } else if (cardOther.classList.contains('selected')) {
+            // Swap
+            const temp = appState.files.audioVocal;
+            appState.files.audioVocal   = appState.files.audioBacking;
+            appState.files.audioBacking = temp;
+
+            dom.upload.statusVocal.textContent   = appState.files.audioVocal   ? appState.files.audioVocal.name   : 'No audio loaded';
+            dom.upload.statusBacking.textContent = appState.files.audioBacking ? appState.files.audioBacking.name : 'No audio loaded';
+            dom.upload.cardVocal.classList.toggle('filled',   !!appState.files.audioVocal);
+            dom.upload.cardBacking.classList.toggle('filled', !!appState.files.audioBacking);
+            cardOther.classList.remove('selected');
+            showToast('Audio tracks swapped ↔', 'success');
         } else {
-            // Select this one
-            if (cardOther.classList.contains('selected')) {
-                // Swap!
-                const temp = appState.files.audioVocal;
-                appState.files.audioVocal = appState.files.audioBacking;
-                appState.files.audioBacking = temp;
-                
-                // Update UI
-                dom.upload.statusVocal.textContent = appState.files.audioVocal ? appState.files.audioVocal.name : "No audio loaded";
-                dom.upload.statusBacking.textContent = appState.files.audioBacking ? appState.files.audioBacking.name : "No audio loaded";
-                
-                dom.upload.cardVocal.classList.toggle('filled', !!appState.files.audioVocal);
-                dom.upload.cardBacking.classList.toggle('filled', !!appState.files.audioBacking);
-                
-                cardOther.classList.remove('selected');
-            } else {
-                cardType.classList.add('selected');
-            }
+            cardType.classList.add('selected');
         }
     };
-    dom.upload.cardVocal.addEventListener('click', () => handleAudioCardClick('vocal'));
+    dom.upload.cardVocal.addEventListener('click',   () => handleAudioCardClick('vocal'));
     dom.upload.cardBacking.addEventListener('click', () => handleAudioCardClick('backing'));
 
-
-    // --- Define View ---
+    // Define View
     dom.define.btnPrev.addEventListener('click', () => changePage(-1));
     dom.define.btnNext.addEventListener('click', () => changePage(1));
-    dom.define.btnAuto.addEventListener('click', runGridDetection);
+    dom.define.btnAuto.addEventListener('click', () => { runGridDetection(); showToast('Grid detection complete'); });
     dom.define.btnClear.addEventListener('click', clearCurrentPageSymbols);
     dom.define.btnGoOrder.addEventListener('click', () => switchView('order-view'));
     dom.define.btnSelectColor.addEventListener('click', selectSimilarColors);
-    dom.define.btnZoomIn.addEventListener('click', () => changeZoom(0.1));
+    dom.define.btnZoomIn.addEventListener('click',  () => changeZoom(0.1));
     dom.define.btnZoomOut.addEventListener('click', () => changeZoom(-0.1));
     dom.define.btnDelete.addEventListener('click', deleteSelectedSymbols);
     dom.define.inputSensitivity.addEventListener('input', (e: Event) => {
         const val = parseInt((e.target as HTMLInputElement).value);
         appState.gridConfig.contentThreshold = val;
-        dom.define.labelSensitivity.textContent = val > 240 ? "High" : val > 200 ? "Medium" : "Low";
-        runGridDetection(); // Auto re-detect on slider change
+        dom.define.labelSensitivity.textContent =
+            val > 245 ? 'Very High' : val > 230 ? 'High' : val > 200 ? 'Medium' : 'Low';
+        runGridDetection();
     });
-    dom.define.btnPanUp.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
-    dom.define.btnPanDown.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
-    
-    // Board Mode Buttons
-    dom.define.btnAddTile.addEventListener('click', addEmptyTile);
+    dom.define.btnPanUp.addEventListener('click',   () => dom.define.canvasContainer.scrollBy({ top: -100, behavior: 'smooth' }));
+    dom.define.btnPanDown.addEventListener('click', () => dom.define.canvasContainer.scrollBy({ top:  100, behavior: 'smooth' }));
+
+    // Board mode
+    dom.define.btnAddTile.addEventListener('click',     addEmptyTile);
     dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
     dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
 
-    // AI Creator Events
+    // AI Creator
     dom.define.btnAiGenerate.addEventListener('click', generateAiSymbol);
-    dom.define.btnAiEdit.addEventListener('click', editAiSymbol);
-    
+    dom.define.btnAiEdit.addEventListener('click',     editAiSymbol);
+    dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
+    dom.define.inputUploadSymbol.addEventListener('change', (e: Event) =>
+        handleSymbolUpload((e.target as HTMLInputElement).files));
+
     // AI Chips
     const chipsContainer = document.getElementById('ai-prompt-chips');
     if (chipsContainer) {
         chipsContainer.querySelectorAll('.chip').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const text = (e.target as HTMLElement).textContent;
-                const promptInput = dom.define.aiPrompt as HTMLTextAreaElement;
-                promptInput.value = text || '';
-                promptInput.focus();
+                const text = (e.target as HTMLElement).textContent?.trim() || '';
+                (dom.define.aiPrompt as HTMLTextAreaElement).value = text;
+                (dom.define.aiPrompt as HTMLTextAreaElement).focus();
             });
         });
     }
 
-
-    // --- Order View ---
-    dom.order.btnPrev.addEventListener('click', () => { changePage(-1); setupOrderView(); });
-    dom.order.btnNext.addEventListener('click', () => { changePage(1); setupOrderView(); });
-    dom.order.btnAuto.addEventListener('click', autoOrderPage);
-    dom.order.btnReset.addEventListener('click', resetOrderPage);
-    dom.order.btnBack.addEventListener('click', () => switchView('define-symbols-view'));
+    // Order View
+    dom.order.btnPrev.addEventListener('click',   () => { changePage(-1); setupOrderView(); });
+    dom.order.btnNext.addEventListener('click',   () => { changePage(1);  setupOrderView(); });
+    dom.order.btnAuto.addEventListener('click',   autoOrderPage);
+    dom.order.btnReset.addEventListener('click',  resetOrderPage);
+    dom.order.btnBack.addEventListener('click',   () => switchView('define-symbols-view'));
     dom.order.btnFinish.addEventListener('click', finishOrderingSymbols);
-    dom.order.btnPanUp.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
-    dom.order.btnPanDown.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
+    dom.order.btnPanUp.addEventListener('click',   () => dom.order.canvasContainer.scrollBy({ top: -100, behavior: 'smooth' }));
+    dom.order.btnPanDown.addEventListener('click', () => dom.order.canvasContainer.scrollBy({ top:  100, behavior: 'smooth' }));
 
-
-    // --- Sync View (Waveform) ---
-    dom.sync.btnRecord.addEventListener('click', handleSyncTapAction); 
-    dom.sync.btnReset.addEventListener('click', resetSync);
-    dom.sync.btnBack.addEventListener('click', () => switchView('order-view'));
+    // Sync View
+    dom.sync.btnRecord.addEventListener('click', handleSyncTapAction);
+    dom.sync.btnReset.addEventListener('click',  resetSync);
+    dom.sync.btnBack.addEventListener('click',   () => switchView('order-view'));
     dom.sync.btnFinish.addEventListener('click', () => switchView('result-view'));
-    dom.sync.btnZoomIn.addEventListener('click', () => { appState.interaction.timelineZoom += 20; drawSyncTimeline(); });
+    dom.sync.btnZoomIn.addEventListener('click',  () => { appState.interaction.timelineZoom += 20; drawSyncTimeline(); });
     dom.sync.btnZoomOut.addEventListener('click', () => { appState.interaction.timelineZoom = Math.max(20, appState.interaction.timelineZoom - 20); drawSyncTimeline(); });
-    
-    // Timeline Tools
+
     dom.sync.btnTlPrev.addEventListener('click', () => selectTimelineTile(-1));
     dom.sync.btnTlNext.addEventListener('click', () => selectTimelineTile(1));
-    
-    // Nudge Buttons (New)
     dom.sync.btnNudgeLBack.addEventListener('click', () => nudgeSelectedTile(-0.5));
     dom.sync.btnNudgeSBack.addEventListener('click', () => nudgeSelectedTile(-0.01));
-    dom.sync.btnNudgeSFwd.addEventListener('click', () => nudgeSelectedTile(0.01));
-    dom.sync.btnNudgeLFwd.addEventListener('click', () => nudgeSelectedTile(0.5));
+    dom.sync.btnNudgeSFwd.addEventListener('click',  () => nudgeSelectedTile(0.01));
+    dom.sync.btnNudgeLFwd.addEventListener('click',  () => nudgeSelectedTile(0.5));
 
-    // Direction Input Listener
     dom.sync.inputDirection.addEventListener('input', (e: Event) => {
         const idx = appState.interaction.selectedSyncIndex;
         if (idx !== -1 && appState.symbols[idx]) {
@@ -333,16 +356,15 @@ function setupEventListeners() {
         }
     });
 
-
-    // --- Result View ---
-    dom.result.btnBack.addEventListener('click', () => switchView('sync-view'));
-    dom.result.btnReset.addEventListener('click', () => window.location.reload());
-    dom.result.btnPlay.addEventListener('click', playPreview);
-    dom.result.btnPause.addEventListener('click', pausePreview);
+    // Result View
+    dom.result.btnBack.addEventListener('click',   () => switchView('sync-view'));
+    dom.result.btnReset.addEventListener('click',  () => window.location.reload());
+    dom.result.btnPlay.addEventListener('click',   playPreview);
+    dom.result.btnPause.addEventListener('click',  pausePreview);
     dom.result.btnRewind.addEventListener('click', rewindPreview);
-    dom.result.btnDownloadFull.addEventListener('click', () => renderVideo('full'));
+    dom.result.btnDownloadFull.addEventListener('click',    () => renderVideo('full'));
     dom.result.btnDownloadBacking.addEventListener('click', () => renderVideo('backing'));
-    // Latency Slider (Global Correction)
+
     dom.result.latencySlider.addEventListener('input', (e: Event) => {
         const val = parseInt((e.target as HTMLInputElement).value);
         appState.interaction.latencyOffset = val / 1000;
@@ -350,183 +372,167 @@ function setupEventListeners() {
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     });
 
-    // Style Inputs
     const updateStyle = () => {
         appState.styleConfig.backgroundColor = dom.result.styleBg.value;
-        appState.styleConfig.activeScale = parseFloat(dom.result.styleActiveScale.value);
-        appState.styleConfig.nextCount = parseInt(dom.result.styleNextCount.value);
-        appState.styleConfig.nextScale = parseFloat(dom.result.styleNextScale.value);
-        appState.styleConfig.nextOpacity = parseFloat(dom.result.styleNextOpacity.value);
-        appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
+        appState.styleConfig.activeScale      = parseFloat(dom.result.styleActiveScale.value);
+        appState.styleConfig.nextCount        = parseInt(dom.result.styleNextCount.value);
+        appState.styleConfig.nextScale        = parseFloat(dom.result.styleNextScale.value);
+        appState.styleConfig.nextOpacity      = parseFloat(dom.result.styleNextOpacity.value);
+        appState.styleConfig.spacing          = parseInt(dom.result.styleSpacing.value);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
-    dom.result.styleBg.addEventListener('input', updateStyle);
-    dom.result.styleActiveScale.addEventListener('input', updateStyle);
-    dom.result.styleNextCount.addEventListener('input', updateStyle);
-    dom.result.styleNextScale.addEventListener('input', updateStyle);
-    dom.result.styleNextOpacity.addEventListener('input', updateStyle);
-    dom.result.styleSpacing.addEventListener('input', updateStyle);
+    dom.result.styleBg.addEventListener('input',           updateStyle);
+    dom.result.styleActiveScale.addEventListener('input',  updateStyle);
+    dom.result.styleNextCount.addEventListener('input',    updateStyle);
+    dom.result.styleNextScale.addEventListener('input',    updateStyle);
+    dom.result.styleNextOpacity.addEventListener('input',  updateStyle);
+    dom.result.styleSpacing.addEventListener('input',      updateStyle);
 
-    // Canvas Events
     setupCanvasInteractions();
-    
-    // Global Keyboard
+
+    // Global keyboard shortcuts
     window.addEventListener('keydown', (e) => {
-        if (appState.currentView === 'define-symbols-view' && (e.key === 'Delete' || e.key === 'Backspace')) deleteSelectedSymbols();
+        if (appState.currentView === 'define-symbols-view' && (e.key === 'Delete' || e.key === 'Backspace')) {
+            if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+                deleteSelectedSymbols();
+            }
+        }
         if (appState.currentView === 'sync-view' && (e.key === ' ' || e.key === 'Enter')) {
-             e.preventDefault();
-             handleSyncTapAction();
+            if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                handleSyncTapAction();
+            }
+        }
+        if (appState.currentView === 'sync-view' && appState.interaction.containerFineTuning !== null) {
+            if (e.key === 'ArrowLeft')  selectTimelineTile(-1);
+            if (e.key === 'ArrowRight') selectTimelineTile(1);
         }
     });
 }
 
-// Helper for unified touch/mouse coordinates
+// ─── Pointer Utility ──────────────────────────────────────────────────────────
 function getPointerPos(e: MouseEvent | TouchEvent, canvas: HTMLCanvasElement) {
     const rect = canvas.getBoundingClientRect();
-    let clientX, clientY;
-    
-    if ((e as TouchEvent).touches && (e as TouchEvent).touches.length > 0) {
+    let clientX: number, clientY: number;
+    if ((e as TouchEvent).touches?.length > 0) {
         clientX = (e as TouchEvent).touches[0].clientX;
         clientY = (e as TouchEvent).touches[0].clientY;
     } else {
         clientX = (e as MouseEvent).clientX;
         clientY = (e as MouseEvent).clientY;
     }
-    
-    return {
-        x: clientX - rect.left,
-        y: clientY - rect.top
-    };
+    return { x: clientX - rect.left, y: clientY - rect.top };
 }
 
+// ─── Canvas Interactions ──────────────────────────────────────────────────────
 function setupCanvasInteractions() {
-    // Define View Canvas
-    dom.define.canvas.addEventListener('mousedown', handleDefineCanvasDown);
-    dom.define.canvas.addEventListener('mousemove', handleDefineCanvasMove);
+    dom.define.canvas.addEventListener('mousedown',  handleDefineCanvasDown);
+    dom.define.canvas.addEventListener('mousemove',  handleDefineCanvasMove);
     dom.define.canvas.addEventListener('touchstart', handleDefineCanvasDown, { passive: false });
-    dom.define.canvas.addEventListener('touchmove', handleDefineCanvasMove, { passive: false });
-    dom.define.canvas.addEventListener('touchend', handleDefineCanvasUp);
-    
+    dom.define.canvas.addEventListener('touchmove',  handleDefineCanvasMove, { passive: false });
+    dom.define.canvas.addEventListener('touchend',   handleDefineCanvasUp);
     window.addEventListener('mouseup', handleDefineCanvasUp);
 
-    // Order View Canvas
-    dom.order.canvas.addEventListener('mousedown', handleOrderCanvasClick);
+    dom.order.canvas.addEventListener('mousedown',  handleOrderCanvasClick);
     dom.order.canvas.addEventListener('touchstart', handleOrderCanvasClick, { passive: false });
-    // Add touchmove listener to order canvas for pinch zoom support
     dom.order.canvas.addEventListener('touchmove', (e: TouchEvent) => {
-        if (e.touches.length === 2) {
-            e.preventDefault();
-            handlePinchZoom(e);
-        }
+        if (e.touches.length === 2) { if (e.cancelable) e.preventDefault(); handlePinchZoom(e); }
     }, { passive: false });
 
-
-    // Sync Timeline Canvas (The new main editor)
-    dom.sync.timelineCanvas.addEventListener('mousedown', handleTimelineMouseDown);
+    dom.sync.timelineCanvas.addEventListener('mousedown',  handleTimelineMouseDown);
     dom.sync.timelineCanvas.addEventListener('touchstart', handleTimelineMouseDown, { passive: false });
-    
-    // Window for smooth dragging
-    window.addEventListener('mousemove', handleTimelineMouseMove);
-    window.addEventListener('touchmove', handleTimelineMouseMove, { passive: false });
-    window.addEventListener('mouseup', handleTimelineMouseUp);
-    window.addEventListener('touchend', handleTimelineMouseUp);
+    window.addEventListener('mousemove',  handleTimelineMouseMove);
+    window.addEventListener('touchmove',  handleTimelineMouseMove, { passive: false });
+    window.addEventListener('mouseup',   handleTimelineMouseUp);
+    window.addEventListener('touchend',  handleTimelineMouseUp);
 }
 
-// Pinch Zoom Logic
 function handlePinchZoom(e: TouchEvent) {
     if (e.touches.length !== 2) return;
-    
     const dist = Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
     );
-    
     if (appState.interaction.lastTouchDistance > 0) {
         const delta = dist - appState.interaction.lastTouchDistance;
         if (Math.abs(delta) > 5) {
-             const zoomDelta = delta > 0 ? 0.05 : -0.05;
-             changeZoom(zoomDelta);
-             appState.interaction.lastTouchDistance = dist;
+            changeZoom(delta > 0 ? 0.05 : -0.05);
+            appState.interaction.lastTouchDistance = dist;
         }
     } else {
         appState.interaction.lastTouchDistance = dist;
     }
 }
 
-
-// --- File Handling ---
+// ─── File Handling ────────────────────────────────────────────────────────────
 async function handleFiles(fileList: FileList | null | undefined) {
     if (!fileList) return;
     const files = Array.from(fileList);
     dom.errorBox.style.display = 'none';
 
+    let added: string[] = [];
+
     for (const file of files) {
         const type = file.type;
         const name = file.name.toLowerCase();
-        if (type.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav')) {
-            // Check for keywords
+
+        if (type.startsWith('audio/') || name.endsWith('.mp3') || name.endsWith('.wav') || name.endsWith('.ogg')) {
             const isBacking = name.includes('backing') || name.includes('inst') || name.includes('karaoke');
-            const isVocal = name.includes('vocal') || name.includes('full') || name.includes('mix') || name.includes('demo');
+            const isVocal   = name.includes('vocal')   || name.includes('full') || name.includes('mix') || name.includes('demo');
 
             if (isBacking && !appState.files.audioBacking) {
                 appState.files.audioBacking = file;
                 dom.upload.statusBacking.textContent = file.name;
                 dom.upload.cardBacking.classList.add('filled');
+                added.push('Backing: ' + file.name);
             } else if (isVocal && !appState.files.audioVocal) {
                 appState.files.audioVocal = file;
                 dom.upload.statusVocal.textContent = file.name;
                 dom.upload.cardVocal.classList.add('filled');
-            } else {
-                // Fallback
-                 if (!appState.files.audioVocal) {
-                    appState.files.audioVocal = file;
-                    dom.upload.statusVocal.textContent = file.name;
-                    dom.upload.cardVocal.classList.add('filled');
-                } else if (!appState.files.audioBacking) {
-                    appState.files.audioBacking = file;
-                    dom.upload.statusBacking.textContent = file.name;
-                    dom.upload.cardBacking.classList.add('filled');
-                }
+                added.push('Vocal: ' + file.name);
+            } else if (!appState.files.audioVocal) {
+                appState.files.audioVocal = file;
+                dom.upload.statusVocal.textContent = file.name;
+                dom.upload.cardVocal.classList.add('filled');
+                added.push('Vocal: ' + file.name);
+            } else if (!appState.files.audioBacking) {
+                appState.files.audioBacking = file;
+                dom.upload.statusBacking.textContent = file.name;
+                dom.upload.cardBacking.classList.add('filled');
+                added.push('Backing: ' + file.name);
             }
-
         } else if (type === 'application/pdf' || name.endsWith('.pdf')) {
             appState.files.pdf = file;
             dom.upload.statusSongboard.textContent = file.name;
             dom.upload.cardSongboard.classList.add('filled');
+            added.push('PDF: ' + file.name);
         } else if (type.startsWith('image/')) {
             appState.files.images.push(file);
-            dom.upload.statusSongboard.textContent = `${appState.files.images.length} images loaded`;
+            const count = appState.files.images.length;
+            dom.upload.statusSongboard.textContent = count === 1 ? file.name : `${count} images loaded`;
             dom.upload.cardSongboard.classList.add('filled');
         }
     }
+
+    if (added.length > 0) showToast(`Loaded: ${added.slice(0, 2).join(', ')}${added.length > 2 ? '…' : ''}`, 'success');
     checkReadyToStart();
 }
 
 function checkReadyToStart() {
     const hasVisuals = appState.files.pdf || appState.files.images.length > 0;
-    const hasAudio = !!appState.files.audioVocal || !!appState.files.audioBacking;
+    const hasAudio   = !!appState.files.audioVocal || !!appState.files.audioBacking;
     dom.upload.btnGenerate.disabled = !(hasVisuals && hasAudio);
 }
 
-// --- Board Mode Logic ---
+// ─── Board Mode ───────────────────────────────────────────────────────────────
 function startBoardMode() {
     appState.mode = 'board';
     appState.pages = [];
-    
-    // Create a blank A4 canvas (794x1123 px approx @ 96 DPI)
-    // We'll scale it down slightly for screen viewing
-    const width = 794; 
-    const height = 1123;
+    const width = 794, height = 1123;
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d');
-    if (ctx) {
-        ctx.fillStyle = 'white';
-        ctx.fillRect(0, 0, width, height);
-    }
-    
-    // Create Image from blank canvas
+    if (ctx) { ctx.fillStyle = 'white'; ctx.fillRect(0, 0, width, height); }
     const img = new Image();
     img.src = canvas.toDataURL();
     img.onload = () => {
@@ -539,96 +545,62 @@ function startBoardMode() {
 function addEmptyTile() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    
     const size = 150;
     const x = Math.max(0, (page.width / 2) - (size / 2));
     const y = Math.max(0, (page.height / 2) - (size / 2));
-    
-    page.symbols.push({
-        x, y, width: size, height: size,
-        customImage: null // Empty placeholder
-    });
-    
-    // Select it
+    page.symbols.push({ x, y, width: size, height: size, customImage: null });
     appState.interaction.selectedIndices.clear();
     appState.interaction.selectedIndices.add(page.symbols.length - 1);
     drawCanvas(); updateToolbarUI();
+    showToast('Empty tile added — upload or generate an image for it');
 }
 
 async function downloadBoardPdf() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    
-    // Render the page with symbols to a canvas
     const canvas = document.createElement('canvas');
-    canvas.width = page.width;
-    canvas.height = page.height;
+    canvas.width = page.width; canvas.height = page.height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    
-    // Draw background
     ctx.drawImage(page.image, 0, 0);
-    
-    // Draw symbols
     page.symbols.forEach((sym: any) => {
         if (sym.customImage) {
             ctx.drawImage(sym.customImage, sym.x, sym.y, sym.width, sym.height);
         } else {
-            // Draw placeholder outline if empty
-            ctx.strokeStyle = '#ccc';
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ccc'; ctx.lineWidth = 2;
             ctx.strokeRect(sym.x, sym.y, sym.width, sym.height);
         }
     });
-
     const imgData = canvas.toDataURL('image/jpeg', 0.95);
-    // FIX: Correct way to access jsPDF constructor from UMD build
     const { jsPDF } = (window as any).jspdf;
-    const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'px',
-        format: [page.width, page.height]
-    });
-    
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [page.width, page.height] });
     pdf.addImage(imgData, 'JPEG', 0, 0, page.width, page.height);
-    pdf.save("symbol-board.pdf");
+    pdf.save('symbol-board.pdf');
+    showToast('PDF downloaded', 'success');
 }
 
 async function downloadBoardImages() {
     const page = appState.pages[appState.currentPageIndex];
-    if (!page || page.symbols.length === 0) {
-        alert("No symbols to download.");
-        return;
-    }
-
-    const JSZip = (window as any).JSZip;
+    if (!page || page.symbols.length === 0) { showToast('No symbols to download', 'warning'); return; }
+    const JSZip  = (window as any).JSZip;
     const saveAs = (window as any).saveAs;
     const zip = new JSZip();
-    
     page.symbols.forEach((sym: any, i: number) => {
-        const canvas = document.createElement('canvas');
-        canvas.width = sym.width;
-        canvas.height = sym.height;
-        const ctx = canvas.getContext('2d');
-        
+        const c = document.createElement('canvas');
+        c.width = sym.width; c.height = sym.height;
+        const ctx = c.getContext('2d');
         if (ctx) {
-            if (sym.customImage) {
-                ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-            } else {
-                // If it's a cropped symbol from the background
-                ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-            }
-            
-            const data = canvas.toDataURL('image/png').split(',')[1];
-            zip.file(`symbol_${i+1}.png`, data, {base64: true});
+            if (sym.customImage) ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+            else ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+            zip.file(`symbol_${i + 1}.png`, c.toDataURL('image/png').split(',')[1], { base64: true });
         }
     });
-    
-    const content = await zip.generateAsync({type:"blob"});
-    saveAs(content, "symbol_images.zip");
+    const content = await zip.generateAsync({ type: 'blob' });
+    saveAs(content, 'symbol_images.zip');
+    showToast('ZIP downloaded', 'success');
 }
 
-
+// ─── Start Project ────────────────────────────────────────────────────────────
 async function startProject() {
     appState.mode = 'karaoke';
     switchView('loading-view');
@@ -639,24 +611,23 @@ async function startProject() {
             appState.files.images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
             for (const file of appState.files.images) await processImageFile(file);
         }
-
         const syncFile = appState.files.audioVocal || appState.files.audioBacking;
         if (syncFile) {
             dom.sync.audio.src = URL.createObjectURL(syncFile);
-            // Decode audio for waveform
+            dom.loadingMessage.textContent = 'Decoding audio waveform…';
             const ctx = new AudioContext();
             const buffer = await syncFile.arrayBuffer();
             appState.audioBuffer = await ctx.decodeAudioData(buffer);
             ctx.close();
         }
-
         switchView('define-symbols-view');
-        setTimeout(() => { resizeCanvas(); drawCanvas(); }, 100);
-    } catch (e) {
+        setTimeout(() => { resizeCanvas(); runGridDetection(); }, 120);
+    } catch (e: any) {
         console.error(e);
-        dom.errorBox.textContent = "Error: " + e.message;
+        dom.errorBox.textContent = 'Error: ' + e.message;
         dom.errorBox.style.display = 'block';
         switchView('upload-view');
+        showToast('Failed to load files: ' + e.message, 'error');
     }
 }
 
@@ -675,166 +646,124 @@ async function processImageFile(file: File) {
 async function processPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
     const pdfjsLib = (window as any).pdfjsLib;
-    if (!pdfjsLib) throw new Error("PDF.js library is not loaded.");
+    if (!pdfjsLib) throw new Error('PDF.js library not loaded.');
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    
     for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
+        const page     = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport: viewport }).promise;
+        const canvas   = document.createElement('canvas');
+        const context  = canvas.getContext('2d');
+        canvas.height  = viewport.height;
+        canvas.width   = viewport.width;
+        await page.render({ canvasContext: context, viewport }).promise;
         const img = new Image();
         img.src = canvas.toDataURL('image/png');
         await new Promise(r => img.onload = r);
         appState.pages.push({ image: img, width: canvas.width, height: canvas.height, symbols: [], sequence: [] });
-        dom.loadingMessage.textContent = `Processed page ${i} of ${pdf.numPages}`;
+        dom.loadingMessage.textContent = `Processing page ${i} of ${pdf.numPages}…`;
     }
 }
 
-// --- View Management ---
+// ─── View Management ──────────────────────────────────────────────────────────
 function switchView(viewId: string) {
-    Object.values(dom.views).forEach((el: HTMLElement) => el.style.display = 'none');
-    dom.views[viewId === 'upload-view' ? 'upload' : 
-              viewId === 'loading-view' ? 'loading' :
-              viewId === 'define-symbols-view' ? 'define' :
-              viewId === 'order-view' ? 'order' :
-              viewId === 'sync-view' ? 'sync' : 'result'].style.display = 'block';
+    Object.values(dom.views).forEach((el: any) => (el.style.display = 'none'));
+    const key = viewId === 'upload-view'         ? 'upload'
+              : viewId === 'loading-view'         ? 'loading'
+              : viewId === 'define-symbols-view'  ? 'define'
+              : viewId === 'order-view'            ? 'order'
+              : viewId === 'sync-view'             ? 'sync'
+              : 'result';
+    dom.views[key].style.display = 'block';
     appState.currentView = viewId;
-    
-    // Toggle Mode-Specific UI elements
+
+    // Step progress
+    const step = VIEW_STEP_MAP[viewId];
+    if (step) updateStepProgress(step);
+
+    // Mode-specific UI
     if (viewId === 'define-symbols-view') {
         const isBoard = appState.mode === 'board';
         if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'block';
-        if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'block' : 'none';
+        if (dom.define.boardTools)   dom.define.boardTools.style.display   = isBoard ? 'block' : 'none';
         dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
-        
         setTimeout(resizeCanvas, 50);
     }
-
-    if (viewId === 'order-view') setTimeout(setupOrderView, 50);
-    if (viewId === 'sync-view') setupSyncView();
+    if (viewId === 'order-view')  setTimeout(setupOrderView, 50);
+    if (viewId === 'sync-view')   setupSyncView();
     if (viewId === 'result-view') setupResultView();
 }
 
-// --- AI Generation Logic (Nano Banana) ---
-
-// Helper to get a reference image of the current style
+// ─── AI Generation ────────────────────────────────────────────────────────────
 function getCurrentPageStyleReference(): string {
     const page = appState.pages[appState.currentPageIndex];
-    if (!page) return "";
-    
-    // Capture a sample of the page (e.g., top-left 1024x1024 or full page scaled down)
-    // We want the AI to see the line weight, color palette, and vector style.
+    if (!page) return '';
     const canvas = document.createElement('canvas');
-    const size = Math.min(page.width, 1024); // Limit size for API efficiency
-    canvas.width = size;
-    canvas.height = size; // Square crop is fine for style ref
+    const size = Math.min(page.width, 1024);
+    canvas.width = size; canvas.height = size;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return "";
-    
-    // Draw the top portion of the page as reference
+    if (!ctx) return '';
     ctx.drawImage(page.image, 0, 0, size, size, 0, 0, size, size);
-    
     return canvas.toDataURL('image/png').split(',')[1];
 }
 
 async function generateAiSymbol() {
     const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
-    
+    if (!promptText) { showToast('Please enter a prompt first', 'warning'); return; }
     const isMulti = (dom.define.aiMultiToggle as HTMLInputElement).checked;
 
-    // Check for API Key first (Required for gemini-3-pro-image-preview)
     const win = window as any;
     if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
+        try { await win.aistudio.openSelectKey(); }
+        catch { showToast('API key selection cancelled', 'warning'); return; }
     }
-    
-    // Create new AI instance with current key
+
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
     setAiLoading(true);
     try {
         const page = appState.pages[appState.currentPageIndex];
         const styleRefBase64 = getCurrentPageStyleReference();
-
-        // Prompt engineering to enforce style consistency
         const strictPrompt = `
-        Create a communication symbol for: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - The generated image MUST match the visual style of the provided reference image EXACTLY.
-        - Use the same line weight (thick black outlines).
-        - Use the same flat color palette found in the reference.
-        - Simple, 2D, iconographic, vector-art style.
-        - Pure white background.
-        - No shading, no gradients, no realism, no complexity.
-        - It must look like a standard Widgit/communication symbol.
-        `;
+Create a communication symbol for: "${promptText}".
+CRITICAL STYLE INSTRUCTIONS:
+- Match the visual style of the provided reference image EXACTLY.
+- Thick black outlines, flat colour palette, simple 2D iconographic vector-art style.
+- Pure white background. No shading, gradients, realism, or complexity.
+- Must look like a standard Widgit/AAC communication symbol.`;
 
         const parts: any[] = [{ text: strictPrompt }];
-        if (styleRefBase64) {
-            parts.unshift({ inlineData: { mimeType: 'image/png', data: styleRefBase64 } });
-        }
+        if (styleRefBase64) parts.unshift({ inlineData: { mimeType: 'image/png', data: styleRefBase64 } });
 
-        // Generate Multiple Loop
         const count = isMulti ? 3 : 1;
-        const promises = [];
-        
-        for (let i = 0; i < count; i++) {
-             promises.push(ai.models.generateContent({
-                model: 'gemini-3-pro-image-preview', // High quality model
-                contents: { parts: parts },
-                config: { 
-                    imageConfig: { 
-                        aspectRatio: "1:1",
-                        imageSize: "1K" // Force high resolution
-                    } 
-                },
-            }));
-        }
-        
-        const responses = await Promise.all(promises);
+        const promises = Array.from({ length: count }, () =>
+            ai.models.generateContent({
+                model: 'gemini-2.0-flash-preview-image-generation',
+                contents: { parts },
+                config: { responseModalities: ['TEXT', 'IMAGE'] }
+            })
+        );
 
+        const responses = await Promise.all(promises);
         let createdCount = 0;
         appState.interaction.selectedIndices.clear();
 
         for (let i = 0; i < responses.length; i++) {
             const response = responses[i];
-            let imgBase64 = null;
-            if (response.candidates && response.candidates[0].content.parts) {
+            let imgBase64: string | null = null;
+            if (response.candidates?.[0]?.content?.parts) {
                 for (const part of response.candidates[0].content.parts) {
                     if (part.inlineData) imgBase64 = part.inlineData.data;
                 }
             }
-
             if (imgBase64) {
                 const img = new Image();
-                // Fix Image Loading Race Condition: Set onload BEFORE src
                 await new Promise<void>((resolve) => {
                     img.onload = () => {
-                        // Add new symbol to current page
                         const size = 200;
-                        // Stagger positions if multi
-                        const offsetX = (i * 220) - ((count-1)*110);
+                        const offsetX = (i * 220) - ((count - 1) * 110);
                         const x = Math.max(0, (page.width / 2) - (size / 2) + offsetX);
                         const y = Math.max(0, (page.height / 2) - (size / 2));
-                        
-                        page.symbols.push({
-                            x: x, y: y, width: size, height: size,
-                            customImage: img // Store the custom image element
-                        });
-                        
-                        // Select all new ones
+                        page.symbols.push({ x, y, width: size, height: size, customImage: img });
                         appState.interaction.selectedIndices.add(page.symbols.length - 1);
                         createdCount++;
                         resolve();
@@ -845,17 +774,15 @@ async function generateAiSymbol() {
         }
 
         if (createdCount > 0) {
-            updateToolbarUI();
-            drawCanvas();
-            // Ensure new symbol is visible
+            updateToolbarUI(); drawCanvas();
             dom.define.canvasContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            showToast(`Generated ${createdCount} symbol${createdCount > 1 ? 's' : ''} ✨`, 'success');
         } else {
-            alert("No images generated.");
+            showToast('No images returned — try a different prompt', 'warning');
         }
-
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
-        alert("Generation failed: " + e.message);
+        showToast('Generation failed: ' + (e.message || 'Unknown error'), 'error');
     } finally {
         setAiLoading(false);
     }
@@ -863,122 +790,119 @@ async function generateAiSymbol() {
 
 async function editAiSymbol() {
     const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
+    if (!promptText) { showToast('Please enter an edit prompt', 'warning'); return; }
     if (appState.interaction.selectedIndices.size !== 1) {
-        alert("Please select exactly one tile to edit."); return;
+        showToast('Select exactly one tile to edit', 'warning'); return;
     }
-    
-    // Check for API Key first (Required for gemini-3-pro-image-preview)
+
     const win = window as any;
     if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
+        try { await win.aistudio.openSelectKey(); }
+        catch { showToast('API key selection cancelled', 'warning'); return; }
     }
 
-    // Create new AI instance with current key
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
     setAiLoading(true);
     try {
         const page = appState.pages[appState.currentPageIndex];
-        const idx = appState.interaction.selectedIndices.values().next().value;
-        const sym = page.symbols[idx];
+        const idx  = appState.interaction.selectedIndices.values().next().value;
+        const sym  = page.symbols[idx];
 
-        // 1. Get current symbol image as base64
         const canvas = document.createElement('canvas');
-        canvas.width = sym.width;
-        canvas.height = sym.height;
+        canvas.width = sym.width; canvas.height = sym.height;
         const ctx = canvas.getContext('2d');
-        
-        if (sym.customImage) {
-            ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-        } else {
-            ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-        }
-        
+        if (sym.customImage) ctx!.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+        else ctx!.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
         const base64Data = canvas.toDataURL('image/png').split(',')[1];
-        
-        // 2. Strict Prompt for Editing
+
         const strictPrompt = `
-        Edit this symbol to: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - PRESERVE the exact visual style of the original image and the reference document.
-        - Maintain thick black outlines, flat colors, and simple vector look.
-        - Do not change the art style. Do not make it realistic.
-        - Keep white background.
-        `;
+Edit this symbol to: "${promptText}".
+CRITICAL STYLE INSTRUCTIONS:
+- PRESERVE the exact visual style — thick black outlines, flat colours, simple vector look.
+- Do not change the art style or add realism. Keep white background.`;
 
         const parts: any[] = [
-             { inlineData: { mimeType: 'image/png', data: base64Data } },
-             { text: strictPrompt }
+            { inlineData: { mimeType: 'image/png', data: base64Data } },
+            { text: strictPrompt }
         ];
 
-        // 3. Call API
         const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-image-preview', // High quality model
-            contents: { parts: parts },
-            config: { 
-                imageConfig: { 
-                    aspectRatio: "1:1",
-                    imageSize: "1K" // Force high resolution
-                } 
-            },
+            model: 'gemini-2.0-flash-preview-image-generation',
+            contents: { parts },
+            config: { responseModalities: ['TEXT', 'IMAGE'] }
         });
 
-         // 4. Parse result
-        let imgBase64 = null;
-        for (const part of response.candidates[0].content.parts) {
+        let imgBase64: string | null = null;
+        for (const part of response.candidates![0].content.parts) {
             if (part.inlineData) imgBase64 = part.inlineData.data;
         }
-
         if (imgBase64) {
             const img = new Image();
-            // Fix Image Loading Race Condition
-            img.onload = () => {
-                // Update symbol
-                sym.customImage = img;
-                drawCanvas();
-            };
+            img.onload = () => { sym.customImage = img; drawCanvas(); };
             img.src = `data:image/png;base64,${imgBase64}`;
+            showToast('Symbol updated ✨', 'success');
         } else {
-            alert("No image returned from edit.");
+            showToast('No image returned from edit', 'warning');
         }
-
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
-        alert("Edit failed: " + e.message);
+        showToast('Edit failed: ' + (e.message || 'Unknown error'), 'error');
     } finally {
         setAiLoading(false);
     }
 }
 
-function setAiLoading(loading: boolean) {
-    dom.define.aiLoading.style.display = loading ? 'flex' : 'none';
-    dom.define.btnAiGenerate.disabled = loading;
-    dom.define.btnAiEdit.disabled = loading;
+async function handleSymbolUpload(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const file = fileList[0];
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+    const img = new Image();
+    img.onload = () => {
+        if (appState.interaction.selectedIndices.size === 1) {
+            const idx = appState.interaction.selectedIndices.values().next().value;
+            page.symbols[idx].customImage = img;
+            showToast('Symbol image replaced');
+        } else {
+            const size = 200;
+            const x = Math.max(0, (page.width / 2) - (size / 2));
+            const y = Math.max(0, (page.height / 2) - (size / 2));
+            page.symbols.push({ x, y, width: size, height: size, customImage: img });
+            appState.interaction.selectedIndices.clear();
+            appState.interaction.selectedIndices.add(page.symbols.length - 1);
+            showToast('Symbol image added');
+        }
+        drawCanvas(); updateToolbarUI();
+        dom.define.inputUploadSymbol.value = '';
+    };
+    img.src = URL.createObjectURL(file);
 }
 
-// --- Define Symbols Logic ---
+function setAiLoading(loading: boolean) {
+    dom.define.aiLoading.style.display      = loading ? 'flex' : 'none';
+    dom.define.btnAiGenerate.disabled       = loading;
+    dom.define.btnAiEdit.disabled           = loading;
+}
+
+// ─── Define Symbols ───────────────────────────────────────────────────────────
 function changeZoom(delta: number) {
-    appState.interaction.zoomLevel = Math.max(0.5, Math.min(3.0, appState.interaction.zoomLevel + delta));
+    appState.interaction.zoomLevel = Math.max(0.3, Math.min(4.0, appState.interaction.zoomLevel + delta));
     resizeCanvas(); drawCanvas();
 }
+
 function changePage(delta: number) {
     const newIndex = appState.currentPageIndex + delta;
     if (newIndex >= 0 && newIndex < appState.pages.length) {
         appState.currentPageIndex = newIndex;
         appState.interaction.selectedIndices.clear();
         updateToolbarUI();
-        dom.define.labelPage.textContent = `Page ${newIndex + 1} / ${appState.pages.length}`;
-        dom.order.labelPage.textContent = `Page ${newIndex + 1} / ${appState.pages.length}`;
+        const label = `Page ${newIndex + 1} / ${appState.pages.length}`;
+        dom.define.labelPage.textContent = label;
+        dom.order.labelPage.textContent  = label;
         resizeCanvas(); drawCanvas();
     }
 }
+
 function clearCurrentPageSymbols() {
     const page = appState.pages[appState.currentPageIndex];
     if (page) {
@@ -986,164 +910,186 @@ function clearCurrentPageSymbols() {
         page.sequence = [];
         appState.interaction.selectedIndices.clear();
         appState.interaction.isDragging = false;
-        updateToolbarUI();
-        drawCanvas();
+        updateToolbarUI(); drawCanvas();
+        showToast('Page cleared');
     }
 }
+
 function deleteSelectedSymbols() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page || appState.interaction.selectedIndices.size === 0) return;
+    const count = appState.interaction.selectedIndices.size;
     const indicesToDelete = Array.from(appState.interaction.selectedIndices).sort((a, b) => b - a);
     indicesToDelete.forEach(index => {
         page.symbols.splice(index, 1);
-        // Also remove from sequence if present
         page.sequence = page.sequence.filter(i => i !== index).map(i => i > index ? i - 1 : i);
     });
     appState.interaction.selectedIndices.clear();
     appState.interaction.isDragging = false;
-    updateToolbarUI();
-    drawCanvas();
+    updateToolbarUI(); drawCanvas();
+    showToast(`Deleted ${count} symbol${count > 1 ? 's' : ''}`);
 }
+
 function selectSimilarColors() {
     const page = appState.pages[appState.currentPageIndex];
     if (appState.interaction.selectedIndices.size === 0) {
-        alert("Select a tile first to find matches.");
-        return;
+        showToast('Select a tile first to find colour matches', 'warning'); return;
     }
-    // Get color of first selected
-    const firstIdx = appState.interaction.selectedIndices.values().next().value;
+    const firstIdx  = appState.interaction.selectedIndices.values().next().value;
     const targetSym = page.symbols[firstIdx];
-    
-    // Optimized: Create canvas once for the whole page
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = page.width;
-    tempCanvas.height = page.height;
+    tempCanvas.width = page.width; tempCanvas.height = page.height;
     const ctx = tempCanvas.getContext('2d');
     if (!ctx) return;
-    
     ctx.drawImage(page.image, 0, 0);
-    const fullImageData = ctx.getImageData(0, 0, page.width, page.height).data;
-    
-    // Helper to get color from full image data
-    const getColorFromData = (s: any) => {
+    const fullData = ctx.getImageData(0, 0, page.width, page.height).data;
+
+    const getColor = (s: any) => {
         const cx = Math.floor(s.x + s.width / 2);
         const cy = Math.floor(s.y + s.height / 2);
-        const index = (cy * page.width + cx) * 4;
-        return [fullImageData[index], fullImageData[index+1], fullImageData[index+2]];
+        const idx = (cy * page.width + cx) * 4;
+        return [fullData[idx], fullData[idx + 1], fullData[idx + 2]];
     };
-
-    const targetColor = getColorFromData(targetSym);
-
+    const target = getColor(targetSym);
+    let matchCount = 0;
     page.symbols.forEach((sym, idx) => {
-        const c = getColorFromData(sym);
-        // Simple distance
-        const dist = Math.sqrt(Math.pow(c[0]-targetColor[0], 2) + Math.pow(c[1]-targetColor[1], 2) + Math.pow(c[2]-targetColor[2], 2));
-        if (dist < 50) appState.interaction.selectedIndices.add(idx);
+        const c = getColor(sym);
+        const dist = Math.sqrt((c[0]-target[0])**2 + (c[1]-target[1])**2 + (c[2]-target[2])**2);
+        if (dist < 50) { appState.interaction.selectedIndices.add(idx); matchCount++; }
     });
-    updateToolbarUI();
-    drawCanvas();
+    updateToolbarUI(); drawCanvas();
+    showToast(`Selected ${appState.interaction.selectedIndices.size} matching tiles`);
 }
+
 function updateToolbarUI() {
     const count = appState.interaction.selectedIndices.size;
-    dom.define.btnDelete.textContent = count > 0 ? `Delete Selected (${count})` : "Delete Selected";
+    dom.define.btnDelete.textContent = count > 0 ? `🗑 Delete (${count})` : '🗑 Delete';
 }
+
 function resizeCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    dom.define.canvas.width = page.width * appState.interaction.zoomLevel;
+    dom.define.canvas.width  = page.width  * appState.interaction.zoomLevel;
     dom.define.canvas.height = page.height * appState.interaction.zoomLevel;
     drawCanvas();
 }
+
 function drawCanvas() {
-    const ctx = dom.define.ctx;
+    const ctx  = dom.define.ctx;
     const page = appState.pages[appState.currentPageIndex];
     if (!page || !ctx) return;
     ctx.save();
     ctx.scale(appState.interaction.zoomLevel, appState.interaction.zoomLevel);
     ctx.clearRect(0, 0, page.width, page.height);
     ctx.drawImage(page.image, 0, 0);
-    
-    ctx.lineWidth = 4 / appState.interaction.zoomLevel;
-    page.symbols.forEach((s: any, idx: number) => {
-        // Render Custom AI Image if present
-        if (s.customImage) {
-            ctx.drawImage(s.customImage, s.x, s.y, s.width, s.height);
-        }
+    ctx.lineWidth = 3 / appState.interaction.zoomLevel;
 
-        if (appState.interaction.selectedIndices.has(idx)) {
-            ctx.strokeStyle = '#00ffff'; ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
-        } else {
-            ctx.strokeStyle = '#2b7de9'; ctx.fillStyle = 'rgba(43, 125, 233, 0.1)';
-        }
+    page.symbols.forEach((s: any, idx: number) => {
+        if (s.customImage) ctx.drawImage(s.customImage, s.x, s.y, s.width, s.height);
+        const selected = appState.interaction.selectedIndices.has(idx);
+        ctx.strokeStyle = selected ? '#00e5ff' : '#1a73e8';
+        ctx.fillStyle   = selected ? 'rgba(0,229,255,0.18)' : 'rgba(26,115,232,0.08)';
         ctx.beginPath(); ctx.rect(s.x, s.y, s.width, s.height);
         ctx.fill(); ctx.stroke();
+        // corner handles on selected
+        if (selected) {
+            ctx.fillStyle = '#00e5ff';
+            const hs = 5 / appState.interaction.zoomLevel;
+            [[s.x,s.y],[s.x+s.width,s.y],[s.x,s.y+s.height],[s.x+s.width,s.y+s.height]].forEach(([hx,hy]) => {
+                ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
+            });
+        }
     });
     ctx.restore();
-    // Marquee
+
+    // Marquee selection box
     if (appState.interaction.dragAction === 'marquee' && appState.interaction.isDragging) {
-         const {marqueeStart: s, marqueeCurrent: c} = appState.interaction;
-         const x = Math.min(s.x, c.x) * appState.interaction.zoomLevel;
-         const y = Math.min(s.y, c.y) * appState.interaction.zoomLevel;
-         const w = Math.abs(c.x - s.x) * appState.interaction.zoomLevel;
-         const h = Math.abs(c.y - s.y) * appState.interaction.zoomLevel;
-         ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
+        const { marqueeStart: ms, marqueeCurrent: mc } = appState.interaction;
+        const z = appState.interaction.zoomLevel;
+        const x = Math.min(ms.x, mc.x) * z, y = Math.min(ms.y, mc.y) * z;
+        const w = Math.abs(mc.x - ms.x) * z,  h = Math.abs(mc.y - ms.y) * z;
+        ctx.save();
+        ctx.strokeStyle = '#1a73e8';
+        ctx.fillStyle   = 'rgba(26,115,232,0.06)';
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillRect(x, y, w, h);
+        ctx.restore();
     }
 }
+
 function runGridDetection() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    page.symbols = []; // Clear previous
+    page.symbols  = [];
     page.sequence = [];
 
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = page.width; tempCanvas.height = page.height;
-    const ctx = tempCanvas.getContext('2d');
+    const ctx = tempCanvas.getContext('2d')!;
     ctx.drawImage(page.image, 0, 0);
-    const data = ctx.getImageData(0, 0, page.width, page.height).data;
-    const w = page.width; const h = page.height;
+    const data      = ctx.getImageData(0, 0, page.width, page.height).data;
+    const w = page.width, h = page.height;
     const threshold = appState.gridConfig.contentThreshold;
 
-    // Simplified Grid Logic
-    let rows = [], inRow = false, startY = 0;
+    const isDark = (idx: number) =>
+        data[idx] < threshold || data[idx + 1] < threshold || data[idx + 2] < threshold;
+
+    let rows: {s:number,e:number}[] = [], inRow = false, startY = 0;
     for (let y = 0; y < h; y++) {
         let count = 0;
-        for (let x=0; x<w; x+=5) if (data[(y*w+x)*4] < threshold) count++;
-        if (count > w*0.005) { if(!inRow) { inRow=true; startY=y; } }
-        else { if(inRow) { inRow=false; if(y-startY > 20) rows.push({s:startY, e:y}); } }
+        for (let x = 0; x < w; x += 4) if (isDark((y * w + x) * 4)) count++;
+        if (count > w * 0.004) { if (!inRow) { inRow = true; startY = y; } }
+        else { if (inRow) { inRow = false; if (y - startY > appState.gridConfig.minSymbolHeight) rows.push({ s: startY, e: y }); } }
     }
-    if(inRow) rows.push({s:startY, e:h});
+    if (inRow) rows.push({ s: startY, e: h });
 
-    rows.forEach(r => {
-        let inCol = false, startX = 0;
-        for (let x=0; x<w; x++) {
-            let count=0;
-            for (let y=r.s; y<r.e; y+=5) if (data[(y*w+x)*4] < threshold) count++;
-            if (count > (r.e-r.s)*0.01) { if(!inCol) { inCol=true; startX=x; } }
-            else { if(inCol) { inCol=false; if(x-startX > 20) page.symbols.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
+    // Merge rows that are very close (< 15px gap)
+    const mergedRows: {s:number,e:number}[] = [];
+    for (const r of rows) {
+        if (mergedRows.length > 0 && r.s - mergedRows[mergedRows.length - 1].e < 15) {
+            mergedRows[mergedRows.length - 1].e = r.e;
+        } else {
+            mergedRows.push({ ...r });
         }
-        if(inCol && w-startX>20) page.symbols.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
+    }
+
+    mergedRows.forEach(r => {
+        let inCol = false, startX = 0;
+        for (let x = 0; x < w; x++) {
+            let count = 0;
+            for (let y = r.s; y < r.e; y += 4) if (isDark((y * w + x) * 4)) count++;
+            const active = count > (r.e - r.s) * 0.008;
+            if (active) { if (!inCol) { inCol = true; startX = x; } }
+            else {
+                if (inCol) {
+                    inCol = false;
+                    if (x - startX > appState.gridConfig.minSymbolWidth)
+                        page.symbols.push({ x: startX, y: r.s, width: x - startX, height: r.e - r.s });
+                }
+            }
+        }
+        if (inCol && w - startX > appState.gridConfig.minSymbolWidth)
+            page.symbols.push({ x: startX, y: r.s, width: w - startX, height: r.e - r.s });
     });
+
     drawCanvas();
 }
+
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchstart') {
-        if ((e as TouchEvent).touches.length === 2) {
-            appState.interaction.lastTouchDistance = 0;
-            return;
-        }
-        e.preventDefault();
+        if ((e as TouchEvent).touches.length === 2) { appState.interaction.lastTouchDistance = 0; return; }
     }
-
-    const pos = getPointerPos(e, dom.define.canvas);
+    const pos   = getPointerPos(e, dom.define.canvas);
     const scale = appState.interaction.zoomLevel;
-    const x = pos.x / scale;
-    const y = pos.y / scale;
-    
+    const x = pos.x / scale, y = pos.y / scale;
     const page = appState.pages[appState.currentPageIndex];
-    let hitIndex = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
+    const hitIndex = page.symbols.findIndex((s: any) =>
+        x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
 
     if (hitIndex !== -1) {
-        if (e.shiftKey) {
+        if (e.type === 'touchstart' && (e as TouchEvent).cancelable) e.preventDefault();
+        if ((e as MouseEvent).shiftKey) {
             if (appState.interaction.selectedIndices.has(hitIndex)) appState.interaction.selectedIndices.delete(hitIndex);
             else appState.interaction.selectedIndices.add(hitIndex);
         } else {
@@ -1153,32 +1099,35 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
             }
         }
         appState.interaction.dragAction = 'move';
-        appState.interaction.dragStart = {x, y};
+        appState.interaction.dragStart  = { x, y };
     } else {
-        if (!e.shiftKey) appState.interaction.selectedIndices.clear();
-        appState.interaction.dragAction = 'marquee';
-        appState.interaction.marqueeStart = {x, y};
-        appState.interaction.marqueeCurrent = {x, y};
-        appState.interaction.initialSelection = new Set(appState.interaction.selectedIndices);
+        if (e.type === 'touchstart') {
+            appState.interaction.dragAction = 'none';
+        } else {
+            if (!(e as MouseEvent).shiftKey) appState.interaction.selectedIndices.clear();
+            appState.interaction.dragAction      = 'marquee';
+            appState.interaction.marqueeStart    = { x, y };
+            appState.interaction.marqueeCurrent  = { x, y };
+            appState.interaction.initialSelection = new Set(appState.interaction.selectedIndices);
+        }
     }
     appState.interaction.isDragging = true;
     drawCanvas(); updateToolbarUI();
 }
+
 function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchmove') {
         if ((e as TouchEvent).touches.length === 2) {
-             e.preventDefault();
-             handlePinchZoom(e as TouchEvent);
-             return;
+            if ((e as TouchEvent).cancelable) e.preventDefault();
+            handlePinchZoom(e as TouchEvent); return;
         }
-        e.preventDefault();
+        if (appState.interaction.dragAction !== 'none' && (e as TouchEvent).cancelable) e.preventDefault();
     }
-    if (!appState.interaction.isDragging) return;
-    
-    const pos = getPointerPos(e, dom.define.canvas);
+    if (!appState.interaction.isDragging || appState.interaction.dragAction === 'none') return;
+
+    const pos   = getPointerPos(e, dom.define.canvas);
     const scale = appState.interaction.zoomLevel;
-    const x = pos.x / scale;
-    const y = pos.y / scale;
+    const x = pos.x / scale, y = pos.y / scale;
     const page = appState.pages[appState.currentPageIndex];
 
     if (appState.interaction.dragAction === 'move') {
@@ -1187,215 +1136,191 @@ function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
         appState.interaction.selectedIndices.forEach(idx => {
             page.symbols[idx].x += dx; page.symbols[idx].y += dy;
         });
-        appState.interaction.dragStart = {x, y};
+        appState.interaction.dragStart = { x, y };
     } else if (appState.interaction.dragAction === 'marquee') {
-        appState.interaction.marqueeCurrent = {x, y};
-        const s = appState.interaction.marqueeStart;
-        const mx = Math.min(s.x, x), my = Math.min(s.y, y), mw = Math.abs(x-s.x), mh = Math.abs(y-s.y);
+        appState.interaction.marqueeCurrent = { x, y };
+        const s  = appState.interaction.marqueeStart;
+        const mx = Math.min(s.x, x), my = Math.min(s.y, y);
+        const mw = Math.abs(x - s.x),  mh = Math.abs(y - s.y);
         appState.interaction.selectedIndices = new Set(appState.interaction.initialSelection);
         page.symbols.forEach((sym: any, i: number) => {
-            if (mx < sym.x + sym.width && mx + mw > sym.x && my < sym.y + sym.height && my + mh > sym.y) {
+            if (mx < sym.x + sym.width && mx + mw > sym.x && my < sym.y + sym.height && my + mh > sym.y)
                 appState.interaction.selectedIndices.add(i);
-            }
         });
         updateToolbarUI();
     }
     drawCanvas();
 }
+
 function handleDefineCanvasUp() {
     appState.interaction.isDragging = false;
     appState.interaction.dragAction = 'none';
+    appState.interaction.lastTouchDistance = 0;
     drawCanvas();
 }
 
-// --- Order View Logic ---
+// ─── Order View ───────────────────────────────────────────────────────────────
 function setupOrderView() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    // Fit to width mostly
     const containerW = dom.order.canvasContainer.clientWidth;
     const scale = containerW / page.width;
-    dom.order.canvas.width = page.width * scale;
+    dom.order.canvas.width  = page.width  * scale;
     dom.order.canvas.height = page.height * scale;
     drawOrderCanvas();
 }
+
 function drawOrderCanvas() {
-    const ctx = dom.order.ctx;
-    const page = appState.pages[appState.currentPageIndex];
+    const ctx    = dom.order.ctx;
+    const page   = appState.pages[appState.currentPageIndex];
     const canvas = dom.order.canvas;
-    const scale = canvas.width / page.width;
+    const scale  = canvas.width / page.width;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(page.image, 0, 0, canvas.width, canvas.height);
 
-    // Draw lines connecting sequence
+    // Sequence path
     if (page.sequence.length > 1) {
         ctx.beginPath();
-        ctx.strokeStyle = 'rgba(234, 67, 53, 0.6)';
-        ctx.lineWidth = 3;
-        const startSym = page.symbols[page.sequence[0]];
-        ctx.moveTo((startSym.x + startSym.width/2) * scale, (startSym.y + startSym.height/2) * scale);
-        
+        ctx.strokeStyle = 'rgba(234,67,53,0.55)';
+        ctx.lineWidth   = 2.5;
+        ctx.setLineDash([8, 4]);
+        const first = page.symbols[page.sequence[0]];
+        ctx.moveTo((first.x + first.width / 2) * scale, (first.y + first.height / 2) * scale);
         for (let i = 1; i < page.sequence.length; i++) {
             const sym = page.symbols[page.sequence[i]];
-            ctx.lineTo((sym.x + sym.width/2) * scale, (sym.y + sym.height/2) * scale);
+            ctx.lineTo((sym.x + sym.width / 2) * scale, (sym.y + sym.height / 2) * scale);
         }
         ctx.stroke();
+        ctx.setLineDash([]);
     }
 
     page.symbols.forEach((sym, idx) => {
-        // Draw Custom image in order view too
         const x = sym.x * scale, y = sym.y * scale, w = sym.width * scale, h = sym.height * scale;
-
-        if (sym.customImage) {
-            ctx.drawImage(sym.customImage, x, y, w, h);
-        }
-
+        if (sym.customImage) ctx.drawImage(sym.customImage, x, y, w, h);
         const seqIdx = page.sequence.indexOf(idx);
-        
-        ctx.strokeStyle = '#999';
         if (seqIdx !== -1) {
-            ctx.fillStyle = 'rgba(52, 168, 83, 0.3)';
+            ctx.fillStyle   = 'rgba(52,168,83,0.25)';
             ctx.strokeStyle = '#34a853';
-            ctx.lineWidth = 3;
+            ctx.lineWidth   = 2.5;
         } else {
-             ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-             ctx.lineWidth = 1;
+            ctx.fillStyle   = 'rgba(255,255,255,0.22)';
+            ctx.strokeStyle = '#9aa0a6';
+            ctx.lineWidth   = 1;
         }
-        
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
 
         if (seqIdx !== -1) {
-            // Draw Badge
+            // Badge
+            const bx = x + w - 14, by = y + 14;
             ctx.fillStyle = '#34a853';
-            ctx.beginPath();
-            ctx.arc(x + w - 15, y + 15, 12, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.beginPath(); ctx.arc(bx, by, 13, 0, Math.PI * 2); ctx.fill();
             ctx.fillStyle = 'white';
-            ctx.font = 'bold 12px sans-serif';
+            ctx.font = `bold ${w < 60 ? 9 : 11}px sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText((seqIdx + 1).toString(), x + w - 15, y + 19);
+            ctx.textBaseline = 'middle';
+            ctx.fillText((seqIdx + 1).toString(), bx, by);
+            ctx.textBaseline = 'alphabetic';
         }
     });
 }
+
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchstart') {
-        if ((e as TouchEvent).touches.length === 2) return; // Allow pinch gesture logic
-        e.preventDefault();
+        if ((e as TouchEvent).touches.length === 2) return;
+        if ((e as TouchEvent).cancelable) e.preventDefault();
     }
-    
-    const pos = getPointerPos(e, dom.order.canvas);
-    const page = appState.pages[appState.currentPageIndex];
+    const pos   = getPointerPos(e, dom.order.canvas);
+    const page  = appState.pages[appState.currentPageIndex];
     const scale = dom.order.canvas.width / page.width;
-    const x = pos.x / scale;
-    const y = pos.y / scale;
-
-    const hitIdx = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
+    const x = pos.x / scale, y = pos.y / scale;
+    const hitIdx = page.symbols.findIndex((s: any) =>
+        x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
     if (hitIdx !== -1) {
-        const currentSeqIdx = page.sequence.indexOf(hitIdx);
-        if (currentSeqIdx !== -1) {
-            // Remove if already there
-            page.sequence.splice(currentSeqIdx, 1);
-        } else {
-            // Add to end
-            page.sequence.push(hitIdx);
-        }
+        const seqIdx = page.sequence.indexOf(hitIdx);
+        if (seqIdx !== -1) page.sequence.splice(seqIdx, 1);
+        else                page.sequence.push(hitIdx);
         drawOrderCanvas();
     }
 }
+
 function autoOrderPage() {
-    const page = appState.pages[appState.currentPageIndex];
+    const page    = appState.pages[appState.currentPageIndex];
     const indices = page.symbols.map((_, i) => i);
-    // Sort by Y, then X
     indices.sort((a, b) => {
         const sA = page.symbols[a], sB = page.symbols[b];
         const yDiff = Math.abs(sA.y - sB.y);
-        return yDiff > 50 ? sA.y - sB.y : sA.x - sB.x;
+        return yDiff > 40 ? sA.y - sB.y : sA.x - sB.x;
     });
     page.sequence = indices;
     drawOrderCanvas();
+    showToast(`Auto-ordered ${indices.length} symbols (left→right, top→bottom)`);
 }
+
 function resetOrderPage() {
     appState.pages[appState.currentPageIndex].sequence = [];
     drawOrderCanvas();
+    showToast('Sequence cleared');
 }
+
 function finishOrderingSymbols() {
     appState.symbols = [];
     appState.pages.forEach((page, pIdx) => {
-        // Use defined sequence, or fallback to auto if empty
-        let order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
-        
+        const order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
         order.forEach(symIdx => {
-            const sym = page.symbols[symIdx];
+            const sym    = page.symbols[symIdx];
             const canvas = document.createElement('canvas');
             canvas.width = sym.width; canvas.height = sym.height;
-            const ctx = canvas.getContext('2d');
-            
-            // Check for Custom AI Image
-            if (sym.customImage) {
-                 ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-            } else {
-                 ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-            }
-            
+            const ctx = canvas.getContext('2d')!;
+            if (sym.customImage) ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+            else ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
             appState.symbols.push({
                 globalIndex: appState.symbols.length,
-                pageIndex: pIdx,
-                imageSrc: canvas.toDataURL(),
-                startTime: 0,
-                endTime: 0,
-                direction: '', // Initialize direction
+                pageIndex:   pIdx,
+                imageSrc:    canvas.toDataURL(),
+                startTime:   0,
+                endTime:     0,
+                direction:   '',
                 ...sym
             });
         });
     });
 
     if (appState.symbols.length === 0) {
-        alert("No symbols selected! Please select symbols in order.");
-        return;
+        showToast('No symbols in sequence — tap symbols in order first', 'warning'); return;
     }
+    showToast(`${appState.symbols.length} symbols ready to sync`, 'success');
     setupSyncView();
     switchView('sync-view');
 }
 
-// --- Sync Logic (New Waveform Editor) ---
+// ─── Sync Logic ───────────────────────────────────────────────────────────────
 function setupSyncView() {
-    appState.currentSyncIndex = -1; // -1 means Waiting for First Tap (Intro Mode)
-    appState.isRecordingSync = false;
+    appState.currentSyncIndex    = -1;
+    appState.isRecordingSync     = false;
     appState.interaction.selectedSyncIndex = -1;
-    appState.interaction.syncScrollX = 0; // Reset scroll
-    
-    // Initial State: Recording Mode
-    // Show Visual Cue
-    dom.sync.visualCue.style.display = 'flex';
-    // Hide Fine Tuning Tools
+    appState.interaction.syncScrollX       = 0;
+
+    dom.sync.visualCue.style.display          = 'flex';
     dom.sync.containerFineTuning.style.display = 'none';
-    
+
     updateSyncButtonUI();
-    renderSymbolNavStrip(); // Prepare, but hidden
+    renderSymbolNavStrip();
     updateTimelineToolsUI();
-    
-    // Draw initial empty timeline (hidden)
     drawSyncTimeline();
-    
-    // If playing, update frame
+
     if (appState.preview.animationId) cancelAnimationFrame(appState.preview.animationId);
-    
+
     const animate = () => {
-        if(appState.currentView === 'sync-view') {
+        if (appState.currentView === 'sync-view') {
             const t = dom.sync.audio.currentTime;
-            
-            // Auto-scroll logic for Viewport
             if (!appState.interaction.isDragging && (appState.isRecordingSync || !dom.sync.audio.paused)) {
-                 const zoom = appState.interaction.timelineZoom;
-                 const viewportW = dom.sync.timelineContainer.clientWidth;
-                 const widthInSecs = viewportW / zoom;
-                 
-                 // Keep playhead in middle 50%
-                 if (t > appState.interaction.syncScrollX + widthInSecs * 0.8) {
-                     appState.interaction.syncScrollX = t - widthInSecs * 0.2;
-                 }
+                const zoom = appState.interaction.timelineZoom;
+                const vpW  = dom.sync.timelineContainer.clientWidth;
+                const vpSecs = vpW / zoom;
+                if (t > appState.interaction.syncScrollX + vpSecs * 0.78)
+                    appState.interaction.syncScrollX = t - vpSecs * 0.22;
             }
             drawSyncTimeline();
             appState.preview.animationId = requestAnimationFrame(animate);
@@ -1404,239 +1329,208 @@ function setupSyncView() {
     appState.preview.animationId = requestAnimationFrame(animate);
 }
 
-// NEW: Render the Symbol Navigation Strip
 function renderSymbolNavStrip() {
     const container = dom.sync.navStrip;
-    container.innerHTML = ''; // Clear
-
+    container.innerHTML = '';
     appState.symbols.forEach((sym, idx) => {
         const div = document.createElement('div');
         div.className = 'nav-symbol-item';
         div.id = `nav-sym-${idx}`;
-        
-        const img = document.createElement('img');
-        img.src = sym.imageSrc;
-        
+        const img   = document.createElement('img');
+        img.src     = sym.imageSrc;
+        img.alt     = `Symbol ${idx + 1}`;
         const badge = document.createElement('div');
-        badge.className = 'number-badge';
+        badge.className   = 'number-badge';
         badge.textContent = (idx + 1).toString();
-        
         div.appendChild(img);
         div.appendChild(badge);
-        
         div.addEventListener('click', () => {
-             // Jump to this symbol
-             appState.interaction.selectedSyncIndex = idx;
-             selectTimelineTile(0); // This helper centers the view on the selection
+            appState.interaction.selectedSyncIndex = idx;
+            selectTimelineTile(0);
         });
-        
         container.appendChild(div);
     });
 }
 
-// NEW: Update Highlight in Strip
 function updateNavStripHighlight() {
-    const idx = appState.interaction.selectedSyncIndex;
+    const idx   = appState.interaction.selectedSyncIndex;
     const items = dom.sync.navStrip.querySelectorAll('.nav-symbol-item');
     items.forEach((item: HTMLElement, i: number) => {
         if (i === idx) {
-             item.classList.add('active');
-             item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            item.classList.add('active');
+            item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         } else {
-             item.classList.remove('active');
+            item.classList.remove('active');
         }
     });
 }
 
 function drawSyncTimeline() {
     const canvas = dom.sync.timelineCanvas;
-    const ctx = canvas.getContext('2d');
-    const zoom = appState.interaction.timelineZoom;
+    const ctx    = canvas.getContext('2d');
+    const zoom   = appState.interaction.timelineZoom;
     const buffer = appState.audioBuffer;
-    
-    if(!buffer || !ctx) return;
-    
-    // Viewport Size
-    const viewportW = dom.sync.timelineContainer.clientWidth;
-    const viewportH = dom.sync.timelineContainer.clientHeight;
-    
-    // Ensure canvas matches visual size
-    if (canvas.width !== viewportW || canvas.height !== viewportH) {
-        canvas.width = viewportW;
-        canvas.height = viewportH;
-    }
-    
-    ctx.clearRect(0, 0, viewportW, viewportH);
-    ctx.fillStyle = '#1a1a1e';
-    ctx.fillRect(0,0,viewportW, viewportH);
-    
-    // Determine Time Range to Draw
+    if (!buffer || !ctx) return;
+
+    const vpW = dom.sync.timelineContainer.clientWidth;
+    const vpH = dom.sync.timelineContainer.clientHeight;
+    if (canvas.width !== vpW || canvas.height !== vpH) { canvas.width = vpW; canvas.height = vpH; }
+
+    ctx.clearRect(0, 0, vpW, vpH);
+    ctx.fillStyle = '#16161a';
+    ctx.fillRect(0, 0, vpW, vpH);
+
     const startTime = appState.interaction.syncScrollX;
-    const endTime = startTime + (viewportW / zoom);
-    
-    // Draw Waveform for visible range
-    ctx.strokeStyle = '#555';
+    const endTime   = startTime + vpW / zoom;
+
+    // Grid lines (time markers)
+    const secStep = zoom >= 80 ? 1 : zoom >= 40 ? 2 : 5;
+    const firstSec = Math.ceil(startTime / secStep) * secStep;
+    ctx.strokeStyle = '#2a2a30';
+    ctx.lineWidth   = 1;
+    ctx.fillStyle   = '#555';
+    ctx.font        = '10px monospace';
+    for (let t = firstSec; t < endTime; t += secStep) {
+        const px = (t - startTime) * zoom;
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, vpH); ctx.stroke();
+        ctx.fillText(t.toFixed(0) + 's', px + 3, vpH - 4);
+    }
+
+    // Waveform
+    const data  = buffer.getChannelData(0);
+    const amp   = vpH * 0.28;
+    const midY  = vpH / 2;
+    ctx.strokeStyle = '#3d8b5e';
+    ctx.lineWidth   = 1.5;
     ctx.beginPath();
-    const data = buffer.getChannelData(0);
-    const amp = viewportH / 3;
-    const midY = viewportH / 2;
-    
-    // Map pixels to audio samples
-    // optimization: step > 1 if high zoom
-    const pixelsPerSample = zoom / buffer.sampleRate;
-    
-    // Draw loop: iterate pixels x from 0 to viewportW
-    for(let x=0; x<viewportW; x+=2) {
-        const timeAtPixel = startTime + (x / zoom);
+    for (let x = 0; x < vpW; x += 2) {
+        const timeAtPixel = startTime + x / zoom;
         const sIdx = Math.floor(timeAtPixel * buffer.sampleRate);
-        
         if (sIdx >= 0 && sIdx < data.length) {
             const v = data[sIdx];
-            ctx.moveTo(x, midY - v*amp);
-            ctx.lineTo(x, midY + v*amp);
+            ctx.moveTo(x, midY - v * amp);
+            ctx.lineTo(x, midY + v * amp);
         }
     }
     ctx.stroke();
-    
-    // Draw Range Bars (Symbols)
-    const barY = 30;
-    const barH = viewportH - 60;
-    
+
+    // Symbol range bars
+    const barY = 20, barH = vpH - 40;
     appState.symbols.forEach((sym, i) => {
         let start = sym.startTime;
-        let end = sym.endTime;
-        
-        // If end not set, default to next start
-        if (!end) end = (i < appState.symbols.length-1) ? appState.symbols[i+1].startTime : buffer.duration;
+        let end   = sym.endTime || (i < appState.symbols.length - 1 ? appState.symbols[i + 1].startTime : buffer.duration);
         if (end <= start) end = start + 0.1;
-        
-        // Culling: check if visible
         if (end < startTime || start > endTime) return;
-        
-        const sx = (start - startTime) * zoom;
+
+        const sx    = (start - startTime) * zoom;
         const width = (end - start) * zoom;
-        
-        // Color coding
-        if (i < appState.currentSyncIndex) ctx.fillStyle = 'rgba(52, 168, 83, 0.6)'; // Past: Green
-        else if (i === appState.currentSyncIndex) ctx.fillStyle = 'rgba(234, 67, 53, 0.6)'; // Current: Red
-        else ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'; // Future: Gray
-        
+        const isSelected = i === appState.interaction.selectedSyncIndex;
+        const isPast     = i <  appState.currentSyncIndex;
+        const isCurrent  = i === appState.currentSyncIndex;
+
+        ctx.fillStyle = isPast   ? 'rgba(52,168,83,0.45)'
+                      : isCurrent ? 'rgba(234,67,53,0.5)'
+                      : isSelected ? 'rgba(26,115,232,0.4)'
+                      : 'rgba(255,255,255,0.08)';
         ctx.fillRect(sx, barY, Math.max(2, width), barH);
-        
-        // Border & Handle
-        if (i === appState.interaction.selectedSyncIndex) {
-            ctx.strokeStyle = '#FFD700';
-            ctx.lineWidth = 3;
-        } else {
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1;
-        }
+
+        ctx.strokeStyle = isSelected ? '#FFD700' : isPast ? '#34a853' : '#555';
+        ctx.lineWidth   = isSelected ? 2.5 : 1;
         ctx.strokeRect(sx, barY, Math.max(2, width), barH);
-        
-        // Text Label
-        if (width > 20) {
-            ctx.fillStyle = '#fff';
-            ctx.font = '12px sans-serif';
-            ctx.fillText((i+1).toString(), sx + 5, barY + 20);
+
+        // Number label
+        if (width > 18) {
+            ctx.fillStyle = isSelected ? '#FFD700' : '#ccc';
+            ctx.font      = `bold ${Math.min(12, width * 0.35)}px sans-serif`;
+            ctx.fillText((i + 1).toString(), sx + 4, barY + 15);
+        }
+
+        // Thumbnail in wide bars
+        if (width > 50 && appState.preview.loadedImages.has(i)) {
+            const img  = appState.preview.loadedImages.get(i)!;
+            const th   = Math.min(barH - 20, 50);
+            const tw   = th;
+            const tx   = sx + (width - tw) / 2;
+            const ty   = barY + (barH - th) / 2;
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            ctx.drawImage(img, tx, ty, tw, th);
+            ctx.restore();
         }
     });
-    
+
     // Playhead
     const currentTime = dom.sync.audio.currentTime;
     if (currentTime >= startTime && currentTime <= endTime) {
         const px = (currentTime - startTime) * zoom;
-        ctx.strokeStyle = '#fff'; 
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, viewportH); ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth   = 2;
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, vpH); ctx.stroke();
+        // Triangle head
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.moveTo(px - 5, 0); ctx.lineTo(px + 5, 0); ctx.lineTo(px, 8); ctx.closePath(); ctx.fill();
     }
 }
 
 function handleSyncTapAction() {
     if (!appState.isRecordingSync) {
-        // Start Recording
-        appState.isRecordingSync = true;
-        appState.currentSyncIndex = -1; // Wait for first tap (Intro mode)
-        
-        // UI: Recording Mode Active
-        dom.sync.visualCue.style.display = 'flex';
+        appState.isRecordingSync  = true;
+        appState.currentSyncIndex = -1;
+        dom.sync.visualCue.style.display          = 'flex';
         dom.sync.containerFineTuning.style.display = 'none';
-        
         dom.sync.audio.currentTime = 0;
         dom.sync.audio.play();
-        
-        // Reset timings to 0 (will be overwritten)
         appState.symbols.forEach(s => { s.startTime = 0; s.endTime = 0; });
         updateSyncButtonUI();
     } else {
-        // Tap to Advance
-        const time = dom.sync.audio.currentTime;
-        // Reaction Time compensation (recording only)
-        const reactionComp = -0.15; 
-        const adjustedTime = Math.max(0, time + reactionComp);
-        
-        const idx = appState.currentSyncIndex;
-        
+        const time         = dom.sync.audio.currentTime;
+        const adjustedTime = Math.max(0, time - 0.15); // reaction-time compensation
+        const idx          = appState.currentSyncIndex;
+
         if (idx === -1) {
-            // First Tap: End Intro, Start Symbol 0
             if (appState.symbols.length > 0) {
-                 appState.symbols[0].startTime = adjustedTime;
-                 appState.currentSyncIndex = 0;
+                appState.symbols[0].startTime = adjustedTime;
+                appState.currentSyncIndex     = 0;
             }
         } else if (idx < appState.symbols.length) {
-            // End current, start next
             appState.symbols[idx].endTime = adjustedTime;
-            if (idx + 1 < appState.symbols.length) {
+            if (idx + 1 < appState.symbols.length)
                 appState.symbols[idx + 1].startTime = adjustedTime;
-            }
             appState.currentSyncIndex++;
-            
-            if (appState.currentSyncIndex >= appState.symbols.length) {
-                finishSync();
-            }
+            if (appState.currentSyncIndex >= appState.symbols.length) finishSync();
         }
         updateSyncButtonUI();
     }
 }
 
 function updateSyncButtonUI() {
-    const btn = dom.sync.btnRecord;
-    
-    // Update visual preview cue
+    const btn        = dom.sync.btnRecord;
     const currentIdx = appState.currentSyncIndex;
+
     if (currentIdx >= 0 && appState.symbols[currentIdx]) {
         dom.sync.labelProgress.textContent = `Symbol ${currentIdx + 1} / ${appState.symbols.length}`;
-        dom.sync.imgCurrent.src = appState.symbols[currentIdx].imageSrc;
-        dom.sync.imgCurrent.style.opacity = "1";
+        dom.sync.imgCurrent.src   = appState.symbols[currentIdx].imageSrc;
+        dom.sync.imgCurrent.style.opacity = '1';
     } else {
-        // Intro or End
-        dom.sync.labelProgress.textContent = currentIdx === -1 ? "INTRO (Wait...)" : "Finished";
-        dom.sync.imgCurrent.style.opacity = "0";
+        dom.sync.labelProgress.textContent = currentIdx === -1 ? 'INTRO — wait…' : 'Complete!';
+        dom.sync.imgCurrent.style.opacity  = '0';
     }
-    
-    // Show Next
+
     const nextIdx = currentIdx + 1;
     if (appState.symbols[nextIdx]) {
-        dom.sync.imgNext.src = appState.symbols[nextIdx].imageSrc;
-        dom.sync.imgNext.style.opacity = "1";
+        dom.sync.imgNext.src   = appState.symbols[nextIdx].imageSrc;
+        dom.sync.imgNext.style.opacity = '1';
     } else {
-        dom.sync.imgNext.style.opacity = "0.2"; 
+        dom.sync.imgNext.style.opacity = '0.2';
     }
 
     if (appState.isRecordingSync) {
-        if (currentIdx === -1) {
-            btn.textContent = "TAP TO START FIRST SYMBOL ➡";
-        } else {
-            btn.textContent = "TAP TO PLACE NEXT ➡";
-        }
+        btn.textContent = currentIdx === -1 ? 'TAP — Start First Symbol ▶' : 'TAP — Next Symbol ▶';
         btn.classList.add('recording');
     } else {
-        // Not recording
-        // If we have data (post-sync), show "Re-record"
-        if (appState.symbols.length > 0 && appState.symbols[0].startTime > 0) {
-             btn.textContent = "RE-RECORD SYNC ↺";
-        } else {
-             btn.textContent = "START RECORDING (TAP) ▶";
-        }
+        btn.textContent = (appState.symbols.length > 0 && appState.symbols[0].startTime > 0)
+            ? '↺ Re-record Sync'
+            : '▶ Start Recording';
         btn.classList.remove('recording');
     }
 }
@@ -1644,191 +1538,150 @@ function updateSyncButtonUI() {
 function finishSync() {
     appState.isRecordingSync = false;
     dom.sync.audio.pause();
-    
-    // Transition to Edit Mode
-    dom.sync.visualCue.style.display = 'none';
+    dom.sync.visualCue.style.display          = 'none';
     dom.sync.containerFineTuning.style.display = 'block';
-    
     updateSyncButtonUI();
-    renderSymbolNavStrip(); // Refresh strip
-    // Select first symbol to start editing
+    renderSymbolNavStrip();
     appState.interaction.selectedSyncIndex = 0;
     selectTimelineTile(0);
+    showToast('Sync recorded — fine-tune on the timeline or proceed to Preview', 'success');
 }
+
 function resetSync() {
-    appState.isRecordingSync = false;
+    appState.isRecordingSync  = false;
     appState.currentSyncIndex = -1;
     appState.interaction.selectedSyncIndex = -1;
     dom.sync.audio.pause(); dom.sync.audio.currentTime = 0;
-    // Reset all times
     appState.symbols.forEach(s => { s.startTime = 0; s.endTime = 0; });
-    
-    // Reset UI to Record Mode
-    dom.sync.visualCue.style.display = 'flex';
+    dom.sync.visualCue.style.display          = 'flex';
     dom.sync.containerFineTuning.style.display = 'none';
-    
     updateSyncButtonUI();
+    showToast('Sync reset — ready to re-record');
 }
 
-// Timeline Navigation Functions
 function selectTimelineTile(delta: number) {
     const len = appState.symbols.length;
     if (len === 0) return;
-    
     let newIdx = appState.interaction.selectedSyncIndex + delta;
     if (newIdx < 0) newIdx = 0;
     if (newIdx >= len) newIdx = len - 1;
-    
     appState.interaction.selectedSyncIndex = newIdx;
-    
-    // Auto-scroll to tile
-    const sym = appState.symbols[newIdx];
-    // Center it in Viewport
+
+    const sym  = appState.symbols[newIdx];
     const zoom = appState.interaction.timelineZoom;
-    const viewportW = dom.sync.timelineContainer.clientWidth;
-    const widthInSecs = viewportW / zoom;
-    appState.interaction.syncScrollX = Math.max(0, sym.startTime - widthInSecs / 2);
-    
+    const vpW  = dom.sync.timelineContainer.clientWidth;
+    appState.interaction.syncScrollX = Math.max(0, sym.startTime - (vpW / zoom) / 2);
+
     updateTimelineToolsUI();
-    updateNavStripHighlight(); // Update the strip logic
+    updateNavStripHighlight();
     drawSyncTimeline();
 }
 
 function nudgeSelectedTile(dt: number) {
     const idx = appState.interaction.selectedSyncIndex;
     if (idx === -1) return;
-    
     const sym = appState.symbols[idx];
     let newStart = sym.startTime + dt;
     if (newStart < 0) newStart = 0;
-    
-    // Check previous end
-    if (idx > 0) {
-        if (newStart <= appState.symbols[idx-1].startTime) newStart = appState.symbols[idx-1].startTime + 0.01;
-    }
-    
+    if (idx > 0 && newStart <= appState.symbols[idx - 1].startTime)
+        newStart = appState.symbols[idx - 1].startTime + 0.01;
     sym.startTime = newStart;
-    // Update prev end
-    if (idx > 0) appState.symbols[idx-1].endTime = newStart;
-    
+    if (idx > 0) appState.symbols[idx - 1].endTime = newStart;
     updateTimelineToolsUI();
     drawSyncTimeline();
 }
 
 function updateTimelineToolsUI() {
-    const idx = appState.interaction.selectedSyncIndex;
+    const idx       = appState.interaction.selectedSyncIndex;
     const container = dom.sync.containerProp;
-    const input = dom.sync.inputDirection;
-    
+    const input     = dom.sync.inputDirection;
     if (idx === -1) {
-        dom.sync.labelTlSelected.textContent = "Select a Tile";
-        dom.sync.btnNudgeLBack.disabled = true;
-        dom.sync.btnNudgeSBack.disabled = true;
-        dom.sync.btnNudgeSFwd.disabled = true;
-        dom.sync.btnNudgeLFwd.disabled = true;
+        dom.sync.labelTlSelected.textContent = 'Select a Tile';
+        [dom.sync.btnNudgeLBack, dom.sync.btnNudgeSBack,
+         dom.sync.btnNudgeSFwd,  dom.sync.btnNudgeLFwd].forEach(b => b.disabled = true);
         container.style.display = 'none';
     } else {
         const sym = appState.symbols[idx];
-        const t = sym.startTime.toFixed(2);
-        dom.sync.labelTlSelected.textContent = `Tile ${idx+1} @ ${t}s`;
-        dom.sync.btnNudgeLBack.disabled = false;
-        dom.sync.btnNudgeSBack.disabled = false;
-        dom.sync.btnNudgeSFwd.disabled = false;
-        dom.sync.btnNudgeLFwd.disabled = false;
-        
-        // Show Direction Input
+        dom.sync.labelTlSelected.textContent = `Tile ${idx + 1} @ ${sym.startTime.toFixed(2)}s`;
+        [dom.sync.btnNudgeLBack, dom.sync.btnNudgeSBack,
+         dom.sync.btnNudgeSFwd,  dom.sync.btnNudgeLFwd].forEach(b => b.disabled = false);
         container.style.display = 'block';
         input.value = sym.direction || '';
     }
-    updateNavStripHighlight(); // Sync strip highlight
+    updateNavStripHighlight();
 }
 
-// Timeline Drag Logic
+// Timeline drag
 function handleTimelineMouseDown(e: MouseEvent | TouchEvent) {
-    if (e.type === 'touchstart') e.preventDefault();
-    const pos = getPointerPos(e, dom.sync.timelineCanvas);
-    const x = pos.x;
-    
+    if (e.type === 'touchstart' && (e as TouchEvent).cancelable) e.preventDefault();
+    const pos  = getPointerPos(e, dom.sync.timelineCanvas);
+    const x    = pos.x;
     const zoom = appState.interaction.timelineZoom;
-    const time = appState.interaction.syncScrollX + (x / zoom);
-    
-    // Find closest symbol start line
-    let closestIdx = -1;
+    const time = appState.interaction.syncScrollX + x / zoom;
 
+    let closestIdx = -1;
     appState.symbols.forEach((sym, i) => {
-        // Start handle check (tolerance 0.2s)
-        if (Math.abs(sym.startTime - time) < 0.2) {
-             closestIdx = i;
-        } else if (time > sym.startTime && time < sym.endTime) {
-             // Clicked inside
-             closestIdx = i;
-        }
+        if (Math.abs(sym.startTime - time) < 0.2) closestIdx = i;
+        else if (time > sym.startTime && time < sym.endTime) closestIdx = i;
     });
 
     if (closestIdx !== -1) {
-        appState.interaction.timelineDragIndex = closestIdx;
-        appState.interaction.selectedSyncIndex = closestIdx;
-        appState.interaction.isDragging = true;
+        appState.interaction.timelineDragIndex  = closestIdx;
+        appState.interaction.selectedSyncIndex  = closestIdx;
+        appState.interaction.isDragging         = true;
         updateTimelineToolsUI();
     } else {
-        // Drag Background to Pan
-        appState.interaction.dragAction = 'pan-timeline';
-        appState.interaction.dragStart = {x: pos.x, y: 0};
-        appState.interaction.isDragging = true;
+        appState.interaction.dragAction  = 'pan-timeline';
+        appState.interaction.dragStart   = { x: pos.x, y: 0 };
+        appState.interaction.isDragging  = true;
     }
     drawSyncTimeline();
 }
 
 function handleTimelineMouseMove(e: MouseEvent | TouchEvent) {
-    if (e.type === 'touchmove') e.preventDefault();
+    if (e.type === 'touchmove' && (e as TouchEvent).cancelable) e.preventDefault();
     if (!appState.interaction.isDragging) return;
-    
-    const pos = getPointerPos(e, dom.sync.timelineCanvas);
+
+    const pos  = getPointerPos(e, dom.sync.timelineCanvas);
     const zoom = appState.interaction.timelineZoom;
-    
+
     if (appState.interaction.dragAction === 'pan-timeline') {
         const dx = pos.x - appState.interaction.dragStart.x;
-        const dt = dx / zoom;
-        appState.interaction.syncScrollX = Math.max(0, appState.interaction.syncScrollX - dt);
+        appState.interaction.syncScrollX = Math.max(0, appState.interaction.syncScrollX - dx / zoom);
         appState.interaction.dragStart.x = pos.x;
     } else if (appState.interaction.timelineDragIndex !== -1) {
-        const x = pos.x;
-        const time = Math.max(0, appState.interaction.syncScrollX + (x / zoom));
-        const idx = appState.interaction.timelineDragIndex;
-        
-        // Adjust start time of clicked symbol
+        const time = Math.max(0, appState.interaction.syncScrollX + pos.x / zoom);
+        const idx  = appState.interaction.timelineDragIndex;
         appState.symbols[idx].startTime = time;
-        // And end time of previous
-        if (idx > 0) appState.symbols[idx-1].endTime = time;
-        
-        // Don't overlap next
-        if (idx < appState.symbols.length - 1 && time > appState.symbols[idx+1].startTime) {
-             appState.symbols[idx+1].startTime = time + 0.01;
-        }
+        if (idx > 0) appState.symbols[idx - 1].endTime = time;
+        if (idx < appState.symbols.length - 1 && time > appState.symbols[idx + 1].startTime)
+            appState.symbols[idx + 1].startTime = time + 0.01;
         updateTimelineToolsUI();
     }
-    
     drawSyncTimeline();
 }
 
 function handleTimelineMouseUp() {
-    appState.interaction.isDragging = false;
+    appState.interaction.isDragging        = false;
     appState.interaction.timelineDragIndex = -1;
-    appState.interaction.dragAction = 'none';
+    appState.interaction.dragAction        = 'none';
 }
 
-// --- Preview Logic ---
+// ─── Preview / Result ─────────────────────────────────────────────────────────
 async function setupResultView() {
     dom.result.canvas.width = 640; dom.result.canvas.height = 360;
     appState.preview.loadedImages.clear();
-    const promises = appState.symbols.map((sym, idx) => new Promise<void>((resolve) => {
+    const promises = appState.symbols.map((sym, idx) => new Promise<void>(resolve => {
         const img = new Image();
-        img.onload = () => { appState.preview.loadedImages.set(idx, img); resolve(); };
-        img.onerror = () => resolve(); img.src = sym.imageSrc;
+        img.onload  = () => { appState.preview.loadedImages.set(idx, img); resolve(); };
+        img.onerror = () => resolve();
+        img.src = sym.imageSrc;
     }));
     await Promise.all(promises);
     drawPreviewFrame(0);
+    showToast(`${appState.symbols.length} symbols loaded — press ▶ to preview`, 'success');
 }
+
 function playPreview() {
     if (appState.preview.isPlaying) return;
     appState.preview.isPlaying = true;
@@ -1841,142 +1694,112 @@ function pausePreview() {
     cancelAnimationFrame(appState.preview.animationId);
 }
 function rewindPreview() {
-    pausePreview(); dom.sync.audio.currentTime = 0; drawPreviewFrame(0);
+    pausePreview();
+    dom.sync.audio.currentTime = 0;
+    drawPreviewFrame(0);
 }
 function animatePreviewFrame() {
     if (!appState.preview.isPlaying) return;
-    const t = dom.sync.audio.currentTime;
-    drawPreviewFrame(t);
+    drawPreviewFrame(dom.sync.audio.currentTime);
     appState.preview.animationId = requestAnimationFrame(animatePreviewFrame);
 }
+
 function drawPreviewFrame(rawTime: number) {
-    const ctx = dom.result.canvas.getContext('2d');
-    const w = dom.result.canvas.width;
-    const h = dom.result.canvas.height;
-    const cfg = appState.styleConfig;
-    
-    // Apply Latency (Global Correction)
+    const ctx = dom.result.canvas.getContext('2d')!;
+    const w = dom.result.canvas.width, h = dom.result.canvas.height;
+    const cfg  = appState.styleConfig;
     const time = Math.max(0, rawTime + appState.interaction.latencyOffset);
 
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = cfg.backgroundColor;
     ctx.fillRect(0, 0, w, h);
 
-    // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
-    
+
+    // Title card
     if (appState.songTitle && time < firstStart) {
-        // Draw Title Card
         ctx.save();
-        // Fade out in last 1 second before first symbol
         const timeUntilStart = firstStart - time;
-        let opacity = 1;
-        if (timeUntilStart < 1.0) opacity = timeUntilStart; 
-        
+        const opacity = timeUntilStart < 1.0 ? timeUntilStart : 1;
         ctx.globalAlpha = Math.max(0, opacity);
-        ctx.fillStyle = '#333';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        // Title
+        ctx.fillStyle = '#222';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.font = 'bold 36px sans-serif';
-        ctx.fillText(appState.songTitle, w/2, h/2 - 20);
-        
-        // Subtitle/Hint
+        ctx.fillText(appState.songTitle, w / 2, h / 2 - 22);
         ctx.font = '20px sans-serif';
         ctx.fillStyle = '#666';
-        ctx.fillText("Get Ready...", w/2, h/2 + 30);
-        
+        ctx.fillText('Get Ready…', w / 2, h / 2 + 28);
         ctx.restore();
     }
 
-    // Logic to determine active index based on start/end times
     let activeIndex = appState.symbols.findIndex(s => time >= s.startTime && time < (s.endTime || 99999));
-    
-    // Fallback logic if gaps or pre-start
-    if (activeIndex === -1) {
-         if (appState.symbols.length > 0 && time < appState.symbols[0].startTime) {
-             // Pre-start: activeIndex remains -1
-         }
-         else if (appState.symbols.length > 0 && time > appState.symbols[appState.symbols.length-1].startTime) activeIndex = appState.symbols.length - 1; // End
-    }
+    if (activeIndex === -1 && appState.symbols.length > 0 && time >= appState.symbols[appState.symbols.length - 1].startTime)
+        activeIndex = appState.symbols.length - 1;
 
     const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
         if (!appState.preview.loadedImages.has(idx)) return;
-        const img = appState.preview.loadedImages.get(idx);
-        const baseSize = 220;
-        const size = baseSize * scale;
+        const img = appState.preview.loadedImages.get(idx)!;
+        const size = 220 * scale;
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 5;
-        
-        const ratio = Math.min(size/img.width, size/img.height);
+        ctx.shadowColor = 'rgba(0,0,0,0.18)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
+        const ratio = Math.min(size / img.width, size / img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
-        ctx.drawImage(img, cx - dw/2, (h/2) - dh/2, dw, dh);
+        ctx.drawImage(img, cx - dw / 2, h / 2 - dh / 2, dw, dh);
         ctx.restore();
     };
 
-    const cx = w/2;
-    // Draw Next
+    const cx = w / 2;
     if (activeIndex !== -1 || time < firstStart) {
         const start = activeIndex === -1 ? 0 : activeIndex;
-        
-        // Only draw next if NOT in deep intro (optional, but requested behavior is standard conveyor)
-        // If we want title card to be alone, we can fade these in too.
-        // Let's fade them in same rate as title fades out.
-        let introFadeIn = 1.0;
+        let introFade = 1.0;
         if (time < firstStart) {
-            const timeUntilStart = firstStart - time;
-            if (timeUntilStart > 1.0) introFadeIn = 0; // Hidden until last second
-            else introFadeIn = 1.0 - timeUntilStart; // Fade in
+            const t2s = firstStart - time;
+            introFade = t2s > 1.0 ? 0 : 1.0 - t2s;
         }
 
+        // Draw upcoming symbols (farthest first so they layer correctly)
         for (let i = cfg.nextCount; i >= 1; i--) {
             if (start + i < appState.symbols.length) {
-                const s = cfg.nextScale * Math.pow(0.9, i-1);
-                const o = cfg.nextOpacity * Math.pow(0.8, i-1) * introFadeIn;
-                drawSym(start+i, cx + (i * cfg.spacing), s, o);
+                const s = cfg.nextScale * Math.pow(0.88, i - 1);
+                const o = cfg.nextOpacity * Math.pow(0.75, i - 1) * introFade;
+                drawSym(start + i, cx + i * cfg.spacing, s, o);
             }
         }
-        
-        // Draw Active
+
         if (activeIndex !== -1) {
             drawSym(activeIndex, cx, cfg.activeScale, 1.0);
-            
-            // Draw Musical Direction (New)
             const sym = appState.symbols[activeIndex];
             if (sym.direction) {
                 ctx.save();
-                ctx.font = 'italic 20px Georgia, serif';
+                ctx.font      = 'italic 20px Georgia, serif';
                 ctx.fillStyle = '#444';
                 ctx.textAlign = 'center';
-                ctx.fillText(sym.direction, cx, h - 30);
+                ctx.fillText(sym.direction, cx, h - 28);
                 ctx.restore();
             }
-
-        } else if (introFadeIn > 0 && appState.symbols.length > 0) {
-             // Fade in first symbol as title fades out
-             drawSym(0, cx, cfg.activeScale, introFadeIn);
+        } else if (introFade > 0 && appState.symbols.length > 0) {
+            drawSym(0, cx, cfg.activeScale, introFade);
         }
-        
-        // Draw Prev
-        if (activeIndex > 0) drawSym(activeIndex-1, cx - 240, cfg.prevScale, cfg.prevOpacity);
+
+        if (activeIndex > 0) drawSym(activeIndex - 1, cx - 240, cfg.prevScale, cfg.prevOpacity);
     }
 }
 
-// --- Video Rendering ---
+// ─── Video Rendering ──────────────────────────────────────────────────────────
 async function renderVideo(mode: 'full' | 'backing') {
-    if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
+    if (!appState.files.audioVocal && !appState.files.audioBacking) {
+        showToast('No audio file loaded', 'error'); return;
+    }
     dom.rendering.overlay.style.display = 'flex';
-    dom.rendering.progressText.textContent = "Initializing...";
+    dom.rendering.progressText.textContent = 'Initialising…';
     pausePreview();
     dom.sync.audio.currentTime = 0;
 
     const audioCtx = new AudioContext();
-    const dest = audioCtx.createMediaStreamDestination();
-    
-    // Setup Audio Sources
+    const dest     = audioCtx.createMediaStreamDestination();
     let dur = 0;
+
     if (appState.files.audioVocal && mode === 'full') {
         const b = await appState.files.audioVocal.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
         const s = audioCtx.createBufferSource(); s.buffer = b; s.connect(dest); s.start(0);
@@ -1989,33 +1812,34 @@ async function renderVideo(mode: 'full' | 'backing') {
     }
 
     const canvasStream = dom.result.canvas.captureStream(30);
-    const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    
-    let recorder;
+    const combined     = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+
+    let recorder: MediaRecorder;
     try {
-        // iOS Safari Support Check
-        let mime = "video/webm";
-        if (MediaRecorder.isTypeSupported("video/mp4")) {
-            mime = "video/mp4";
-        } else if (MediaRecorder.isTypeSupported("video/webm; codecs=vp9")) {
-            mime = "video/webm; codecs=vp9";
-        }
-        
-        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 2500000 });
-    } catch (e) { alert("Recording not supported or codec missing."); return; }
-    
+        let mime = 'video/webm';
+        if (MediaRecorder.isTypeSupported('video/mp4'))             mime = 'video/mp4';
+        else if (MediaRecorder.isTypeSupported('video/webm; codecs=vp9')) mime = 'video/webm; codecs=vp9';
+        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+    } catch {
+        showToast('Video recording not supported in this browser', 'error');
+        dom.rendering.overlay.style.display = 'none';
+        return;
+    }
+
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => {
-        const type = recorder.mimeType || "video/webm";
-        const ext = type.includes("mp4") ? "mp4" : "webm";
-        const blob = new Blob(chunks, { type: type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = mode === 'backing' ? `karaoke_backing.${ext}` : `karaoke_full.${ext}`;
+        const type = recorder.mimeType || 'video/webm';
+        const ext  = type.includes('mp4') ? 'mp4' : 'webm';
+        const blob = new Blob(chunks, { type });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = mode === 'backing' ? `karaoke_backing.${ext}` : `karaoke_full.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
         audioCtx.close();
+        showToast('Video downloaded!', 'success');
     };
 
     recorder.start();
@@ -2023,9 +1847,8 @@ async function renderVideo(mode: 'full' | 'backing') {
     function renderLoop() {
         const t = audioCtx.currentTime - startT;
         if (t >= dur) { recorder.stop(); return; }
-        // Use t directly (latency offset handles inside drawPreviewFrame logic)
         drawPreviewFrame(t);
-        dom.rendering.progressText.textContent = Math.round((t/dur)*100) + "%";
+        dom.rendering.progressText.textContent = Math.round((t / dur) * 100) + '%';
         requestAnimationFrame(renderLoop);
     }
     renderLoop();
