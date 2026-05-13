@@ -155,6 +155,7 @@ function init() {
             btnAiEdit:        document.getElementById('btn-ai-edit'),
             btnUploadSymbol:  document.getElementById('btn-upload-symbol'),
             inputUploadSymbol: document.getElementById('input-upload-symbol'),
+            btnPixelScan:     document.getElementById('btn-pixel-scan'),
             aiLoading:        document.getElementById('ai-loading'),
             aiMultiToggle:    document.getElementById('ai-multi-toggle')
         },
@@ -166,11 +167,14 @@ function init() {
             btnNext:          document.getElementById('btn-order-next-page'),
             labelPage:        document.getElementById('order-page-indicator'),
             btnAuto:          document.getElementById('btn-auto-order'),
+            btnUndo:          document.getElementById('btn-order-undo'),
             btnReset:         document.getElementById('btn-reset-order'),
             btnBack:          document.getElementById('btn-back-to-define'),
             btnFinish:        document.getElementById('btn-finish-order'),
             btnPanUp:         document.getElementById('btn-order-pan-up'),
-            btnPanDown:       document.getElementById('btn-order-pan-down')
+            btnPanDown:       document.getElementById('btn-order-pan-down'),
+            seqBar:           document.getElementById('order-sequence-bar'),
+            seqLabel:         document.getElementById('order-seq-label')
         },
         sync: {
             containerFineTuning: document.getElementById('sync-fine-tuning'),
@@ -185,6 +189,7 @@ function init() {
             btnFinish:           document.getElementById('btn-finish-sync'),
             btnZoomIn:           document.getElementById('btn-sync-zoom-in'),
             btnZoomOut:          document.getElementById('btn-sync-zoom-out'),
+            btnAutoSync:         document.getElementById('btn-auto-sync'),
             imgCurrent:          document.getElementById('sync-img-current') as HTMLImageElement,
             imgNext:             document.getElementById('sync-img-next')    as HTMLImageElement,
             navStrip:            document.getElementById('symbol-nav-strip'),
@@ -283,7 +288,8 @@ function setupEventListeners() {
     // Define View
     dom.define.btnPrev.addEventListener('click', () => changePage(-1));
     dom.define.btnNext.addEventListener('click', () => changePage(1));
-    dom.define.btnAuto.addEventListener('click', () => { runGridDetection(); showToast('Grid detection complete'); });
+    dom.define.btnAuto.addEventListener('click', runAiGridDetection);
+    dom.define.btnPixelScan.addEventListener('click', () => { runGridDetection(); showToast('Pixel scan complete'); });
     dom.define.btnClear.addEventListener('click', clearCurrentPageSymbols);
     dom.define.btnGoOrder.addEventListener('click', () => switchView('order-view'));
     dom.define.btnSelectColor.addEventListener('click', selectSimilarColors);
@@ -328,6 +334,7 @@ function setupEventListeners() {
     dom.order.btnPrev.addEventListener('click',   () => { changePage(-1); setupOrderView(); });
     dom.order.btnNext.addEventListener('click',   () => { changePage(1);  setupOrderView(); });
     dom.order.btnAuto.addEventListener('click',   autoOrderPage);
+    dom.order.btnUndo.addEventListener('click',   undoLastOrderSymbol);
     dom.order.btnReset.addEventListener('click',  resetOrderPage);
     dom.order.btnBack.addEventListener('click',   () => switchView('define-symbols-view'));
     dom.order.btnFinish.addEventListener('click', finishOrderingSymbols);
@@ -341,6 +348,7 @@ function setupEventListeners() {
     dom.sync.btnFinish.addEventListener('click', () => switchView('result-view'));
     dom.sync.btnZoomIn.addEventListener('click',  () => { appState.interaction.timelineZoom += 20; drawSyncTimeline(); });
     dom.sync.btnZoomOut.addEventListener('click', () => { appState.interaction.timelineZoom = Math.max(20, appState.interaction.timelineZoom - 20); drawSyncTimeline(); });
+    dom.sync.btnAutoSync.addEventListener('click', autoSyncFromAudio);
 
     dom.sync.btnTlPrev.addEventListener('click', () => selectTimelineTile(-1));
     dom.sync.btnTlNext.addEventListener('click', () => selectTimelineTile(1));
@@ -1076,6 +1084,149 @@ function runGridDetection() {
     drawCanvas();
 }
 
+// ─── AI Grid Detection ────────────────────────────────────────────────────────
+async function runAiGridDetection() {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+
+    const win = window as any;
+    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
+        try { await win.aistudio.openSelectKey(); }
+        catch { showToast('API key needed — falling back to pixel scan', 'warning'); runGridDetection(); return; }
+    }
+
+    setDetectionLoading(true);
+    try {
+        // Downscale to max 1024px for speed while preserving aspect ratio
+        const maxDim = 1024;
+        const scale  = Math.min(1, maxDim / Math.max(page.width, page.height));
+        const cw     = Math.round(page.width * scale);
+        const ch     = Math.round(page.height * scale);
+        const tmpCvs = document.createElement('canvas');
+        tmpCvs.width = cw; tmpCvs.height = ch;
+        tmpCvs.getContext('2d')!.drawImage(page.image, 0, 0, cw, ch);
+        const base64 = tmpCvs.toDataURL('image/jpeg', 0.85).split(',')[1];
+
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const prompt = `This is an AAC (Augmentative and Alternative Communication) symbol chart / communication board.
+Identify every individual symbol cell — each distinct picture/icon box — in this image.
+Return ONLY a valid JSON array, no markdown fences, no explanation:
+[{"x":10,"y":20,"w":80,"h":80},...]
+Each object: x,y = top-left corner; w,h = width and height in pixels.
+Image dimensions are ${cw} × ${ch} pixels. Include every symbol box. Ignore plain text outside boxes.`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.0-flash',
+            contents: { parts: [
+                { inlineData: { mimeType: 'image/jpeg', data: base64 } },
+                { text: prompt }
+            ]}
+        });
+
+        const raw  = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const json = raw.match(/\[[\s\S]*?\]/)?.[0];
+        if (!json) throw new Error('No JSON array in response');
+
+        const boxes = JSON.parse(json) as { x: number; y: number; w: number; h: number }[];
+        if (!Array.isArray(boxes) || boxes.length === 0) throw new Error('Empty symbol list');
+
+        const upscale = 1 / scale;
+        page.symbols  = [];
+        page.sequence = [];
+        for (const b of boxes) {
+            if ((b.w ?? 0) < 10 || (b.h ?? 0) < 10) continue;
+            page.symbols.push({
+                x:      Math.round(b.x * upscale),
+                y:      Math.round(b.y * upscale),
+                width:  Math.round(b.w * upscale),
+                height: Math.round(b.h * upscale)
+            });
+        }
+
+        // Auto-order left→right, top→bottom
+        const indices = page.symbols.map((_, i) => i);
+        indices.sort((a, b) => {
+            const sA = page.symbols[a], sB = page.symbols[b];
+            return Math.abs(sA.y - sB.y) > 40 ? sA.y - sB.y : sA.x - sB.x;
+        });
+        page.sequence = indices;
+
+        drawCanvas();
+        showToast(`AI detected ${page.symbols.length} symbols — auto-ordered ✨`, 'success');
+    } catch (e: any) {
+        console.error('AI detection failed:', e);
+        showToast('AI detection failed — falling back to pixel scan', 'warning');
+        runGridDetection();
+    } finally {
+        setDetectionLoading(false);
+    }
+}
+
+function setDetectionLoading(loading: boolean) {
+    const btn = dom.define.btnAuto;
+    btn.disabled     = loading;
+    btn.textContent  = loading ? '⏳ Detecting…' : '✨ AI Detect Grid';
+    if (dom.define.btnPixelScan) dom.define.btnPixelScan.disabled = loading;
+}
+
+// ─── Audio Beat / Onset Detection ────────────────────────────────────────────
+function autoSyncFromAudio() {
+    const buffer = appState.audioBuffer;
+    const n      = appState.symbols.length;
+    if (!buffer || n === 0) { showToast('Load audio and complete ordering first', 'warning'); return; }
+
+    const data       = buffer.getChannelData(0);
+    const sampleRate = buffer.sampleRate;
+    const winSize    = Math.floor(sampleRate * 0.05); // 50 ms windows
+
+    // RMS energy per window
+    const energies: number[] = [];
+    for (let i = 0; i < data.length; i += winSize) {
+        let sum = 0;
+        const end = Math.min(i + winSize, data.length);
+        for (let j = i; j < end; j++) sum += data[j] * data[j];
+        energies.push(Math.sqrt(sum / (end - i)));
+    }
+
+    // Noise floor = 20th percentile energy
+    const sorted     = [...energies].sort((a, b) => a - b);
+    const noiseFloor = sorted[Math.floor(sorted.length * 0.2)] || 0.001;
+    const threshold  = noiseFloor * 6;
+
+    // Onset = transition from below-threshold to above-threshold
+    const onsets: number[] = [];
+    let wasActive = false;
+    for (let i = 0; i < energies.length; i++) {
+        const isActive = energies[i] > threshold;
+        if (isActive && !wasActive) {
+            const t = (i * winSize) / sampleRate;
+            // Debounce: min 0.25 s between onsets
+            if (onsets.length === 0 || t - onsets[onsets.length - 1] > 0.25) onsets.push(t);
+        }
+        wasActive = isActive;
+    }
+
+    if (onsets.length < 1) {
+        showToast('No clear audio onsets found — try recording manually', 'warning'); return;
+    }
+
+    // Distribute symbols across detected onsets (cycle if more symbols than onsets)
+    appState.symbols.forEach((sym, i) => {
+        const oIdx       = Math.min(i, onsets.length - 1);
+        const oNext      = Math.min(i + 1, onsets.length - 1);
+        sym.startTime    = onsets[oIdx];
+        sym.endTime      = i < n - 1 ? onsets[oNext] : buffer.duration;
+    });
+
+    // Show fine-tuning panel
+    dom.sync.visualCue.style.display          = 'none';
+    dom.sync.containerFineTuning.style.display = 'block';
+    appState.interaction.selectedSyncIndex     = 0;
+    selectTimelineTile(0);
+    drawSyncTimeline();
+    showToast(`Auto-synced ${n} symbols to ${onsets.length} audio onsets ✨`, 'success');
+}
+
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchstart') {
         if ((e as TouchEvent).touches.length === 2) { appState.interaction.lastTouchDistance = 0; return; }
@@ -1168,6 +1319,7 @@ function setupOrderView() {
     dom.order.canvas.width  = page.width  * scale;
     dom.order.canvas.height = page.height * scale;
     drawOrderCanvas();
+    updateOrderSeqBar();
 }
 
 function drawOrderCanvas() {
@@ -1198,8 +1350,13 @@ function drawOrderCanvas() {
     page.symbols.forEach((sym, idx) => {
         const x = sym.x * scale, y = sym.y * scale, w = sym.width * scale, h = sym.height * scale;
         if (sym.customImage) ctx.drawImage(sym.customImage, x, y, w, h);
-        const seqIdx = page.sequence.indexOf(idx);
-        if (seqIdx !== -1) {
+
+        // Count how many times this tile is used in the sequence
+        const useCount = page.sequence.filter(s => s === idx).length;
+        // First position of this tile in the sequence (for path rendering)
+        const firstSeqPos = page.sequence.indexOf(idx);
+
+        if (useCount > 0) {
             ctx.fillStyle   = 'rgba(52,168,83,0.25)';
             ctx.strokeStyle = '#34a853';
             ctx.lineWidth   = 2.5;
@@ -1211,16 +1368,16 @@ function drawOrderCanvas() {
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
 
-        if (seqIdx !== -1) {
-            // Badge
+        if (useCount > 0) {
+            // Badge: show use count (×N) in top-right corner
             const bx = x + w - 14, by = y + 14;
-            ctx.fillStyle = '#34a853';
+            ctx.fillStyle = useCount > 1 ? '#e37400' : '#34a853';
             ctx.beginPath(); ctx.arc(bx, by, 13, 0, Math.PI * 2); ctx.fill();
             ctx.fillStyle = 'white';
             ctx.font = `bold ${w < 60 ? 9 : 11}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText((seqIdx + 1).toString(), bx, by);
+            ctx.fillText(useCount > 1 ? `×${useCount}` : (firstSeqPos + 1).toString(), bx, by);
             ctx.textBaseline = 'alphabetic';
         }
     });
@@ -1238,11 +1395,69 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const hitIdx = page.symbols.findIndex((s: any) =>
         x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
     if (hitIdx !== -1) {
-        const seqIdx = page.sequence.indexOf(hitIdx);
-        if (seqIdx !== -1) page.sequence.splice(seqIdx, 1);
-        else                page.sequence.push(hitIdx);
+        // Always append — same symbol can appear multiple times
+        page.sequence.push(hitIdx);
         drawOrderCanvas();
+        updateOrderSeqBar();
     }
+}
+
+function undoLastOrderSymbol() {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page || page.sequence.length === 0) return;
+    page.sequence.pop();
+    drawOrderCanvas();
+    updateOrderSeqBar();
+    showToast('Removed last symbol from sequence');
+}
+
+function updateOrderSeqBar() {
+    const page = appState.pages[appState.currentPageIndex];
+    const bar  = dom.order.seqBar;
+    const lbl  = dom.order.seqLabel;
+    if (!bar || !page) return;
+
+    if (page.sequence.length === 0) {
+        lbl.style.display = 'inline';
+        lbl.textContent   = 'Tap symbols below in reading order — same tile can be added multiple times';
+        // Clear any chips
+        Array.from(bar.children).forEach((el: any) => { if (el !== lbl) el.remove(); });
+        return;
+    }
+    lbl.style.display = 'none';
+    // Remove old chips
+    Array.from(bar.children).forEach((el: any) => { if (el !== lbl) el.remove(); });
+
+    page.sequence.forEach((symIdx, pos) => {
+        const chip = document.createElement('span');
+        chip.style.cssText = `
+            display:inline-flex; align-items:center; gap:3px;
+            background:var(--primary-light); border:1px solid #d2e3fc;
+            border-radius:var(--radius-full); padding:3px 8px;
+            font-size:0.76rem; color:#174ea6; font-weight:700; cursor:pointer;
+        `;
+        chip.title = 'Click to remove this entry';
+        chip.textContent = `${pos + 1}`;
+
+        // Tiny symbol thumbnail
+        const sym = page.symbols[symIdx];
+        if (sym) {
+            const thumb = document.createElement('canvas');
+            thumb.width = 18; thumb.height = 18;
+            thumb.style.cssText = 'border-radius:3px; vertical-align:middle;';
+            const tCtx = thumb.getContext('2d')!;
+            if (sym.customImage) tCtx.drawImage(sym.customImage, 0, 0, 18, 18);
+            else tCtx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, 18, 18);
+            chip.prepend(thumb);
+        }
+
+        chip.addEventListener('click', () => {
+            page.sequence.splice(pos, 1);
+            drawOrderCanvas();
+            updateOrderSeqBar();
+        });
+        bar.appendChild(chip);
+    });
 }
 
 function autoOrderPage() {
@@ -1255,12 +1470,14 @@ function autoOrderPage() {
     });
     page.sequence = indices;
     drawOrderCanvas();
+    updateOrderSeqBar();
     showToast(`Auto-ordered ${indices.length} symbols (left→right, top→bottom)`);
 }
 
 function resetOrderPage() {
     appState.pages[appState.currentPageIndex].sequence = [];
     drawOrderCanvas();
+    updateOrderSeqBar();
     showToast('Sequence cleared');
 }
 
