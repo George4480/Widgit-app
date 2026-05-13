@@ -184,6 +184,7 @@ function init() {
             timelineContainer:   document.getElementById('sync-timeline-container'),
             timelineCanvas:      document.getElementById('sync-timeline-canvas') as HTMLCanvasElement,
             btnRecord:           document.getElementById('record-tap-button'),
+            btnSyncUndo:         document.getElementById('btn-sync-undo'),
             audio:               document.getElementById('sync-audio-player') as HTMLAudioElement,
             labelProgress:       document.getElementById('sync-progress-text'),
             btnReset:            document.getElementById('reset-sync-button'),
@@ -345,6 +346,7 @@ function setupEventListeners() {
 
     // Sync View
     dom.sync.btnRecord.addEventListener('click', handleSyncTapAction);
+    dom.sync.btnSyncUndo.addEventListener('click', undoLastSyncTap);
     dom.sync.btnReset.addEventListener('click',  resetSync);
     dom.sync.btnBack.addEventListener('click',   () => switchView('order-view'));
     dom.sync.btnFinish.addEventListener('click', () => switchView('result-view'));
@@ -411,6 +413,12 @@ function setupEventListeners() {
             if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
                 e.preventDefault();
                 handleSyncTapAction();
+            }
+        }
+        if (appState.currentView === 'sync-view' && e.key === 'Backspace' && appState.isRecordingSync) {
+            if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                undoLastSyncTap();
             }
         }
         if (appState.currentView === 'sync-view' && appState.interaction.containerFineTuning !== null) {
@@ -1756,12 +1764,39 @@ function updateSyncButtonUI() {
     if (appState.isRecordingSync) {
         btn.textContent = currentIdx === -1 ? 'TAP — Start First Symbol ▶' : 'TAP — Next Symbol ▶';
         btn.classList.add('recording');
+        // Undo is available once at least one tap has been placed
+        dom.sync.btnSyncUndo.disabled = currentIdx < 0;
     } else {
         btn.textContent = (appState.symbols.length > 0 && appState.symbols[0].startTime > 0)
             ? '↺ Re-record Sync'
             : '▶ Start Recording';
         btn.classList.remove('recording');
+        dom.sync.btnSyncUndo.disabled = true;
     }
+}
+
+function undoLastSyncTap() {
+    if (!appState.isRecordingSync) return;
+    const idx = appState.currentSyncIndex;
+
+    if (idx === 0) {
+        // Undo the very first symbol placement — go back to intro state
+        appState.symbols[0].startTime   = 0;
+        appState.currentSyncIndex       = -1;
+    } else if (idx > 0) {
+        // Undo the boundary between symbol idx-1 and idx
+        appState.symbols[idx - 1].endTime = 0;
+        if (appState.symbols[idx]) appState.symbols[idx].startTime = 0;
+        appState.currentSyncIndex = idx - 1;
+    } else {
+        return; // nothing to undo (idx === -1, haven't tapped yet)
+    }
+
+    // Rewind audio 2.5 s so user can re-tap in context
+    dom.sync.audio.currentTime = Math.max(0, dom.sync.audio.currentTime - 2.5);
+
+    updateSyncButtonUI();
+    showToast('Tap undone — audio rewound 2.5s');
 }
 
 function finishSync() {

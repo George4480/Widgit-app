@@ -1197,9 +1197,12 @@
 
         <div class="sync-area">
             <div style="text-align:center;">
-                <button id="record-tap-button" class="button">▶ Start Recording</button>
+                <div style="display:flex; align-items:center; justify-content:center; gap:12px; flex-wrap:wrap;">
+                    <button id="record-tap-button" class="button">▶ Start Recording</button>
+                    <button id="btn-sync-undo" class="button secondary" title="Undo last tap and rewind 2.5s (Backspace)" disabled>↩ Undo</button>
+                </div>
                 <div class="kbd-hint" style="justify-content:center; margin-top:8px;">
-                    <kbd>Space</kbd>&nbsp;or&nbsp;<kbd>Enter</kbd>&nbsp;to tap
+                    <kbd>Space</kbd>&nbsp;or&nbsp;<kbd>Enter</kbd>&nbsp;to tap&nbsp;&nbsp;·&nbsp;&nbsp;<kbd>Backspace</kbd>&nbsp;to undo
                 </div>
             </div>
         </div>
