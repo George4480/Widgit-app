@@ -9,9 +9,12 @@ const appState = {
         images: [] as File[],
         audioVocal: null as File | null,
         audioBacking: null as File | null,
-        pdf: null as File | null
+        pdf: null as File | null,
+        lyrics: null as File | null
     },
     audioUrl: null as string | null,
+    lyricsText: null as string | null,
+    lyricWords: [] as { word: string; time: number }[],
     pages: [] as { image: HTMLImageElement, width: number, height: number, symbols: any[], sequence: number[] }[],
     currentPageIndex: 0,
     symbols: [] as any[],
@@ -35,7 +38,8 @@ const appState = {
         nextOpacity: 0.7,
         spacing: 200,
         prevScale: 0.7,
-        prevOpacity: 0.4
+        prevOpacity: 0.4,
+        showLyrics: true
     },
     interaction: {
         isDragging: false,
@@ -125,6 +129,9 @@ function init() {
             cardSongboard:   document.getElementById('card-songboard'),
             cardVocal:       document.getElementById('card-vocal'),
             cardBacking:     document.getElementById('card-backing'),
+            cardLyrics:      document.getElementById('card-lyrics'),
+            statusLyrics:    document.getElementById('status-lyrics'),
+            inputLyrics:     document.getElementById('input-lyrics-file'),
             titleInput:      document.getElementById('input-song-title')
         },
         define: {
@@ -220,6 +227,7 @@ function init() {
             latencySlider:    document.getElementById('latency-slider'),
             latencyVal:       document.getElementById('latency-val'),
             styleBg:          document.getElementById('style-bg-color'),
+            styleShowLyrics:  document.getElementById('style-show-lyrics'),
             styleActiveScale: document.getElementById('style-active-scale'),
             styleNextCount:   document.getElementById('style-next-count'),
             styleNextScale:   document.getElementById('style-next-scale'),
@@ -289,6 +297,9 @@ function setupEventListeners() {
     };
     dom.upload.cardVocal.addEventListener('click',   () => handleAudioCardClick('vocal'));
     dom.upload.cardBacking.addEventListener('click', () => handleAudioCardClick('backing'));
+    dom.upload.cardLyrics.addEventListener('click',  () => dom.upload.inputLyrics.click());
+    dom.upload.inputLyrics.addEventListener('change', (e: Event) =>
+        handleFiles((e.target as HTMLInputElement).files));
 
     // Define View
     dom.define.btnPrev.addEventListener('click', () => changePage(-1));
@@ -389,6 +400,7 @@ function setupEventListeners() {
     });
 
     const updateStyle = () => {
+        appState.styleConfig.showLyrics      = (dom.result.styleShowLyrics as HTMLInputElement).checked;
         appState.styleConfig.backgroundColor = dom.result.styleBg.value;
         appState.styleConfig.activeScale      = parseFloat(dom.result.styleActiveScale.value);
         appState.styleConfig.nextCount        = parseInt(dom.result.styleNextCount.value);
@@ -397,6 +409,7 @@ function setupEventListeners() {
         appState.styleConfig.spacing          = parseInt(dom.result.styleSpacing.value);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
+    dom.result.styleShowLyrics.addEventListener('change',  updateStyle);
     dom.result.styleBg.addEventListener('input',           updateStyle);
     dom.result.styleActiveScale.addEventListener('input',  updateStyle);
     dom.result.styleNextCount.addEventListener('input',    updateStyle);
@@ -533,6 +546,15 @@ async function handleFiles(fileList: FileList | null | undefined) {
             const count = appState.files.images.length;
             dom.upload.statusSongboard.textContent = count === 1 ? file.name : `${count} images loaded`;
             dom.upload.cardSongboard.classList.add('filled');
+        } else if (name.endsWith('.txt') || type === 'text/plain' ||
+                   name.endsWith('.docx') || type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+            appState.files.lyrics = file;
+            dom.upload.statusLyrics.textContent = file.name;
+            dom.upload.cardLyrics.classList.add('filled');
+            extractLyricsText(file).then(text => {
+                appState.lyricsText = text;
+                showToast(`Lyrics loaded (${text.split(/\s+/).length} words)`, 'success');
+            }).catch(() => showToast('Could not read lyrics file', 'warning'));
         }
     }
 
@@ -623,6 +645,78 @@ async function downloadBoardImages() {
 }
 
 // ─── Start Project ────────────────────────────────────────────────────────────
+// ─── Lyrics Extraction ───────────────────────────────────────────────────────
+async function extractLyricsText(file: File): Promise<string> {
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.txt') || file.type === 'text/plain') {
+        return file.text();
+    }
+    if (name.endsWith('.docx')) {
+        const mammoth = (window as any).mammoth;
+        if (!mammoth) throw new Error('Mammoth not loaded');
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer: buf });
+        return result.value;
+    }
+    throw new Error('Unsupported lyrics format');
+}
+
+// ─── AI Lyrics-to-Audio Alignment ────────────────────────────────────────────
+async function alignLyricsToAudio(audioFile: File, lyrics: string) {
+    const win = window as any;
+    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) return; // silent skip
+
+    showToast('Aligning lyrics to audio…');
+    try {
+        // Encode audio as base64 (works for files up to ~15 min at 128kbps)
+        const arrayBuf = await audioFile.arrayBuffer();
+        const bytes    = new Uint8Array(arrayBuf);
+        let binary     = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        const audioB64 = btoa(binary);
+        const mime     = audioFile.type || 'audio/mpeg';
+
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+        const prompt = `You are a music lyrics aligner.
+I will give you an audio file and the lyrics text.
+Listen carefully to the audio and match each word/phrase from the lyrics to the timestamp (in seconds) when it is sung or spoken.
+Use the syllable sounds and rhythm to align as accurately as possible.
+
+Lyrics:
+${lyrics}
+
+Return ONLY a valid JSON array — no markdown, no explanation:
+[{"word":"Hello","time":1.2},{"word":"world","time":2.0},...]
+
+Each object has "word" (the lyric word or short phrase) and "time" (seconds from start, as a number).
+Cover the whole song. Short repeated words like "the","a" can be grouped with the next word if very close.`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.0-flash',
+            contents: { parts: [
+                { inlineData: { mimeType: mime, data: audioB64 } },
+                { text: prompt }
+            ]}
+        });
+
+        const raw  = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const json = raw.match(/\[[\s\S]*?\]/)?.[0];
+        if (!json) throw new Error('No JSON in response');
+
+        const words = JSON.parse(json) as { word: string; time: number }[];
+        if (!Array.isArray(words) || words.length === 0) throw new Error('Empty alignment');
+
+        appState.lyricWords = words.filter(w => typeof w.word === 'string' && typeof w.time === 'number');
+        showToast(`Lyrics aligned — ${appState.lyricWords.length} cues on timeline ✨`, 'success');
+        // Redraw timeline if sync view is already open
+        if (appState.currentView === 'sync-view') drawSyncTimeline();
+    } catch (e: any) {
+        console.warn('Lyrics alignment failed:', e.message);
+        // Fail silently — lyrics overlay is optional
+    }
+}
+
 async function startProject() {
     appState.mode = 'karaoke';
     switchView('loading-view');
@@ -645,6 +739,10 @@ async function startProject() {
         }
         switchView('define-symbols-view');
         setTimeout(() => { resizeCanvas(); runGridDetection(); }, 120);
+        // Kick off lyrics alignment in the background — doesn't block the UI
+        if (appState.lyricsText && syncFile) {
+            alignLyricsToAudio(syncFile, appState.lyricsText);
+        }
     } catch (e: any) {
         console.error(e);
         dom.errorBox.textContent = 'Error: ' + e.message;
@@ -1713,6 +1811,28 @@ function drawSyncTimeline() {
     }
     ctx.stroke();
 
+    // Lyric word cues — rendered above the waveform as a top strip
+    if (appState.lyricWords.length > 0) {
+        const lyricStripH = 18;
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(0, 0, vpW, lyricStripH);
+
+        appState.lyricWords.forEach(({ word, time }) => {
+            if (time < startTime || time > endTime) return;
+            const px = (time - startTime) * zoom;
+
+            // tick mark
+            ctx.strokeStyle = 'rgba(255,220,80,0.7)';
+            ctx.lineWidth   = 1;
+            ctx.beginPath(); ctx.moveTo(px, lyricStripH); ctx.lineTo(px, lyricStripH + 6); ctx.stroke();
+
+            // word label
+            ctx.fillStyle = 'rgba(255,220,80,0.92)';
+            ctx.font      = 'bold 9px sans-serif';
+            ctx.fillText(word, px + 2, lyricStripH - 4);
+        });
+    }
+
     // Symbol range bars
     const barY = 20, barH = vpH - 40;
     appState.symbols.forEach((sym, i) => {
@@ -2112,6 +2232,51 @@ function drawPreviewFrame(rawTime: number) {
         }
 
         if (activeIndex > 0) drawSym(activeIndex - 1, cx - 240, cfg.prevScale, cfg.prevOpacity);
+    }
+
+    // Lyrics overlay — show current and upcoming word
+    if (cfg.showLyrics && appState.lyricWords.length > 0) {
+        // Find the word that should be showing now (last word with time <= current time)
+        let wordIdx = -1;
+        for (let i = 0; i < appState.lyricWords.length; i++) {
+            if (appState.lyricWords[i].time <= time) wordIdx = i;
+            else break;
+        }
+        if (wordIdx !== -1) {
+            const currentWord = appState.lyricWords[wordIdx].word;
+            const nextWord    = appState.lyricWords[wordIdx + 1]?.word || '';
+            // Progress within current word (0→1)
+            const wordStart   = appState.lyricWords[wordIdx].time;
+            const wordEnd     = appState.lyricWords[wordIdx + 1]?.time ?? (wordStart + 1.5);
+            const progress    = Math.min(1, (time - wordStart) / (wordEnd - wordStart));
+
+            ctx.save();
+            ctx.textAlign    = 'center';
+            ctx.textBaseline = 'alphabetic';
+            const lyricY = h - 18;
+
+            // Current word — fade out as progress approaches 1
+            const curOpacity = Math.max(0, 1 - progress * 1.4);
+            if (curOpacity > 0) {
+                ctx.globalAlpha = curOpacity;
+                ctx.font        = 'bold 26px sans-serif';
+                ctx.fillStyle   = '#fff';
+                ctx.shadowColor = 'rgba(0,0,0,0.6)';
+                ctx.shadowBlur  = 6;
+                ctx.fillText(currentWord, w / 2 - 80, lyricY);
+            }
+
+            // Next word — fade in
+            if (nextWord) {
+                ctx.globalAlpha = Math.min(1, progress * 1.5);
+                ctx.font        = 'bold 26px sans-serif';
+                ctx.fillStyle   = '#ffe066';
+                ctx.shadowColor = 'rgba(0,0,0,0.6)';
+                ctx.shadowBlur  = 6;
+                ctx.fillText(nextWord, w / 2 + 80, lyricY);
+            }
+            ctx.restore();
+        }
     }
 }
 

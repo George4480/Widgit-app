@@ -961,9 +961,9 @@
         <div id="unified-drop-zone" class="upload-zone" role="button" tabindex="0" aria-label="Upload files">
             <span class="upload-icon">📂</span>
             <p class="upload-main-text">Drop files here, or click to browse</p>
-            <p class="upload-sub-text">Symbol chart images (PNG/JPG), PDF, or Audio (MP3/WAV) — multiple files at once</p>
+            <p class="upload-sub-text">Symbol chart images (PNG/JPG), PDF, Audio (MP3/WAV), or Lyrics (.txt/.docx/.pdf)</p>
             <button class="browse-btn button secondary small" type="button">Browse Files</button>
-            <input type="file" id="unified-file-input" multiple style="display:none;" accept="image/*,audio/*,.pdf,.docx">
+            <input type="file" id="unified-file-input" multiple style="display:none;" accept="image/*,audio/*,.pdf,.docx,.txt">
         </div>
 
         <input type="text" id="input-song-title"
@@ -985,6 +985,12 @@
                 <span class="card-icon">🎵</span>
                 <div class="card-title">Backing (Optional)</div>
                 <div id="status-backing" class="card-status">No audio loaded</div>
+            </div>
+            <div id="card-lyrics" class="assignment-card" role="button" tabindex="0" title="Click to load lyrics file">
+                <span class="card-icon">📝</span>
+                <div class="card-title">Lyrics (Optional)</div>
+                <div id="status-lyrics" class="card-status">No lyrics loaded</div>
+                <input type="file" id="input-lyrics-file" style="display:none;" accept=".txt,.docx,.pdf">
             </div>
         </div>
 
@@ -1257,6 +1263,13 @@
         <!-- Visual Customisation -->
         <details>
             <summary>🎨 Visual Settings</summary>
+            <div style="padding:12px 0 6px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--border-light); margin-bottom:4px;">
+                <input type="checkbox" id="style-show-lyrics" style="width:17px;height:17px;cursor:pointer;" checked>
+                <label for="style-show-lyrics" style="font-size:0.9rem; font-weight:700; cursor:pointer;">
+                    Show lyrics on video
+                    <span style="font-size:0.75rem; font-weight:400; color:var(--text-hint);"> (requires lyrics file)</span>
+                </label>
+            </div>
             <div class="settings-grid">
                 <div class="setting-item">
                     <label>Background Colour</label>
