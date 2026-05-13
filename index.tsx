@@ -11,6 +11,7 @@ const appState = {
         audioBacking: null as File | null,
         pdf: null as File | null
     },
+    audioUrl: null as string | null,
     pages: [] as { image: HTMLImageElement, width: number, height: number, symbols: any[], sequence: number[] }[],
     currentPageIndex: 0,
     symbols: [] as any[],
@@ -174,7 +175,8 @@ function init() {
             btnPanUp:         document.getElementById('btn-order-pan-up'),
             btnPanDown:       document.getElementById('btn-order-pan-down'),
             seqBar:           document.getElementById('order-sequence-bar'),
-            seqLabel:         document.getElementById('order-seq-label')
+            seqLabel:         document.getElementById('order-seq-label'),
+            audio:            document.getElementById('order-audio-player') as HTMLAudioElement
         },
         sync: {
             containerFineTuning: document.getElementById('sync-fine-tuning'),
@@ -621,7 +623,8 @@ async function startProject() {
         }
         const syncFile = appState.files.audioVocal || appState.files.audioBacking;
         if (syncFile) {
-            dom.sync.audio.src = URL.createObjectURL(syncFile);
+            appState.audioUrl = URL.createObjectURL(syncFile);
+            dom.sync.audio.src = appState.audioUrl;
             dom.loadingMessage.textContent = 'Decoding audio waveform…';
             const ctx = new AudioContext();
             const buffer = await syncFile.arrayBuffer();
@@ -697,7 +700,12 @@ function switchView(viewId: string) {
         dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
         setTimeout(resizeCanvas, 50);
     }
-    if (viewId === 'order-view')  setTimeout(setupOrderView, 50);
+    if (viewId === 'order-view') {
+        setTimeout(setupOrderView, 50);
+    } else {
+        // Pause order audio when leaving that view
+        if (dom.order?.audio && !dom.order.audio.paused) dom.order.audio.pause();
+    }
     if (viewId === 'sync-view')   setupSyncView();
     if (viewId === 'result-view') setupResultView();
 }
@@ -1320,6 +1328,10 @@ function setupOrderView() {
     dom.order.canvas.height = page.height * scale;
     drawOrderCanvas();
     updateOrderSeqBar();
+    // Wire audio player so user can listen while setting order
+    if (appState.audioUrl && dom.order.audio && !dom.order.audio.src) {
+        dom.order.audio.src = appState.audioUrl;
+    }
 }
 
 function drawOrderCanvas() {
