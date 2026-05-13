@@ -717,6 +717,12 @@
             box-shadow: 0 4px 14px rgba(26,115,232,0.32);
             z-index: 2;
         }
+        .nav-symbol-item.drag-over {
+            border-color: var(--warning);
+            transform: translateY(-4px) scale(1.1);
+            box-shadow: 0 4px 18px rgba(251,188,4,0.45);
+            z-index: 3;
+        }
         .nav-symbol-item .number-badge {
             position: absolute;
             top: 2px;
@@ -1165,6 +1171,9 @@
 
         <!-- Fine Tuning (shown after recording) -->
         <div id="sync-fine-tuning">
+            <p style="font-size:0.76rem; color:var(--text-hint); text-align:center; margin:0 0 6px;">
+                Drag symbols to reorder — or select one and use the move buttons below
+            </p>
             <div id="symbol-nav-strip" class="symbol-nav-strip"></div>
 
             <div class="timeline-toolbar">
@@ -1179,6 +1188,10 @@
                     <button id="btn-tl-nudge-l-fwd" class="button secondary small" title="+0.5s">+0.5s</button>
                 </div>
                 <button id="btn-tl-next"        class="button secondary small" title="Next tile (→)">▶</button>
+            </div>
+            <div style="display:flex; justify-content:center; gap:8px; margin-top:6px;">
+                <button id="btn-tl-move-back" class="button secondary small" disabled title="Move this symbol earlier in the sequence">⇐ Move Earlier</button>
+                <button id="btn-tl-move-fwd"  class="button secondary small" disabled title="Move this symbol later in the sequence">Move Later ⇒</button>
             </div>
 
             <div id="sync-symbol-properties" style="margin-top:10px; text-align:center; display:none;">

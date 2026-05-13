@@ -202,6 +202,8 @@ function init() {
             btnNudgeSBack:       document.getElementById('btn-tl-nudge-s-back'),
             btnNudgeSFwd:        document.getElementById('btn-tl-nudge-s-fwd'),
             btnNudgeLFwd:        document.getElementById('btn-tl-nudge-l-fwd'),
+            btnTlMoveBack:       document.getElementById('btn-tl-move-back'),
+            btnTlMoveFwd:        document.getElementById('btn-tl-move-fwd'),
             labelTlSelected:     document.getElementById('tl-selected-info'),
             containerProp:       document.getElementById('sync-symbol-properties'),
             inputDirection:      document.getElementById('input-sync-direction')
@@ -360,6 +362,8 @@ function setupEventListeners() {
     dom.sync.btnNudgeSBack.addEventListener('click', () => nudgeSelectedTile(-0.01));
     dom.sync.btnNudgeSFwd.addEventListener('click',  () => nudgeSelectedTile(0.01));
     dom.sync.btnNudgeLFwd.addEventListener('click',  () => nudgeSelectedTile(0.5));
+    dom.sync.btnTlMoveBack.addEventListener('click', () => moveSelectedSymbol(-1));
+    dom.sync.btnTlMoveFwd.addEventListener('click',  () => moveSelectedSymbol(1));
 
     dom.sync.inputDirection.addEventListener('input', (e: Event) => {
         const idx = appState.interaction.selectedSyncIndex;
@@ -1566,13 +1570,18 @@ function setupSyncView() {
     appState.preview.animationId = requestAnimationFrame(animate);
 }
 
+let _dragSrcIdx = -1;
+
 function renderSymbolNavStrip() {
     const container = dom.sync.navStrip;
     container.innerHTML = '';
     appState.symbols.forEach((sym, idx) => {
         const div = document.createElement('div');
-        div.className = 'nav-symbol-item';
-        div.id = `nav-sym-${idx}`;
+        div.className   = 'nav-symbol-item';
+        div.id          = `nav-sym-${idx}`;
+        div.draggable   = true;
+        div.title       = `Symbol ${idx + 1} — drag to reorder`;
+
         const img   = document.createElement('img');
         img.src     = sym.imageSrc;
         img.alt     = `Symbol ${idx + 1}`;
@@ -1581,12 +1590,65 @@ function renderSymbolNavStrip() {
         badge.textContent = (idx + 1).toString();
         div.appendChild(img);
         div.appendChild(badge);
+
+        // Select on click
         div.addEventListener('click', () => {
             appState.interaction.selectedSyncIndex = idx;
             selectTimelineTile(0);
         });
+
+        // Drag-to-reorder
+        div.addEventListener('dragstart', (e) => {
+            _dragSrcIdx = idx;
+            div.style.opacity = '0.45';
+            e.dataTransfer!.effectAllowed = 'move';
+        });
+        div.addEventListener('dragend', () => {
+            div.style.opacity = '';
+            container.querySelectorAll('.nav-symbol-item').forEach((el: any) => el.classList.remove('drag-over'));
+        });
+        div.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer!.dropEffect = 'move';
+            container.querySelectorAll('.nav-symbol-item').forEach((el: any) => el.classList.remove('drag-over'));
+            div.classList.add('drag-over');
+        });
+        div.addEventListener('drop', (e) => {
+            e.preventDefault();
+            div.classList.remove('drag-over');
+            if (_dragSrcIdx !== -1 && _dragSrcIdx !== idx) {
+                moveSymbolInSequence(_dragSrcIdx, idx);
+            }
+            _dragSrcIdx = -1;
+        });
+
         container.appendChild(div);
     });
+}
+
+function moveSymbolInSequence(fromIdx: number, toIdx: number) {
+    if (fromIdx === toIdx) return;
+    const syms = appState.symbols;
+    if (fromIdx < 0 || fromIdx >= syms.length || toIdx < 0 || toIdx >= syms.length) return;
+
+    const [moved] = syms.splice(fromIdx, 1);
+    syms.splice(toIdx, 0, moved);
+    syms.forEach((s, i) => s.globalIndex = i);
+
+    // Keep selection tracking the moved symbol
+    appState.interaction.selectedSyncIndex = toIdx;
+
+    renderSymbolNavStrip();
+    updateNavStripHighlight();
+    drawSyncTimeline();
+    updateTimelineToolsUI();
+    showToast(`Symbol moved to position ${toIdx + 1}`);
+}
+
+function moveSelectedSymbol(delta: number) {
+    const idx = appState.interaction.selectedSyncIndex;
+    if (idx === -1) return;
+    moveSymbolInSequence(idx, idx + delta);
 }
 
 function updateNavStripHighlight() {
@@ -1862,13 +1924,16 @@ function updateTimelineToolsUI() {
     if (idx === -1) {
         dom.sync.labelTlSelected.textContent = 'Select a Tile';
         [dom.sync.btnNudgeLBack, dom.sync.btnNudgeSBack,
-         dom.sync.btnNudgeSFwd,  dom.sync.btnNudgeLFwd].forEach(b => b.disabled = true);
+         dom.sync.btnNudgeSFwd,  dom.sync.btnNudgeLFwd,
+         dom.sync.btnTlMoveBack, dom.sync.btnTlMoveFwd].forEach(b => b.disabled = true);
         container.style.display = 'none';
     } else {
         const sym = appState.symbols[idx];
         dom.sync.labelTlSelected.textContent = `Tile ${idx + 1} @ ${sym.startTime.toFixed(2)}s`;
         [dom.sync.btnNudgeLBack, dom.sync.btnNudgeSBack,
          dom.sync.btnNudgeSFwd,  dom.sync.btnNudgeLFwd].forEach(b => b.disabled = false);
+        dom.sync.btnTlMoveBack.disabled = idx === 0;
+        dom.sync.btnTlMoveFwd.disabled  = idx === appState.symbols.length - 1;
         container.style.display = 'block';
         input.value = sym.direction || '';
     }
