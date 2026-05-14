@@ -62,7 +62,10 @@ const appState = {
         animationId: 0,
         startTime: 0,
         loadedImages: new Map<number, HTMLImageElement>()
-    }
+    },
+    // Tracks sequence changes so finishOrderingSymbols() knows whether to rebuild
+    sequenceVersion: 0,
+    symbolsBuiltVersion: -1
 };
 
 let dom = {} as any;
@@ -103,6 +106,41 @@ function updateStepProgress(activeStep: number) {
         } else if (i === activeStep) {
             circle.classList.add('active');
         }
+    }
+}
+
+// ─── Step Navigation ─────────────────────────────────────────────────────────
+const STEP_VIEWS = ['', 'upload-view', 'define-symbols-view', 'order-view', 'sync-view', 'result-view'];
+
+function navigateToStep(step: number) {
+    const current = VIEW_STEP_MAP[appState.currentView] || 1;
+    if (step === current) return;
+
+    // Forward guards — don't allow jumping ahead of unfinished work
+    if (step > current) {
+        if (step >= 2 && appState.pages.length === 0) {
+            showToast('Load files first', 'warning'); return;
+        }
+        if (step >= 3 && appState.pages.every(p => p.symbols.length === 0)) {
+            showToast('Detect symbols first (Step 2)', 'warning'); return;
+        }
+        if (step >= 4) {
+            // Ensure symbols are built; finishOrderingSymbols handles the switch
+            finishOrderingSymbols(); return;
+        }
+        if (step === 5 && appState.symbols.every(s => s.startTime === 0 && s.endTime === 0)) {
+            showToast('Sync your symbols first (Step 4)', 'warning'); return;
+        }
+    }
+
+    // Going backwards — always allowed; data is preserved
+    switchView(STEP_VIEWS[step]);
+}
+
+function setupStepNavigation() {
+    for (let i = 1; i <= 5; i++) {
+        const circle = document.getElementById(`step-${i}`);
+        if (circle) circle.addEventListener('click', () => navigateToStep(i));
     }
 }
 
@@ -243,6 +281,7 @@ function init() {
     };
 
     setupEventListeners();
+    setupStepNavigation();
 }
 
 // ─── Event Listeners ──────────────────────────────────────────────────────────
@@ -308,6 +347,7 @@ function setupEventListeners() {
     dom.define.btnPixelScan.addEventListener('click', () => { runGridDetection(); showToast('Pixel scan complete'); });
     dom.define.btnClear.addEventListener('click', clearCurrentPageSymbols);
     dom.define.btnGoOrder.addEventListener('click', () => switchView('order-view'));
+    document.getElementById('btn-back-to-upload')?.addEventListener('click', () => switchView('upload-view'));
     dom.define.btnSelectColor.addEventListener('click', selectSimilarColors);
     dom.define.btnZoomIn.addEventListener('click',  () => changeZoom(0.1));
     dom.define.btnZoomOut.addEventListener('click', () => changeZoom(-0.1));
@@ -362,6 +402,7 @@ function setupEventListeners() {
     dom.sync.btnSyncUndo.addEventListener('click', undoLastSyncTap);
     dom.sync.btnReset.addEventListener('click',  resetSync);
     dom.sync.btnBack.addEventListener('click',   () => switchView('order-view'));
+    document.getElementById('btn-back-to-define-from-sync')?.addEventListener('click', () => switchView('define-symbols-view'));
     dom.sync.btnFinish.addEventListener('click', () => switchView('result-view'));
     dom.sync.btnZoomIn.addEventListener('click',  () => { appState.interaction.timelineZoom += 20; drawSyncTimeline(); });
     dom.sync.btnZoomOut.addEventListener('click', () => { appState.interaction.timelineZoom = Math.max(20, appState.interaction.timelineZoom - 20); drawSyncTimeline(); });
@@ -385,6 +426,8 @@ function setupEventListeners() {
 
     // Result View
     dom.result.btnBack.addEventListener('click',   () => switchView('sync-view'));
+    document.getElementById('btn-back-to-order-from-result')?.addEventListener('click',  () => switchView('order-view'));
+    document.getElementById('btn-back-to-define-from-result')?.addEventListener('click', () => switchView('define-symbols-view'));
     dom.result.btnReset.addEventListener('click',  () => window.location.reload());
     dom.result.btnPlay.addEventListener('click',   playPreview);
     dom.result.btnPause.addEventListener('click',  pausePreview);
@@ -1517,8 +1560,8 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const hitIdx = page.symbols.findIndex((s: any) =>
         x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
     if (hitIdx !== -1) {
-        // Always append — same symbol can appear multiple times
         page.sequence.push(hitIdx);
+        appState.sequenceVersion++;
         drawOrderCanvas();
         updateOrderSeqBar();
     }
@@ -1528,6 +1571,7 @@ function undoLastOrderSymbol() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page || page.sequence.length === 0) return;
     page.sequence.pop();
+    appState.sequenceVersion++;
     drawOrderCanvas();
     updateOrderSeqBar();
     showToast('Removed last symbol from sequence');
@@ -1575,6 +1619,7 @@ function updateOrderSeqBar() {
 
         chip.addEventListener('click', () => {
             page.sequence.splice(pos, 1);
+            appState.sequenceVersion++;
             drawOrderCanvas();
             updateOrderSeqBar();
         });
@@ -1591,6 +1636,7 @@ function autoOrderPage() {
         return yDiff > 40 ? sA.y - sB.y : sA.x - sB.x;
     });
     page.sequence = indices;
+    appState.sequenceVersion++;
     drawOrderCanvas();
     updateOrderSeqBar();
     showToast(`Auto-ordered ${indices.length} symbols (left→right, top→bottom)`);
@@ -1598,12 +1644,24 @@ function autoOrderPage() {
 
 function resetOrderPage() {
     appState.pages[appState.currentPageIndex].sequence = [];
+    appState.sequenceVersion++;
     drawOrderCanvas();
     updateOrderSeqBar();
     showToast('Sequence cleared');
 }
 
 function finishOrderingSymbols() {
+    // If nothing changed since the last build, skip the rebuild to preserve timings
+    if (appState.symbolsBuiltVersion === appState.sequenceVersion && appState.symbols.length > 0) {
+        switchView('sync-view');
+        return;
+    }
+
+    // Snapshot existing timings so we can restore them if the count matches
+    const prevTimings = appState.symbols.map(s => ({
+        startTime: s.startTime, endTime: s.endTime, direction: s.direction
+    }));
+
     appState.symbols = [];
     appState.pages.forEach((page, pIdx) => {
         const order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
@@ -1629,7 +1687,21 @@ function finishOrderingSymbols() {
     if (appState.symbols.length === 0) {
         showToast('No symbols in sequence — tap symbols in order first', 'warning'); return;
     }
-    showToast(`${appState.symbols.length} symbols ready to sync`, 'success');
+
+    // Restore timings when count matches (e.g. only images were edited, not order)
+    if (prevTimings.length === appState.symbols.length) {
+        appState.symbols.forEach((s, i) => {
+            s.startTime = prevTimings[i].startTime;
+            s.endTime   = prevTimings[i].endTime;
+            s.direction = prevTimings[i].direction;
+        });
+        const hasTiming = appState.symbols.some(s => s.startTime > 0);
+        showToast(hasTiming ? 'Symbols refreshed — timings preserved ✓' : `${appState.symbols.length} symbols ready to sync`, hasTiming ? 'success' : '');
+    } else {
+        showToast(`${appState.symbols.length} symbols ready — re-sync needed`, 'warning');
+    }
+
+    appState.symbolsBuiltVersion = appState.sequenceVersion;
     setupSyncView();
     switchView('sync-view');
 }

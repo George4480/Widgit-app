@@ -125,7 +125,14 @@
             justify-content: center;
             transition: all var(--transition);
             position: relative;
-            cursor: default;
+            cursor: pointer;
+            user-select: none;
+        }
+        .step-circle:hover:not(.active) {
+            background: rgba(255,255,255,0.32);
+            border-color: rgba(255,255,255,0.7);
+            color: white;
+            transform: scale(1.1);
         }
         .step-circle.active {
             background: white;
@@ -924,6 +931,7 @@
     <h1>Mr. Bunn's Widget Machine</h1>
     <p class="subtitle">Convert symbol charts into animated karaoke videos</p>
 
+    <p style="font-size:0.65rem; opacity:0.5; margin:0 0 6px; letter-spacing:0.03em;">Click any step to jump there</p>
     <nav class="step-progress" id="step-progress" aria-label="Progress steps">
         <div class="step-item">
             <div class="step-circle active" id="step-1"><span>1</span></div>
@@ -1103,6 +1111,7 @@
         </div>
 
         <div class="button-group" style="margin-top:0;">
+            <button id="btn-back-to-upload" class="button secondary">◀ Back</button>
             <button id="btn-goto-order" class="button large">Set Reading Order ▶</button>
         </div>
     </div>
@@ -1144,7 +1153,7 @@
         </div>
 
         <div class="button-group">
-            <button id="btn-back-to-define" class="button secondary">◀ Back</button>
+            <button id="btn-back-to-define" class="button secondary">◀ Revise Symbols</button>
             <button id="btn-finish-order"   class="button large">Next: Sync Timing ▶</button>
         </div>
     </div>
@@ -1229,8 +1238,9 @@
         <audio id="sync-audio-player" style="width:100%; margin:14px 0;" controls></audio>
 
         <div class="button-group">
-            <button id="reset-sync-button"         class="button secondary">↺ Reset</button>
-            <button id="back-to-order-from-sync"   class="button secondary">◀ Back</button>
+            <button id="reset-sync-button"         class="button secondary">↺ Reset Sync</button>
+            <button id="back-to-order-from-sync"   class="button secondary">◀ Revise Order</button>
+            <button id="btn-back-to-define-from-sync" class="button secondary">✏️ Revise Symbols</button>
             <button id="btn-finish-sync"            class="button large">Preview & Export ▶</button>
         </div>
     </div>
@@ -1304,8 +1314,10 @@
             <button id="download-backing"  class="button warning">⬇ Download (Backing Only)</button>
         </div>
         <div class="button-group" style="margin-top:8px;">
-            <button id="back-to-sync-from-result" class="button secondary">◀ Back</button>
-            <button id="reset-button"             class="button secondary danger-text">✕ Start Over</button>
+            <button id="back-to-sync-from-result"      class="button secondary">◀ Revise Timing</button>
+            <button id="btn-back-to-order-from-result" class="button secondary">✏️ Revise Order</button>
+            <button id="btn-back-to-define-from-result" class="button secondary">🔧 Revise Symbols</button>
+            <button id="reset-button"                  class="button secondary danger-text">✕ Start Over</button>
         </div>
     </div>
 
