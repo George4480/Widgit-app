@@ -1,23 +1,50 @@
 import { GoogleGenAI } from "@google/genai";
+import * as pdfjsLib from "pdfjs-dist";
+import { jsPDF } from "jspdf";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
+// @ts-ignore
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
+import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData } from "./src/types";
+
+// Set PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+// Undo/Redo Stacks
+const undoStack: string[] = [];
+const redoStack: string[] = [];
+
+// Object URL Memory Cleaner
+const activeObjectUrls = new Set<string>();
+
+function createLocalUrl(file: File | Blob): string {
+    const url = URL.createObjectURL(file);
+    activeObjectUrls.add(url);
+    return url;
+}
+
+function revokeAllLocalUrls() {
+    activeObjectUrls.forEach(url => URL.revokeObjectURL(url));
+    activeObjectUrls.clear();
+}
 
 // Application State
-const appState = {
+const appState: AppState = {
     currentView: 'upload-view', // upload-view, loading-view, define-symbols-view, order-view, sync-view, result-view
     mode: 'karaoke', // 'karaoke' | 'board'
-    songTitle: '', // New: Store song title
+    songTitle: '', // Store song title
     files: {
         images: [] as File[],
         audioVocal: null as File | null,
         audioBacking: null as File | null,
         pdf: null as File | null
     },
-    // pages now includes 'sequence' array for order
-    pages: [] as { image: HTMLImageElement, width: number, height: number, symbols: any[], sequence: number[] }[],
+    pages: [] as ProjectPage[],
     currentPageIndex: 0,
-    symbols: [] as any[], // Flat list for Sync/Result
+    symbols: [] as SymbolTile[], // Flat list for Sync/Result
     isRecordingSync: false,
     currentSyncIndex: 0, // Used during recording
-    syncData: [] as { symbolIndex: number, time: number }[],
+    syncData: [] as SyncTiming[],
     audioBuffer: null as AudioBuffer | null, // Decoded audio for waveform
     stats: {
         avgDuration: 0
@@ -48,10 +75,10 @@ const appState = {
         zoomLevel: 1.0, 
         marqueeStart: { x: 0, y: 0 },
         marqueeCurrent: { x: 0, y: 0 },
-        timelineZoom: 100, // pixels per second (higher default for detail)
+        timelineZoom: 100, // pixels per second
         timelineDragIndex: -1,
-        selectedSyncIndex: -1, // Currently selected tile in timeline for editing
-        syncScrollX: 0, // TIME (seconds) at left edge of timeline view
+        selectedSyncIndex: -1, // Currently selected tile in timeline
+        syncScrollX: 0, // TIME at left edge of timeline
         lastTouchDistance: 0, // For pinch zoom
         latencyOffset: 0.0 // Global playback offset
     },
@@ -60,7 +87,8 @@ const appState = {
         animationId: 0,
         startTime: 0,
         loadedImages: new Map<number, HTMLImageElement>()
-    }
+    },
+    aiModeEnabled: false // Optional AI Mode is disabled by default
 };
 
 // DOM Elements
@@ -69,6 +97,21 @@ let dom = {} as any;
 function init() {
     // Map DOM elements
     dom = {
+        global: {
+            btnUndo: document.getElementById('btn-global-undo'),
+            btnRedo: document.getElementById('btn-global-redo'),
+            btnSave: document.getElementById('btn-global-save'),
+            btnLoad: document.getElementById('btn-global-load'),
+            inputLoad: document.getElementById('input-global-load'),
+            btnToggleContrast: document.getElementById('btn-toggle-high-contrast'),
+            btnToggleMotion: document.getElementById('btn-toggle-reduced-motion'),
+            btnHelp: document.getElementById('btn-global-help'),
+            helpPanel: document.getElementById('global-help-panel'),
+            btnToggleAiMode: document.getElementById('btn-toggle-ai-mode'),
+            aiCreatorInputs: document.getElementById('ai-creator-inputs'),
+            aiModeToggleContainer: document.getElementById('ai-mode-toggle-container'),
+            btnExportManifest: document.getElementById('btn-export-manifest'),
+        },
         views: {
             upload: document.getElementById('upload-view'),
             loading: document.getElementById('loading-view'),
@@ -83,12 +126,16 @@ function init() {
             btnBrowse: document.querySelector('.browse-btn'),
             btnGenerate: document.getElementById('generate-button'),
             btnCreateBoard: document.getElementById('btn-create-board'),
+            btnClearUploads: document.getElementById('btn-clear-uploads'),
             statusSongboard: document.getElementById('status-songboard'),
             statusVocal: document.getElementById('status-vocal'),
             statusBacking: document.getElementById('status-backing'),
             cardSongboard: document.getElementById('card-songboard'),
             cardVocal: document.getElementById('card-vocal'),
             cardBacking: document.getElementById('card-backing'),
+            listSongboard: document.getElementById('list-songboard'),
+            listVocal: document.getElementById('list-vocal'),
+            listBacking: document.getElementById('list-backing'),
             titleInput: document.getElementById('input-song-title')
         },
         define: {
@@ -138,7 +185,9 @@ function init() {
             btnBack: document.getElementById('btn-back-to-define'),
             btnFinish: document.getElementById('btn-finish-order'),
             btnPanUp: document.getElementById('btn-order-pan-up'),
-            btnPanDown: document.getElementById('btn-order-pan-down')
+            btnPanDown: document.getElementById('btn-order-pan-down'),
+            sequenceStrip: document.getElementById('order-sequence-strip'),
+            audio: document.getElementById('order-audio-player') as HTMLAudioElement
         },
         sync: {
             containerFineTuning: document.getElementById('sync-fine-tuning'),
@@ -201,6 +250,46 @@ function init() {
 }
 
 function setupEventListeners() {
+    // --- Global Controls ---
+    if (dom.global) {
+        dom.global.btnUndo.addEventListener('click', historyUndo);
+        dom.global.btnRedo.addEventListener('click', historyRedo);
+        dom.global.btnSave.addEventListener('click', () => confirmExport(saveProjectJson));
+        dom.global.btnLoad.addEventListener('click', triggerProjectLoad);
+        dom.global.inputLoad.addEventListener('change', handleProjectLoadFile);
+        
+        dom.global.btnToggleContrast.addEventListener('click', () => {
+            document.body.classList.toggle('high-contrast');
+            const active = document.body.classList.contains('high-contrast');
+            dom.global.btnToggleContrast.textContent = active ? "☀️ Normal" : "👁️ Contrast";
+        });
+        
+        dom.global.btnToggleMotion.addEventListener('click', () => {
+            document.body.classList.toggle('reduced-motion');
+            const active = document.body.classList.contains('reduced-motion');
+            dom.global.btnToggleMotion.textContent = active ? "🏃‍♂️ Normal" : "🏃‍♂️ Motion";
+        });
+        
+        dom.global.btnHelp.addEventListener('click', () => {
+            const panel = dom.global.helpPanel;
+            const isHidden = panel.style.display === 'none';
+            panel.style.display = isHidden ? 'block' : 'none';
+            dom.global.btnHelp.style.backgroundColor = isHidden ? '#1a73e8' : '#e8f0fe';
+            dom.global.btnHelp.style.color = isHidden ? 'white' : '#1a73e8';
+        });
+
+        dom.global.btnToggleAiMode.addEventListener('click', () => {
+            appState.aiModeEnabled = !appState.aiModeEnabled;
+            const enabled = appState.aiModeEnabled;
+            dom.global.aiCreatorInputs.style.display = enabled ? 'block' : 'none';
+            dom.global.btnToggleAiMode.textContent = enabled ? "Disable AI Mode" : "Enable AI Mode";
+            dom.global.aiModeToggleContainer.style.backgroundColor = enabled ? '#e8f0fe' : 'white';
+            dom.global.aiModeToggleContainer.style.borderColor = enabled ? '#1a73e8' : '#dadce0';
+        });
+
+        dom.global.btnExportManifest.addEventListener('click', () => confirmExport(exportProjectManifest));
+    }
+
     // --- Upload View ---
     const triggerUpload = () => {
         // Create a new input on each click to prevent iOS/Safari file invalidation
@@ -242,6 +331,7 @@ function setupEventListeners() {
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
     dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
+    dom.upload.btnClearUploads.addEventListener('click', resetUploads);
     
     // Assignment swapping logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
@@ -364,8 +454,8 @@ function setupEventListeners() {
     dom.result.btnPlay.addEventListener('click', playPreview);
     dom.result.btnPause.addEventListener('click', pausePreview);
     dom.result.btnRewind.addEventListener('click', rewindPreview);
-    dom.result.btnDownloadFull.addEventListener('click', () => renderVideo('full'));
-    dom.result.btnDownloadBacking.addEventListener('click', () => renderVideo('backing'));
+    dom.result.btnDownloadFull.addEventListener('click', () => confirmExport(() => renderVideo('full')));
+    dom.result.btnDownloadBacking.addEventListener('click', () => confirmExport(() => renderVideo('backing')));
     // Latency Slider (Global Correction)
     dom.result.latencySlider.addEventListener('input', (e: Event) => {
         const val = parseInt((e.target as HTMLInputElement).value);
@@ -396,10 +486,34 @@ function setupEventListeners() {
     
     // Global Keyboard
     window.addEventListener('keydown', (e) => {
-        if (appState.currentView === 'define-symbols-view' && (e.key === 'Delete' || e.key === 'Backspace')) deleteSelectedSymbols();
-        if (appState.currentView === 'sync-view' && (e.key === ' ' || e.key === 'Enter')) {
-             e.preventDefault();
-             handleSyncTapAction();
+        // Prevent shortcuts if user is typing in a text field
+        const activeTag = document.activeElement?.tagName.toLowerCase();
+        if (activeTag === 'input' || activeTag === 'textarea') {
+            return;
+        }
+
+        if (appState.currentView === 'define-symbols-view' && (e.key === 'Delete' || e.key === 'Backspace')) {
+            deleteSelectedSymbols();
+        }
+        if (appState.currentView === 'sync-view') {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                handleSyncTapAction();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                selectTimelineTile(-1);
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                selectTimelineTile(1);
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            historyUndo();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+            e.preventDefault();
+            historyRedo();
         }
     });
 }
@@ -494,44 +608,185 @@ async function handleFiles(fileList: FileList | null | undefined) {
             const isBacking = name.includes('backing') || name.includes('inst') || name.includes('karaoke');
             const isVocal = name.includes('vocal') || name.includes('full') || name.includes('mix') || name.includes('demo');
 
-            if (isBacking && !appState.files.audioBacking) {
+            if (isBacking) {
                 appState.files.audioBacking = file;
-                dom.upload.statusBacking.textContent = file.name;
-                dom.upload.cardBacking.classList.add('filled');
-            } else if (isVocal && !appState.files.audioVocal) {
+            } else if (isVocal) {
                 appState.files.audioVocal = file;
-                dom.upload.statusVocal.textContent = file.name;
-                dom.upload.cardVocal.classList.add('filled');
             } else {
-                // Fallback
-                 if (!appState.files.audioVocal) {
+                // Smart fallback slot assignment
+                if (!appState.files.audioVocal) {
                     appState.files.audioVocal = file;
-                    dom.upload.statusVocal.textContent = file.name;
-                    dom.upload.cardVocal.classList.add('filled');
                 } else if (!appState.files.audioBacking) {
                     appState.files.audioBacking = file;
-                    dom.upload.statusBacking.textContent = file.name;
-                    dom.upload.cardBacking.classList.add('filled');
+                } else {
+                    // Overwrite vocal as the main track if both full
+                    appState.files.audioVocal = file;
                 }
             }
-
         } else if (type === 'application/pdf' || name.endsWith('.pdf')) {
+            // Loading a PDF replaces other images since they are different formats
             appState.files.pdf = file;
-            dom.upload.statusSongboard.textContent = file.name;
-            dom.upload.cardSongboard.classList.add('filled');
+            appState.files.images = [];
         } else if (type.startsWith('image/')) {
+            // Loading images clears a previous PDF to prevent formats mismatch
+            appState.files.pdf = null;
             appState.files.images.push(file);
-            dom.upload.statusSongboard.textContent = `${appState.files.images.length} images loaded`;
-            dom.upload.cardSongboard.classList.add('filled');
         }
     }
+    
+    // Naturally sort loaded images so they appear in correct sequence
+    if (appState.files.images.length > 0) {
+        appState.files.images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    }
+
+    renderUploadedFilesList();
     checkReadyToStart();
+}
+
+function renderUploadedFilesList() {
+    // 1. Songboard Pages Card
+    const listSongboard = dom.upload.listSongboard;
+    if (listSongboard) {
+        listSongboard.innerHTML = '';
+        if (appState.files.pdf) {
+            const item = document.createElement('div');
+            item.className = 'card-file-item';
+            
+            const span = document.createElement('span');
+            span.textContent = appState.files.pdf.name;
+            span.title = appState.files.pdf.name;
+            item.appendChild(span);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.title = 'Remove PDF';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                appState.files.pdf = null;
+                renderUploadedFilesList();
+                checkReadyToStart();
+            };
+            item.appendChild(removeBtn);
+            listSongboard.appendChild(item);
+
+            dom.upload.statusSongboard.textContent = "PDF Loaded";
+            dom.upload.cardSongboard.classList.add('filled');
+        } else if (appState.files.images.length > 0) {
+            appState.files.images.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = 'card-file-item';
+                
+                const span = document.createElement('span');
+                span.textContent = `${index + 1}. ${file.name}`;
+                span.title = file.name;
+                item.appendChild(span);
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'remove-btn';
+                removeBtn.textContent = '×';
+                removeBtn.title = `Remove image ${file.name}`;
+                removeBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    appState.files.images.splice(index, 1);
+                    renderUploadedFilesList();
+                    checkReadyToStart();
+                };
+                item.appendChild(removeBtn);
+                listSongboard.appendChild(item);
+            });
+
+            dom.upload.statusSongboard.textContent = `${appState.files.images.length} images loaded`;
+            dom.upload.cardSongboard.classList.add('filled');
+        } else {
+            dom.upload.statusSongboard.textContent = "No images loaded";
+            dom.upload.cardSongboard.classList.remove('filled');
+        }
+    }
+
+    // 2. Vocal Card
+    const listVocal = dom.upload.listVocal;
+    if (listVocal) {
+        listVocal.innerHTML = '';
+        if (appState.files.audioVocal) {
+            const item = document.createElement('div');
+            item.className = 'card-file-item';
+
+            const span = document.createElement('span');
+            span.textContent = appState.files.audioVocal.name;
+            span.title = appState.files.audioVocal.name;
+            item.appendChild(span);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.title = 'Remove vocal';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                appState.files.audioVocal = null;
+                renderUploadedFilesList();
+                checkReadyToStart();
+            };
+            item.appendChild(removeBtn);
+            listVocal.appendChild(item);
+
+            dom.upload.statusVocal.textContent = appState.files.audioVocal.name;
+            dom.upload.cardVocal.classList.add('filled');
+        } else {
+            dom.upload.statusVocal.textContent = "No audio loaded";
+            dom.upload.cardVocal.classList.remove('filled', 'selected');
+        }
+    }
+
+    // 3. Backing Card
+    const listBacking = dom.upload.listBacking;
+    if (listBacking) {
+        listBacking.innerHTML = '';
+        if (appState.files.audioBacking) {
+            const item = document.createElement('div');
+            item.className = 'card-file-item';
+
+            const span = document.createElement('span');
+            span.textContent = appState.files.audioBacking.name;
+            span.title = appState.files.audioBacking.name;
+            item.appendChild(span);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.title = 'Remove backing';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                appState.files.audioBacking = null;
+                renderUploadedFilesList();
+                checkReadyToStart();
+            };
+            item.appendChild(removeBtn);
+            listBacking.appendChild(item);
+
+            dom.upload.statusBacking.textContent = appState.files.audioBacking.name;
+            dom.upload.cardBacking.classList.add('filled');
+        } else {
+            dom.upload.statusBacking.textContent = "No audio loaded";
+            dom.upload.cardBacking.classList.remove('filled', 'selected');
+        }
+    }
 }
 
 function checkReadyToStart() {
     const hasVisuals = appState.files.pdf || appState.files.images.length > 0;
     const hasAudio = !!appState.files.audioVocal || !!appState.files.audioBacking;
     dom.upload.btnGenerate.disabled = !(hasVisuals && hasAudio);
+}
+
+function resetUploads() {
+    appState.files.pdf = null;
+    appState.files.images = [];
+    appState.files.audioVocal = null;
+    appState.files.audioBacking = null;
+    
+    renderUploadedFilesList();
+    checkReadyToStart();
 }
 
 // --- Board Mode Logic ---
@@ -608,8 +863,6 @@ async function downloadBoardPdf() {
     });
 
     const imgData = canvas.toDataURL('image/jpeg', 0.95);
-    // FIX: Correct way to access jsPDF constructor from UMD build
-    const { jsPDF } = (window as any).jspdf;
     const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'px',
@@ -627,8 +880,6 @@ async function downloadBoardImages() {
         return;
     }
 
-    const JSZip = (window as any).JSZip;
-    const saveAs = (window as any).saveAs;
     const zip = new JSZip();
     
     page.symbols.forEach((sym: any, i: number) => {
@@ -668,7 +919,9 @@ async function startProject() {
 
         const syncFile = appState.files.audioVocal || appState.files.audioBacking;
         if (syncFile) {
-            dom.sync.audio.src = URL.createObjectURL(syncFile);
+            const url = createLocalUrl(syncFile);
+            dom.sync.audio.src = url;
+            if (dom.order.audio) dom.order.audio.src = url;
             // Decode audio for waveform
             const ctx = new AudioContext();
             const buffer = await syncFile.arrayBuffer();
@@ -694,15 +947,12 @@ async function processImageFile(file: File) {
             resolve();
         };
         img.onerror = reject;
-        img.src = URL.createObjectURL(file);
+        img.src = createLocalUrl(file);
     });
 }
 
 async function processPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
-    const pdfjsLib = (window as any).pdfjsLib;
-    if (!pdfjsLib) throw new Error("PDF.js library is not loaded.");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -723,6 +973,10 @@ async function processPdf(file: File) {
 
 // --- View Management ---
 function switchView(viewId: string) {
+    // Pause audio when switching
+    if (dom.order.audio) dom.order.audio.pause();
+    if (dom.sync.audio) dom.sync.audio.pause();
+
     Object.values(dom.views).forEach((el: HTMLElement) => el.style.display = 'none');
     dom.views[viewId === 'upload-view' ? 'upload' : 
               viewId === 'loading-view' ? 'loading' :
@@ -1014,7 +1268,7 @@ async function handleSymbolUpload(fileList: FileList | null) {
         // Reset input
         dom.define.inputUploadSymbol.value = '';
     };
-    img.src = URL.createObjectURL(file);
+    img.src = createLocalUrl(file);
 }
 
 function setAiLoading(loading: boolean) {
@@ -1053,7 +1307,7 @@ function clearCurrentPageSymbols() {
 function deleteSelectedSymbols() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page || appState.interaction.selectedIndices.size === 0) return;
-    const indicesToDelete = Array.from(appState.interaction.selectedIndices).sort((a, b) => b - a);
+    const indicesToDelete = Array.from(appState.interaction.selectedIndices).sort((a: number, b: number) => b - a);
     indicesToDelete.forEach(index => {
         page.symbols.splice(index, 1);
         // Also remove from sequence if present
@@ -1319,12 +1573,19 @@ function handleDefineCanvasUp() {
 function setupOrderView() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
+    
+    if (dom.order.audio) {
+        dom.order.audio.parentElement!.style.display = (appState.files.audioVocal || appState.files.audioBacking) ? 'block' : 'none';
+    }
+
     // Fit to width mostly
     const containerW = dom.order.canvasContainer.clientWidth;
     const scale = containerW / page.width;
     dom.order.canvas.width = page.width * scale;
     dom.order.canvas.height = page.height * scale;
+    dom.order.labelPage.textContent = `Page ${appState.currentPageIndex + 1} / ${appState.pages.length}`;
     drawOrderCanvas();
+    renderOrderSequenceStrip();
 }
 function drawOrderCanvas() {
     const ctx = dom.order.ctx;
@@ -1358,10 +1619,14 @@ function drawOrderCanvas() {
             ctx.drawImage(sym.customImage, x, y, w, h);
         }
 
-        const seqIdx = page.sequence.indexOf(idx);
+        // Find all occurrences in sequence
+        const seqIndices = page.sequence.reduce((acc, val, i) => {
+            if (val === idx) acc.push(i + 1);
+            return acc;
+        }, [] as number[]);
         
         ctx.strokeStyle = '#999';
-        if (seqIdx !== -1) {
+        if (seqIndices.length > 0) {
             ctx.fillStyle = 'rgba(52, 168, 83, 0.3)';
             ctx.strokeStyle = '#34a853';
             ctx.lineWidth = 3;
@@ -1373,8 +1638,8 @@ function drawOrderCanvas() {
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
 
-        if (seqIdx !== -1) {
-            // Draw Badge
+        if (seqIndices.length > 0) {
+            // Draw Badge (top-right)
             ctx.fillStyle = '#34a853';
             ctx.beginPath();
             ctx.arc(x + w - 15, y + 15, 12, 0, Math.PI * 2);
@@ -1382,28 +1647,83 @@ function drawOrderCanvas() {
             ctx.fillStyle = 'white';
             ctx.font = 'bold 12px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText((seqIdx + 1).toString(), x + w - 15, y + 19);
+            // Show the first position, but if multiple, add a '+'
+            const label = seqIndices.length > 1 ? `${seqIndices[0]}+` : seqIndices[0].toString();
+            ctx.fillText(label, x + w - 15, y + 19);
         }
     });
 }
+
+function renderOrderSequenceStrip() {
+    const page = appState.pages[appState.currentPageIndex];
+    const strip = dom.order.sequenceStrip;
+    if (!strip || !page) return;
+
+    strip.innerHTML = '';
+    page.sequence.forEach((symIdx, seqIdx) => {
+        const sym = page.symbols[symIdx];
+        if (!sym) return;
+
+        const item = document.createElement('div');
+        item.className = 'order-sequence-item';
+        
+        // Generate thumbnail
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = 80;
+        offCanvas.height = 80;
+        const offCtx = offCanvas.getContext('2d');
+        if (offCtx) {
+            if (sym.customImage) {
+                offCtx.drawImage(sym.customImage, 0, 0, 80, 80);
+            } else {
+                // Draw crop from page image
+                offCtx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, 80, 80);
+            }
+        }
+        
+        const img = document.createElement('img');
+        img.src = offCanvas.toDataURL();
+        item.appendChild(img);
+        
+        const badge = document.createElement('div');
+        badge.className = 'number-badge';
+        badge.textContent = (seqIdx + 1).toString();
+        item.appendChild(badge);
+        
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Remove from sequence';
+        removeBtn.onclick = (e) => {
+            e.stopPropagation();
+            page.sequence.splice(seqIdx, 1);
+            drawOrderCanvas();
+            renderOrderSequenceStrip();
+        };
+        item.appendChild(removeBtn);
+
+        strip.appendChild(item);
+    });
+    
+    // Auto scroll to end when adding
+    setTimeout(() => { strip.scrollLeft = strip.scrollWidth; }, 50);
+}
+
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const pos = getPointerPos(e, dom.order.canvas);
     const page = appState.pages[appState.currentPageIndex];
+    if (!page) return;
+
     const scale = dom.order.canvas.width / page.width;
     const x = pos.x / scale;
     const y = pos.y / scale;
 
     const hitIdx = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
     if (hitIdx !== -1) {
-        const currentSeqIdx = page.sequence.indexOf(hitIdx);
-        if (currentSeqIdx !== -1) {
-            // Remove if already there
-            page.sequence.splice(currentSeqIdx, 1);
-        } else {
-            // Add to end
-            page.sequence.push(hitIdx);
-        }
+        // ALWAYS Add to sequence on click (allows multiple)
+        page.sequence.push(hitIdx);
         drawOrderCanvas();
+        renderOrderSequenceStrip();
     }
 }
 function autoOrderPage() {
@@ -1417,10 +1737,16 @@ function autoOrderPage() {
     });
     page.sequence = indices;
     drawOrderCanvas();
+    renderOrderSequenceStrip();
 }
 function resetOrderPage() {
     appState.pages[appState.currentPageIndex].sequence = [];
+    if (dom.order.audio) {
+        dom.order.audio.pause();
+        dom.order.audio.currentTime = 0;
+    }
     drawOrderCanvas();
+    renderOrderSequenceStrip();
 }
 function finishOrderingSymbols() {
     appState.symbols = [];
@@ -1534,6 +1860,9 @@ function renderSymbolNavStrip() {
         
         container.appendChild(div);
     });
+
+    // Dynamically apply warnings and badges
+    updateNavStripWarnings();
 }
 
 // NEW: Update Highlight in Strip
@@ -1843,11 +2172,11 @@ function updateTimelineToolsUI() {
         input.value = sym.direction || '';
     }
     updateNavStripHighlight(); // Sync strip highlight
+    updateNavStripWarnings(); // Update timing warning badges and borders
 }
 
 // Timeline Drag Logic
 function handleTimelineMouseDown(e: MouseEvent | TouchEvent) {
-    if (e.type === 'touchstart') e.preventDefault();
     const pos = getPointerPos(e, dom.sync.timelineCanvas);
     const x = pos.x;
     
@@ -1868,6 +2197,7 @@ function handleTimelineMouseDown(e: MouseEvent | TouchEvent) {
     });
 
     if (closestIdx !== -1) {
+        if (e.cancelable) e.preventDefault();
         appState.interaction.timelineDragIndex = closestIdx;
         appState.interaction.selectedSyncIndex = closestIdx;
         appState.interaction.isDragging = true;
@@ -1882,18 +2212,19 @@ function handleTimelineMouseDown(e: MouseEvent | TouchEvent) {
 }
 
 function handleTimelineMouseMove(e: MouseEvent | TouchEvent) {
-    if (e.type === 'touchmove') e.preventDefault();
     if (!appState.interaction.isDragging) return;
     
     const pos = getPointerPos(e, dom.sync.timelineCanvas);
     const zoom = appState.interaction.timelineZoom;
     
     if (appState.interaction.dragAction === 'pan-timeline') {
+        if (e.type === 'touchmove' && e.cancelable) e.preventDefault();
         const dx = pos.x - appState.interaction.dragStart.x;
         const dt = dx / zoom;
         appState.interaction.syncScrollX = Math.max(0, appState.interaction.syncScrollX - dt);
         appState.interaction.dragStart.x = pos.x;
     } else if (appState.interaction.timelineDragIndex !== -1) {
+        if (e.type === 'touchmove' && e.cancelable) e.preventDefault();
         const x = pos.x;
         const time = Math.max(0, appState.interaction.syncScrollX + (x / zoom));
         const idx = appState.interaction.timelineDragIndex;
@@ -2131,6 +2462,607 @@ async function renderVideo(mode: 'full' | 'backing') {
         requestAnimationFrame(renderLoop);
     }
     renderLoop();
+}
+
+// --- Project Persistence & Manifest Export ---
+
+function getBase64Image(img: HTMLImageElement | null): string {
+    if (!img) return "";
+    if (img.src.startsWith('data:')) return img.src;
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width || 200;
+        canvas.height = img.naturalHeight || img.height || 200;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            return canvas.toDataURL('image/png');
+        }
+    } catch (err) {
+        console.warn("Failed to base64 encode custom image, falling back:", err);
+    }
+    return img.src;
+}
+
+interface SyncIssue {
+    type: 'unsynced' | 'gap';
+    tileIndex: number;
+    message: string;
+}
+
+function getSyncIssues(): SyncIssue[] {
+    const issues: SyncIssue[] = [];
+    if (appState.mode === 'board') return issues; // No timing sync needed for static board mode
+    if (appState.symbols.length === 0) return issues;
+
+    appState.symbols.forEach((sym, idx) => {
+        if (sym.startTime === 0 && sym.endTime === 0) {
+            issues.push({
+                type: 'unsynced',
+                tileIndex: idx,
+                message: `Tile has not been synchronized (has no timing data).`
+            });
+        }
+    });
+
+    for (let i = 0; i < appState.symbols.length - 1; i++) {
+        const current = appState.symbols[i];
+        const next = appState.symbols[i + 1];
+
+        if ((current.startTime === 0 && current.endTime === 0) || (next.startTime === 0 && next.endTime === 0)) {
+            continue;
+        }
+
+        const gap = next.startTime - current.endTime;
+        if (gap > 0.05) {
+            issues.push({
+                type: 'gap',
+                tileIndex: i,
+                message: `Gap of ${gap.toFixed(2)}s detected after this tile.`
+            });
+        }
+    }
+
+    return issues;
+}
+
+function updateNavStripWarnings() {
+    const container = dom.sync.navStrip;
+    if (!container) return;
+
+    const issues = getSyncIssues();
+    const items = container.querySelectorAll('.nav-symbol-item');
+
+    items.forEach((item, idx) => {
+        item.classList.remove('warning-unsynced', 'warning-gap');
+        const oldWarn = item.querySelector('.warn-badge');
+        if (oldWarn) oldWarn.remove();
+        const oldGap = item.querySelector('.gap-badge');
+        if (oldGap) oldGap.remove();
+
+        const hasUnsynced = issues.some(iss => iss.type === 'unsynced' && iss.tileIndex === idx);
+        const hasGapAfter = issues.some(iss => iss.type === 'gap' && iss.tileIndex === idx);
+
+        if (hasUnsynced) {
+            item.classList.add('warning-unsynced');
+            const warnBadge = document.createElement('div');
+            warnBadge.className = 'warn-badge';
+            warnBadge.innerHTML = '⚠️';
+            warnBadge.title = 'Tile is un-synced (missing timing)';
+            item.appendChild(warnBadge);
+        } else if (hasGapAfter) {
+            item.classList.add('warning-gap');
+            const gapBadge = document.createElement('div');
+            gapBadge.className = 'gap-badge';
+            gapBadge.innerHTML = '⏱️';
+            gapBadge.title = 'Gap exists after this tile';
+            item.appendChild(gapBadge);
+        }
+    });
+}
+
+function confirmExport(onConfirm: () => void) {
+    const issues = getSyncIssues();
+    if (issues.length === 0) {
+        onConfirm();
+        return;
+    }
+
+    // Update highlights in navigation strip
+    updateNavStripWarnings();
+
+    // Create warning modal
+    const overlay = document.createElement('div');
+    overlay.className = 'warning-modal-overlay';
+    overlay.id = 'export-warning-modal';
+
+    const content = document.createElement('div');
+    content.className = 'warning-modal-content';
+
+    const title = document.createElement('h3');
+    title.className = 'warning-modal-title';
+    title.innerHTML = '⚠️ Export Warning: Sync Issues Detected';
+
+    const body = document.createElement('div');
+    body.className = 'warning-modal-body';
+    body.innerHTML = `
+        <p>You are about to export this project, but we detected <strong>${issues.length}</strong> synchronization issue(s). Reviewing and fixing these will ensure a seamless karaoke playback experience.</p>
+        <div class="warning-issue-list">
+            ${issues.map(iss => {
+                const badge = iss.type === 'unsynced' ? '⚠️' : '⏱️';
+                const typeClass = iss.type === 'unsynced' ? 'unsynced' : 'gap';
+                const label = iss.type === 'unsynced' ? 'Un-synced Timing' : 'Time Gap';
+                return `<div class="warning-issue-item ${typeClass}">${badge} <strong>Tile ${iss.tileIndex + 1} (${label}):</strong> ${iss.message}</div>`;
+            }).join('')}
+        </div>
+        <p style="font-size: 0.9rem; color: #5f6368;">Problematic tiles have been highlighted with red (missing timing) and yellow (time gaps) borders in the Step 3 synchronization timeline.</p>
+    `;
+
+    const btnContainer = document.createElement('div');
+    btnContainer.className = 'warning-modal-buttons';
+
+    const btnFix = document.createElement('button');
+    btnFix.className = 'button secondary';
+    btnFix.style.margin = '0';
+    btnFix.textContent = 'Go Back & Fix';
+    btnFix.addEventListener('click', () => {
+        document.body.removeChild(overlay);
+        switchView('sync-view');
+        const firstIssue = issues[0];
+        appState.interaction.selectedSyncIndex = firstIssue.tileIndex;
+        selectTimelineTile(0);
+    });
+
+    const btnProceed = document.createElement('button');
+    btnProceed.className = 'button';
+    btnProceed.style.backgroundColor = '#ea4335';
+    btnProceed.style.margin = '0';
+    btnProceed.textContent = 'Export Anyway';
+    btnProceed.addEventListener('click', () => {
+        document.body.removeChild(overlay);
+        onConfirm();
+    });
+
+    btnContainer.appendChild(btnFix);
+    btnContainer.appendChild(btnProceed);
+
+    content.appendChild(title);
+    content.appendChild(body);
+    content.appendChild(btnContainer);
+    overlay.appendChild(content);
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+            document.body.removeChild(overlay);
+        }
+    });
+
+    document.body.appendChild(overlay);
+}
+
+async function saveProjectJson() {
+    if (appState.pages.length === 0) {
+        alert("No active project to save.");
+        return;
+    }
+
+    const savedPages = [];
+    for (let pIndex = 0; pIndex < appState.pages.length; pIndex++) {
+        const page = appState.pages[pIndex];
+        const savedSymbols = [];
+        for (const s of page.symbols) {
+            savedSymbols.push({
+                x: s.x,
+                y: s.y,
+                width: s.width,
+                height: s.height,
+                direction: s.direction || "",
+                startTime: s.startTime || 0,
+                endTime: s.endTime || 0,
+                customImageBase64: s.customImage ? getBase64Image(s.customImage) : ""
+            });
+        }
+        savedPages.push({
+            pageIndex: pIndex,
+            width: page.width,
+            height: page.height,
+            symbols: savedSymbols,
+            sequence: [...page.sequence]
+        });
+    }
+
+    const projectData: ProjectSaveData = {
+        app: "Widget Machine",
+        version: "0.1.0",
+        date: new Date().toISOString(),
+        songTitle: appState.songTitle,
+        mode: appState.mode,
+        sourceFiles: {
+            pdfName: appState.files.pdf ? appState.files.pdf.name : "",
+            imageNames: appState.files.images.map(f => f.name),
+            audioVocalName: appState.files.audioVocal ? appState.files.audioVocal.name : "",
+            audioBackingName: appState.files.audioBacking ? appState.files.audioBacking.name : ""
+        },
+        styleConfig: appState.styleConfig,
+        gridConfig: appState.gridConfig,
+        latencyOffset: appState.interaction.latencyOffset,
+        pages: savedPages
+    };
+
+    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+    const fileName = `${appState.songTitle.replace(/[^a-zA-Z0-9-_]/g, '_') || 'widget'}_project.json`;
+    saveAs(blob, fileName);
+}
+
+function triggerProjectLoad() {
+    if (dom.global && dom.global.inputLoad) {
+        dom.global.inputLoad.click();
+    }
+}
+
+function handleProjectLoadFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        try {
+            const data = JSON.parse(event.target?.result as string);
+            if (data.app !== "Widget Machine") {
+                alert("Invalid project file. Must be a 'Widget Machine' project.");
+                return;
+            }
+
+            // Restore basic metadata
+            appState.songTitle = data.songTitle || "";
+            if (dom.upload.titleInput) {
+                (dom.upload.titleInput as HTMLInputElement).value = appState.songTitle;
+            }
+            appState.mode = data.mode || "karaoke";
+            if (data.styleConfig) appState.styleConfig = { ...appState.styleConfig, ...data.styleConfig };
+            if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
+            if (data.latencyOffset !== undefined) {
+                appState.interaction.latencyOffset = data.latencyOffset;
+                if (dom.result.latencySlider) {
+                    (dom.result.latencySlider as HTMLInputElement).value = String(data.latencyOffset * 1000);
+                }
+                if (dom.result.latencyVal) {
+                    dom.result.latencyVal.textContent = data.latencyOffset.toFixed(2);
+                }
+            }
+
+            // Reconstruct pages & custom images
+            appState.pages = [];
+            for (const pageData of data.pages) {
+                // Generate simple blank slate canvas so they can continue even without original assets
+                const canvas = document.createElement('canvas');
+                canvas.width = pageData.width || 800;
+                canvas.height = pageData.height || 1100;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.fillStyle = "#f5f5f5";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = "#ccc";
+                    ctx.font = "16px sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.fillText(`Drop original background PDF or images`, canvas.width / 2, canvas.height / 2 - 20);
+                    ctx.fillText(`to recover the background visualization.`, canvas.width / 2, canvas.height / 2);
+                }
+
+                const img = new Image();
+                img.src = canvas.toDataURL();
+                await new Promise((resolve) => { img.onload = resolve; });
+
+                const symbols = [];
+                for (const s of pageData.symbols) {
+                    let customImageObj = null;
+                    if (s.customImageBase64) {
+                        customImageObj = new Image();
+                        customImageObj.src = s.customImageBase64;
+                        await new Promise((resolve) => { customImageObj!.onload = resolve; });
+                    }
+                    symbols.push({
+                        x: s.x,
+                        y: s.y,
+                        width: s.width,
+                        height: s.height,
+                        direction: s.direction || "",
+                        startTime: s.startTime || 0,
+                        endTime: s.endTime || 0,
+                        customImage: customImageObj
+                    });
+                }
+
+                appState.pages.push({
+                    image: img,
+                    width: canvas.width,
+                    height: canvas.height,
+                    symbols: symbols,
+                    sequence: pageData.sequence || []
+                });
+            }
+
+            // Rebuild Flat List
+            rebuildGlobalSymbolsList();
+            
+            // Backup backgrounds
+            (window as any)._originalPageBackgrounds = [...appState.pages];
+
+            // Re-save history starting state
+            undoStack.length = 0;
+            redoStack.length = 0;
+            saveHistoryState();
+
+            // Toggle view
+            appState.currentPageIndex = 0;
+            switchView('define-symbols-view');
+            
+            alert(`Project "${appState.songTitle}" loaded successfully! If you'd like to restore the original full-resolution background templates, please drop the corresponding source PDF or image files on the creator area.`);
+        } catch (err) {
+            console.error("Load project failed:", err);
+            alert("Failed to parse project file. Make sure it's a valid Widget Machine project JSON.");
+        }
+    };
+    reader.readAsText(file);
+}
+
+function rebuildGlobalSymbolsList() {
+    appState.symbols = [];
+    appState.pages.forEach((page, pIdx) => {
+        let order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
+        order.forEach(symIdx => {
+            const sym = page.symbols[symIdx];
+            if (!sym) return;
+            const canvas = document.createElement('canvas');
+            canvas.width = sym.width; canvas.height = sym.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                if (sym.customImage) {
+                    ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+                } else {
+                    ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+                }
+            }
+            appState.symbols.push({
+                globalIndex: appState.symbols.length,
+                pageIndex: pIdx,
+                imageSrc: canvas.toDataURL(),
+                startTime: sym.startTime || 0,
+                endTime: sym.endTime || 0,
+                direction: sym.direction || '',
+                x: sym.x,
+                y: sym.y,
+                width: sym.width,
+                height: sym.height,
+                customImage: sym.customImage
+            });
+        });
+    });
+}
+
+function exportProjectManifest() {
+    if (appState.pages.length === 0) {
+        alert("No active project to export manifest for.");
+        return;
+    }
+
+    const songName = appState.songTitle || "Untitled Song";
+    const dateStr = new Date().toLocaleString();
+    const modeStr = appState.mode === 'board' ? "printable board" : "full-mix / backing-only";
+    const sourceSheet = appState.files.pdf ? appState.files.pdf.name : appState.files.images.map(f => f.name).join(", ") || "None";
+    const sourceAudio = appState.files.audioVocal ? appState.files.audioVocal.name : appState.files.audioBacking ? appState.files.audioBacking.name : "None";
+    const numSymbols = appState.symbols.length;
+    const syncMethod = appState.isRecordingSync ? "Manual Tapping" : "Loaded Timing / Draft Timeline";
+    const appVersion = "v0.1.0";
+
+    const manifestData = {
+        title: "Widget Machine Export Manifest",
+        header: "Widget Machine Export",
+        songName: songName,
+        date: dateStr,
+        mode: modeStr,
+        sourceSheetFilename: sourceSheet,
+        sourceAudioFilename: sourceAudio,
+        numberOfSymbols: numSymbols,
+        syncMethod: syncMethod,
+        estimatedProductionMethod: "Automated Widget Machine Karaoke Renderer",
+        previousManualMethodReference: "Manual PowerPoint timeline animation / video editor",
+        appVersion: appVersion,
+        credits: "Designed and built by George Bunn (Georgeharrybunn96@gmail.com)"
+    };
+
+    const blob = new Blob([JSON.stringify(manifestData, null, 2)], { type: 'application/json' });
+    const fileName = `${songName.replace(/[^a-zA-Z0-9-_]/g, '_') || 'widget'}_manifest.json`;
+    saveAs(blob, fileName);
+}
+
+// --- Snapshot Undo/Redo Engine ---
+
+function saveHistoryState() {
+    const pagesData = appState.pages.map(p => {
+        return {
+            width: p.width,
+            height: p.height,
+            symbols: p.symbols.map(s => {
+                return {
+                    x: s.x,
+                    y: s.y,
+                    width: s.width,
+                    height: s.height,
+                    startTime: s.startTime || 0,
+                    endTime: s.endTime || 0,
+                    direction: s.direction || "",
+                    customImageBase64: s.customImage ? getBase64Image(s.customImage) : ""
+                };
+            }),
+            sequence: [...p.sequence]
+        };
+    });
+
+    const symbolsData = appState.symbols.map(s => {
+        return {
+            globalIndex: s.globalIndex,
+            pageIndex: s.pageIndex,
+            imageSrc: s.imageSrc,
+            startTime: s.startTime || 0,
+            endTime: s.endTime || 0,
+            direction: s.direction || "",
+            x: s.x,
+            y: s.y,
+            width: s.width,
+            height: s.height,
+            customImageBase64: s.customImage ? getBase64Image(s.customImage) : ""
+        };
+    });
+
+    const snapshot = JSON.stringify({
+        pages: pagesData,
+        symbols: symbolsData,
+        songTitle: appState.songTitle,
+        mode: appState.mode,
+        styleConfig: appState.styleConfig,
+        gridConfig: appState.gridConfig,
+        latencyOffset: appState.interaction.latencyOffset
+    });
+
+    if (undoStack.length === 0 || undoStack[undoStack.length - 1] !== snapshot) {
+        undoStack.push(snapshot);
+        if (undoStack.length > 50) {
+            undoStack.shift();
+        }
+        redoStack.length = 0; // Clear redo
+        updateUndoRedoUI();
+    }
+}
+
+function updateUndoRedoUI() {
+    if (dom.global) {
+        if (dom.global.btnUndo) dom.global.btnUndo.disabled = undoStack.length <= 1;
+        if (dom.global.btnRedo) dom.global.btnRedo.disabled = redoStack.length === 0;
+        if (dom.global.btnSave) dom.global.btnSave.disabled = appState.pages.length === 0;
+    }
+}
+
+async function historyUndo() {
+    if (undoStack.length <= 1) return;
+    const current = undoStack.pop()!;
+    redoStack.push(current);
+
+    const prev = undoStack[undoStack.length - 1];
+    await applyHistorySnapshot(prev);
+    updateUndoRedoUI();
+}
+
+async function historyRedo() {
+    if (redoStack.length === 0) return;
+    const next = redoStack.pop()!;
+    undoStack.push(next);
+    await applyHistorySnapshot(next);
+    updateUndoRedoUI();
+}
+
+async function applyHistorySnapshot(snapshotStr: string) {
+    try {
+        const data = JSON.parse(snapshotStr);
+        appState.songTitle = data.songTitle || "";
+        if (dom.upload.titleInput) (dom.upload.titleInput as HTMLInputElement).value = appState.songTitle;
+        appState.mode = data.mode || "karaoke";
+        appState.styleConfig = data.styleConfig || appState.styleConfig;
+        appState.gridConfig = data.gridConfig || appState.gridConfig;
+        appState.interaction.latencyOffset = data.latencyOffset || 0;
+
+        // Apply pages
+        appState.pages = [];
+        for (let pIdx = 0; pIdx < data.pages.length; pIdx++) {
+            const p = data.pages[pIdx];
+            
+            // Re-use original background image if present
+            let img = new Image();
+            const originalBackgrounds = (window as any)._originalPageBackgrounds;
+            if (originalBackgrounds && originalBackgrounds[pIdx] && originalBackgrounds[pIdx].image) {
+                img = originalBackgrounds[pIdx].image;
+            } else {
+                const canvas = document.createElement('canvas');
+                canvas.width = p.width || 800;
+                canvas.height = p.height || 1100;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.fillStyle = "#f5f5f5";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = "#ccc";
+                    ctx.font = "16px sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.fillText(`Placeholder background`, canvas.width / 2, canvas.height / 2);
+                }
+                img.src = canvas.toDataURL();
+                await new Promise(r => img.onload = r);
+            }
+
+            const symbols = [];
+            for (const s of p.symbols) {
+                let customImageObj = null;
+                if (s.customImageBase64) {
+                    customImageObj = new Image();
+                    customImageObj.src = s.customImageBase64;
+                    await new Promise(r => customImageObj!.onload = r);
+                }
+                symbols.push({
+                    x: s.x,
+                    y: s.y,
+                    width: s.width,
+                    height: s.height,
+                    direction: s.direction || "",
+                    startTime: s.startTime || 0,
+                    endTime: s.endTime || 0,
+                    customImage: customImageObj
+                });
+            }
+
+            appState.pages.push({
+                image: img,
+                width: p.width || img.naturalWidth,
+                height: p.height || img.naturalHeight,
+                symbols: symbols,
+                sequence: p.sequence || []
+            });
+        }
+
+        // Apply flat symbols
+        appState.symbols = [];
+        for (const s of data.symbols) {
+            let customImageObj = null;
+            if (s.customImageBase64) {
+                customImageObj = new Image();
+                customImageObj.src = s.customImageBase64;
+                await new Promise(r => customImageObj!.onload = r);
+            }
+            appState.symbols.push({
+                globalIndex: s.globalIndex,
+                pageIndex: s.pageIndex,
+                imageSrc: s.imageSrc,
+                startTime: s.startTime || 0,
+                endTime: s.endTime || 0,
+                direction: s.direction || '',
+                x: s.x, y: s.y, width: s.width, height: s.height,
+                customImage: customImageObj
+            });
+        }
+
+        // Refresh currently active view
+        if (appState.currentView === 'define-symbols-view') {
+            resizeCanvas();
+            drawCanvas();
+            updateToolbarUI();
+        } else if (appState.currentView === 'order-view') {
+            setupOrderView();
+        } else if (appState.currentView === 'sync-view') {
+            setupSyncView();
+        } else if (appState.currentView === 'result-view') {
+            setupResultView();
+        }
+    } catch (e) {
+        console.error("Undo/Redo apply state failed:", e);
+    }
 }
 
 window.addEventListener('load', init);

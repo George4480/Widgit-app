@@ -11,9 +11,14 @@
   },
   "dependencies": {
     "@google/genai": "latest",
+    "file-saver": "^2.0.5",
+    "jspdf": "^2.5.1",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^3.11.174",
     "react": "^19.2.0"
   },
   "devDependencies": {
+    "@types/file-saver": "^2.0.7",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",

@@ -4,20 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Mr. Bunn's Widget Machine</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-    <script type="importmap">
-{
-  "imports": {
-    "@google/genai": "https://esm.run/@google/genai",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0"
-  }
-}
-</script>
     <style>
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -289,8 +275,8 @@
             position: relative;
         }
 
-        /* Symbol Navigation Strip */
-        .symbol-nav-strip {
+        /* Symbol Navigation Strip & Sequence Strip */
+        .symbol-nav-strip, .order-sequence-strip {
             display: flex;
             gap: 10px;
             overflow-x: auto;
@@ -301,9 +287,10 @@
             scroll-behavior: smooth;
             -webkit-overflow-scrolling: touch;
             border: 1px solid #e0e0e0;
+            min-height: 100px;
         }
 
-        .nav-symbol-item {
+        .nav-symbol-item, .order-sequence-item {
             flex: 0 0 80px;
             height: 80px;
             background: white;
@@ -316,20 +303,39 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
 
-        .nav-symbol-item img {
+        .order-sequence-item .remove-btn {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(234, 67, 53, 0.9);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            width: 20px;
+            height: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 5;
+        }
+
+        .nav-symbol-item img, .order-sequence-item img {
             width: 100%;
             height: 100%;
             object-fit: contain;
         }
 
-        .nav-symbol-item.active {
+        .nav-symbol-item.active, .order-sequence-item.active {
             border-color: #1a73e8;
             transform: scale(1.05);
             box-shadow: 0 4px 8px rgba(26, 115, 232, 0.3);
             z-index: 2;
         }
         
-        .nav-symbol-item .number-badge {
+        .nav-symbol-item .number-badge, .order-sequence-item .number-badge {
             position: absolute;
             top: 2px;
             left: 2px;
@@ -338,6 +344,52 @@
             font-size: 0.7rem;
             padding: 2px 5px;
             border-radius: 4px;
+        }
+
+        .card-files-list {
+            width: 100%;
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .card-file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 0.75rem;
+            color: #3c4043;
+            gap: 10px;
+            text-align: left;
+        }
+
+        .card-file-item span {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 150px;
+            flex-grow: 1;
+        }
+
+        .card-file-item .remove-btn {
+            background: none;
+            border: none;
+            color: #c5221f;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            padding: 0 4px;
+            display: flex;
+            align-items: center;
+        }
+
+        .card-file-item .remove-btn:hover {
+            color: #ea4335;
         }
 
         /* Visual Cue for Sync (Recording Mode) */
@@ -620,6 +672,176 @@
             #btn-tl-prev { grid-column: 1 / 2; }
             #btn-tl-next { grid-column: 4 / 5; }
         }
+
+        /* High Contrast, Focus and Reduced Motion Accessibility overrides */
+        :focus-visible {
+            outline: 3px solid #1a73e8 !important;
+            outline-offset: 2px !important;
+        }
+        
+        body.high-contrast {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+        }
+        
+        body.high-contrast .view-section,
+        body.high-contrast .toolbar,
+        body.high-contrast .timeline-toolbar,
+        body.high-contrast .assignment-card {
+            background-color: #121212 !important;
+            border: 2px solid #ffffff !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+        }
+        
+        body.high-contrast .button,
+        body.high-contrast .browse-btn,
+        body.high-contrast .chip,
+        body.high-contrast .remove-btn {
+            background-color: #ffff00 !important;
+            color: #000000 !important;
+            border: 2px solid #ffffff !important;
+            font-weight: bold !important;
+        }
+        
+        body.high-contrast .button:hover,
+        body.high-contrast .browse-btn:hover {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }
+        
+        body.high-contrast .button.secondary {
+            background-color: #00ffff !important;
+            color: #000000 !important;
+        }
+        
+        body.high-contrast input,
+        body.high-contrast textarea,
+        body.high-contrast select {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border: 2px solid #ffffff !important;
+        }
+        
+        body.high-contrast .active,
+        body.high-contrast .selected {
+            outline: 4px solid #ffff00 !important;
+        }
+        
+        body.reduced-motion * {
+            animation-duration: 0.001s !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.001s !important;
+            scroll-behavior: auto !important;
+        }
+
+        /* Custom Warning Modal Styling */
+        .warning-modal-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6);
+            z-index: 2000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn 0.2s ease;
+        }
+        .warning-modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 550px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+            border-top: 8px solid #fbbc04;
+            animation: slideUp 0.3s ease;
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .warning-modal-title {
+            color: #c5221f;
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.3rem;
+        }
+        .warning-modal-body {
+            margin: 15px 0;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            color: #333;
+        }
+        .warning-issue-list {
+            background: #f8f9fa;
+            border: 1px solid #dadce0;
+            border-radius: 6px;
+            padding: 10px 15px 10px 30px;
+            max-height: 180px;
+            overflow-y: auto;
+            margin: 15px 0;
+        }
+        .warning-issue-item {
+            margin-bottom: 8px;
+            color: #3c4043;
+        }
+        .warning-issue-item.unsynced {
+            list-style-type: '⚠️ ';
+            color: #c5221f;
+            padding-left: 5px;
+        }
+        .warning-issue-item.gap {
+            list-style-type: '⏱️ ';
+            color: #b06000;
+            padding-left: 5px;
+        }
+        .warning-modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 20px;
+        }
+        /* Style additions for nav strip */
+        .nav-symbol-item.warning-unsynced {
+            border: 2.5px solid #ea4335 !important;
+        }
+        .nav-symbol-item.warning-gap {
+            border: 2.5px solid #fbbc04 !important;
+        }
+        .nav-symbol-item .warn-badge {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: #ea4335;
+            color: white;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            z-index: 5;
+        }
+        .nav-symbol-item .gap-badge {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: #fbbc04;
+            color: #333;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            z-index: 5;
+        }
     </style>
 <link rel="stylesheet" href="/index.css">
 </head>
@@ -629,6 +851,56 @@
     <div class="header">
         <h1>Mr. Bunn's Widget Machine</h1>
         <p>Convert symbol charts into animated karaoke videos</p>
+    </div>
+
+    <!-- Global Control & Accessibility Bar -->
+    <div class="global-control-bar" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; align-items: center; background: #fff; padding: 12px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <!-- Undo/Redo -->
+            <button id="btn-global-undo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Undo last change (Ctrl+Z)" aria-label="Undo last action">↩️ Undo</button>
+            <button id="btn-global-redo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Redo change (Ctrl+Y)" aria-label="Redo last undone action">🔁 Redo</button>
+            
+            <div style="width: 1px; height: 24px; background: #ccc; margin: 0 5px;"></div>
+            
+            <!-- Save/Load -->
+            <button id="btn-global-save" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Save current project to file" aria-label="Save current project to a JSON file">💾 Save Project</button>
+            <button id="btn-global-load" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Load project from JSON file" aria-label="Load project from a JSON file">📂 Load Project</button>
+            <input type="file" id="input-global-load" style="display: none;" accept=".json">
+        </div>
+        
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <!-- Accessibility Toggles -->
+            <button id="btn-toggle-high-contrast" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle high contrast colors" aria-label="Toggle High Contrast Mode">👁️ Contrast</button>
+            <button id="btn-toggle-reduced-motion" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle animations on/off" aria-label="Toggle Reduced Motion Mode">🏃‍♂️ Motion</button>
+            <button id="btn-global-help" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: #e8f0fe; color: #1a73e8; width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ Help Guide</button>
+        </div>
+    </div>
+
+    <!-- Global Help Overlay Panel -->
+    <div id="global-help-panel" style="display: none; background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.5; font-size: 0.95rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+        <h3 style="margin-top: 0; color: #1a73e8; display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">📖 Mr. Bunn's Widget Machine Guide</h3>
+        <p style="margin-bottom: 15px; color: #333;">Convert communication symbol charts into beautifully timed karaoke animations and boards:</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
+            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <strong style="display: block; margin-bottom: 5px; color: #1a73e8; font-size: 0.9rem;">1. Upload Media</strong>
+                Drag and drop your symbol chart PDF/images, and the song vocal/backing track. Set your song title!
+            </div>
+            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #34a853; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <strong style="display: block; margin-bottom: 5px; color: #34a853; font-size: 0.9rem;">2. Refine Grid</strong>
+                Draw, delete, and resize the boxes around each symbol. Optionally toggle AI Mode to generate or edit individual tiles safely.
+            </div>
+            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #fbbc04; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <strong style="display: block; margin-bottom: 5px; color: #fbbc04; font-size: 0.9rem;">3. Sequence Path</strong>
+                Click the symbol boxes in the exact order they should be read (1, 2, 3...) to establish the vocal timing order.
+            </div>
+            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #ea4335; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <strong style="display: block; margin-bottom: 5px; color: #ea4335; font-size: 0.9rem;">4. Sync & Export</strong>
+                Play the audio and press the <code>Spacebar</code>/<code>Enter</code> or tap-button as each word is sung. Review and export!
+            </div>
+        </div>
+        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.85rem; color: #5f6368; display: flex; flex-wrap: wrap; gap: 15px;">
+            <span><strong>💡 Keyboard Shortcuts:</strong> Arrow keys to cycle tiles; <code>Spacebar</code>/<code>Enter</code> to tap; <code>Ctrl+Z</code> / <code>Ctrl+Y</code> for Undo/Redo.</span>
+        </div>
     </div>
 
     <div id="error-box"></div>
@@ -649,22 +921,26 @@
                 <div class="card-icon">📄</div>
                 <div class="card-title">Songboard Pages</div>
                 <div id="status-songboard" class="card-status">No images loaded</div>
+                <div id="list-songboard" class="card-files-list"></div>
             </div>
             <div id="card-vocal" class="assignment-card">
                 <div class="card-icon">🎤</div>
                 <div class="card-title">Vocal Track</div>
                 <div id="status-vocal" class="card-status">No audio loaded</div>
+                <div id="list-vocal" class="card-files-list"></div>
             </div>
             <div id="card-backing" class="assignment-card">
                 <div class="card-icon">🎵</div>
                 <div class="card-title">Backing (Optional)</div>
                 <div id="status-backing" class="card-status">No audio loaded</div>
+                <div id="list-backing" class="card-files-list"></div>
             </div>
         </div>
 
         <div class="button-group">
             <button id="generate-button" class="button" disabled>Start Project (Karaoke)</button>
             <button id="btn-create-board" class="button secondary" style="background-color: #fbbc04; color: #333;">Create Symbol Board (No Audio)</button>
+            <button id="btn-clear-uploads" class="button secondary" style="color: #c5221f;">Clear All</button>
         </div>
     </div>
 
@@ -695,36 +971,51 @@
         </div>
 
         <!-- AI Creator -->
-        <details>
-            <summary>✨ AI Creator</summary>
-            <div style="padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <p style="font-size: 0.85rem; margin-top:0;">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
+        <details id="ai-creator-details">
+            <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: #1a73e8;">✨ Optional AI Creator Mode</summary>
+            <div style="padding: 15px; background: #f8f9fa; border-radius: 4px; border: 1px solid #dadce0; margin-top: 5px;">
+                <!-- Mandated Privacy Disclaimer -->
+                <div class="ai-disclaimer" style="background-color: #fef7e0; border-left: 4px solid #fbbc04; padding: 12px; margin-bottom: 15px; border-radius: 6px; font-size: 0.85rem; color: #b06000; line-height: 1.4;">
+                    <strong>🛡️ Pupils & Privacy Disclaimer:</strong> AI symbol generation is optional. Do not upload pupil data, pupil photographs, confidential documents, or identifiable pupil material.
+                </div>
                 
-                <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
-                    placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'"></textarea>
-                
-                <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
-                     <input type="checkbox" id="ai-multi-toggle" style="width:16px; height:16px;"> 
-                     <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500;">Generate 3 Variations</label>
+                <div id="ai-mode-toggle-container" style="margin-bottom: 15px; background: white; padding: 12px; border-radius: 6px; border: 1px solid #dadce0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <strong style="display: block; font-size: 0.9rem; color: #333;">AI Symbol Creator Mode</strong>
+                        <span style="font-size: 0.75rem; color: #666;">Turn on to use Gemini 3.1 Flash Image generation features.</span>
+                    </div>
+                    <button id="btn-toggle-ai-mode" class="button small secondary" style="margin: 0; min-height: 36px; padding: 6px 12px; font-size: 0.85rem; width: auto;" title="Toggle AI Creator features">Enable AI Mode</button>
                 </div>
 
-                <div id="ai-prompt-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px;">
-                    <span style="font-size: 0.8rem; color: #666; align-self: center;">Suggestions:</span>
-                    <button class="chip">Person walking</button>
-                    <button class="chip">Happy face</button>
-                    <button class="chip">Question mark</button>
-                    <button class="chip">Remove background</button>
-                    <button class="chip">Make it blue</button>
-                </div>
+                <div id="ai-creator-inputs" style="display: none; transition: opacity 0.2s;">
+                    <p style="font-size: 0.85rem; margin-top:0; color: #5f6368;">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
+                    
+                    <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
+                        placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'" aria-label="AI Symbol generation prompt"></textarea>
+                    
+                    <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                         <input type="checkbox" id="ai-multi-toggle" style="width:16px; height:16px;" aria-label="Generate 3 variations toggle"> 
+                         <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500; color: #333;">Generate 3 Variations</label>
+                    </div>
 
-                <div class="button-group" style="margin: 0; justify-content: flex-start;">
-                     <button id="btn-ai-generate" class="button small">Generate New Tile</button>
-                     <button id="btn-ai-edit" class="button secondary small">Edit Selected Tile</button>
-                     <button id="btn-upload-symbol" class="button secondary small">Upload Image</button>
-                     <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
-                </div>
-                <div id="ai-loading" style="display:none; font-size: 0.8rem; color: #1a73e8; margin-top: 10px; align-items: center; gap: 5px;">
-                    <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
+                    <div id="ai-prompt-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px;">
+                        <span style="font-size: 0.8rem; color: #666; align-self: center;">Suggestions:</span>
+                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Person walking">Person walking</button>
+                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Happy face">Happy face</button>
+                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Question mark">Question mark</button>
+                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Remove background">Remove background</button>
+                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Make it blue">Make it blue</button>
+                    </div>
+
+                    <div class="button-group" style="margin: 0; justify-content: flex-start;">
+                         <button id="btn-ai-generate" class="button small" aria-label="Generate new tile with AI" title="Generate New Tile">Generate New Tile</button>
+                         <button id="btn-ai-edit" class="button secondary small" aria-label="Edit selected tile with AI" title="Edit Selected Tile">Edit Selected Tile</button>
+                         <button id="btn-upload-symbol" class="button secondary small" aria-label="Upload custom image file" title="Upload Image">Upload Image</button>
+                         <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
+                    </div>
+                    <div id="ai-loading" style="display:none; font-size: 0.8rem; color: #1a73e8; margin-top: 10px; align-items: center; gap: 5px;">
+                        <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
+                    </div>
                 </div>
             </div>
         </details>
@@ -783,6 +1074,16 @@
 
         <div id="order-canvas-container" class="canvas-container">
             <canvas id="order-canvas"></canvas>
+        </div>
+
+        <p class="helper-text">Sequence Preview (Rolodex):</p>
+        <div id="order-sequence-strip" class="order-sequence-strip">
+            <!-- Items injected by JS -->
+        </div>
+
+        <div style="margin-top: 15px; padding: 10px; background: #f1f3f4; border-radius: 8px;">
+            <p style="margin: 0 0 5px 0; font-size: 0.8rem; font-weight: bold; color: #5f6368;">Preview Audio:</p>
+            <audio id="order-audio-player" style="width: 100%;" controls></audio>
         </div>
 
         <div class="button-group">
@@ -926,10 +1227,11 @@
         </details>
 
         <div class="button-group" style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
-            <button id="download-full-mix" class="button" style="background-color: #34a853;">Download Video (Full)</button>
-            <button id="download-backing" class="button" style="background-color: #fbbc04; color: #333;">Download Video (Backing)</button>
-            <button id="back-to-sync-from-result" class="button secondary">⬅ Back</button>
-            <button id="reset-button" class="button secondary" style="color: #c5221f;">Start Over</button>
+            <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">Download Video (Full)</button>
+            <button id="download-backing" class="button" style="background-color: #fbbc04; color: #333;" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
+            <button id="btn-export-manifest" class="button" style="background-color: #1a73e8; color: white;" title="Export song project manifest data">Export Manifest</button>
+            <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
+            <button id="reset-button" class="button secondary" style="color: #c5221f;" title="Start a completely new project">Start Over</button>
         </div>
     </div>
     
@@ -940,9 +1242,15 @@
         <p id="rendering-progress-text" style="color: #ddd;">0%</p>
     </div>
 
+    <!-- Footer with Version Number & Branding -->
+    <footer style="text-align: center; margin-top: 50px; padding: 25px 0 10px 0; border-top: 1px solid #dadce0; font-size: 0.85rem; color: #5f6368; line-height: 1.6;">
+        <p style="margin: 0; font-weight: 600; color: #3c4043;">Widget Machine v0.1.0</p>
+        <p style="margin: 2px 0 0 0;">Designed and built by George Bunn</p>
+        <p style="margin: 2px 0 0 0; font-style: italic; color: #80868b;">AI-assisted development prototype</p>
+    </footer>
+
 </main>
 
-<script type="module" src="index.tsx"></script>
 <script type="module" src="/index.tsx"></script>
 </body>
 </html>
