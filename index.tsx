@@ -63,6 +63,7 @@ const appState: AppState = {
         nextScale: 0.7,
         nextOpacity: 0.7,
         spacing: 200,
+        prevCount: 1,
         prevScale: 0.7,
         prevOpacity: 0.4
     },
@@ -236,6 +237,9 @@ function init() {
             styleNextCount: document.getElementById('style-next-count'),
             styleNextScale: document.getElementById('style-next-scale'),
             styleNextOpacity: document.getElementById('style-next-opacity'),
+            stylePrevCount: document.getElementById('style-prev-count'),
+            stylePrevScale: document.getElementById('style-prev-scale'),
+            stylePrevOpacity: document.getElementById('style-prev-opacity'),
             styleSpacing: document.getElementById('style-spacing')
         },
         rendering: {
@@ -526,6 +530,9 @@ function setupEventListeners() {
         appState.styleConfig.nextCount = parseInt(dom.result.styleNextCount.value);
         appState.styleConfig.nextScale = parseFloat(dom.result.styleNextScale.value);
         appState.styleConfig.nextOpacity = parseFloat(dom.result.styleNextOpacity.value);
+        appState.styleConfig.prevCount = parseInt(dom.result.stylePrevCount.value);
+        appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
+        appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
@@ -534,6 +541,9 @@ function setupEventListeners() {
     dom.result.styleNextCount.addEventListener('input', updateStyle);
     dom.result.styleNextScale.addEventListener('input', updateStyle);
     dom.result.styleNextOpacity.addEventListener('input', updateStyle);
+    dom.result.stylePrevCount.addEventListener('input', updateStyle);
+    dom.result.stylePrevScale.addEventListener('input', updateStyle);
+    dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
 
     // Canvas Events
@@ -2447,8 +2457,16 @@ function drawPreviewFrame(rawTime: number) {
              drawSym(0, cx, cfg.activeScale, introFadeIn);
         }
         
-        // Draw Prev
-        if (activeIndex > 0) drawSym(activeIndex-1, cx - 240, cfg.prevScale, cfg.prevOpacity);
+        // Draw Prev (already-played tiles scrolling past the main tile)
+        // Mirrors the Next conveyor: user-configurable count/scale/opacity,
+        // and respects the Spacing slider (was a single hardcoded tile).
+        for (let i = 1; i <= cfg.prevCount; i++) {
+            if (activeIndex - i >= 0) {
+                const s = cfg.prevScale * Math.pow(0.9, i-1);
+                const o = cfg.prevOpacity * Math.pow(0.8, i-1);
+                drawSym(activeIndex - i, cx - (i * cfg.spacing), s, o);
+            }
+        }
     }
 }
 
@@ -3104,7 +3122,9 @@ async function applyHistorySnapshot(snapshotStr: string) {
         appState.songTitle = data.songTitle || "";
         if (dom.upload.titleInput) (dom.upload.titleInput as HTMLInputElement).value = appState.songTitle;
         appState.mode = data.mode || "karaoke";
-        appState.styleConfig = data.styleConfig || appState.styleConfig;
+        // Merge (not replace) so snapshots from older versions missing newer
+        // fields (e.g. prevCount) keep their defaults.
+        appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;
 

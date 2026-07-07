@@ -32,6 +32,7 @@ export interface StyleConfig {
     nextScale: number;
     nextOpacity: number;
     spacing: number;
+    prevCount: number;
     prevScale: number;
     prevOpacity: number;
 }
