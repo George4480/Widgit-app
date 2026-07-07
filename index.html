@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Mr. Bunn's Widget Machine</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
     <style>
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -41,6 +42,140 @@
             font-size: 1rem;
             color: #5f6368;
             margin-top: 5px;
+        }
+
+        /* Workflow Progress Stepper */
+        .progress-stepper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            padding: 10px 14px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+        }
+
+        .stepper-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: none;
+            border: none;
+            padding: 6px 10px;
+            border-radius: 20px;
+            font: inherit;
+            font-size: 0.9rem;
+            color: #5f6368;
+            cursor: default;
+            white-space: nowrap;
+            touch-action: manipulation;
+        }
+
+        .stepper-step .step-dot {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: #f1f3f4;
+            color: #5f6368;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.85rem;
+            flex: 0 0 26px;
+        }
+
+        .stepper-step.active {
+            color: #1a73e8;
+            font-weight: 600;
+        }
+
+        .stepper-step.active .step-dot {
+            background: #1a73e8;
+            color: #fff;
+        }
+
+        .stepper-step.done {
+            color: #188038;
+            cursor: pointer;
+        }
+
+        .stepper-step.done .step-dot {
+            background: #e6f4ea;
+            color: #188038;
+        }
+
+        .stepper-step.done:hover {
+            background: #e6f4ea;
+        }
+
+        .stepper-connector {
+            flex: 0 1 32px;
+            min-width: 10px;
+            height: 2px;
+            background: #dadce0;
+        }
+
+        .stepper-connector.done {
+            background: #34a853;
+        }
+
+        /* Grouped Visual Settings */
+        .settings-section {
+            padding: 5px 15px 0 15px;
+        }
+
+        .settings-section-title {
+            margin: 10px 0 0 0;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #5f6368;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 4px;
+        }
+
+        .settings-section .settings-grid {
+            padding: 12px 0;
+        }
+
+        .settings-section .setting-item label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .setting-val {
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #174ea6;
+            background: #e8f0fe;
+            border-radius: 4px;
+            padding: 1px 6px;
+        }
+
+        /* Result View Action Bar */
+        .result-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 30px;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+        }
+
+        .result-actions-exports {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            flex: 1;
         }
 
         /* Views */
@@ -671,6 +806,25 @@
             }
             #btn-tl-prev { grid-column: 1 / 2; }
             #btn-tl-next { grid-column: 4 / 5; }
+
+            /* Stepper: collapse labels of non-active steps to save space */
+            .progress-stepper {
+                padding: 8px 6px;
+            }
+            .stepper-step {
+                padding: 6px;
+            }
+            .stepper-step:not(.active) .step-label {
+                display: none;
+            }
+
+            /* Result actions stack on small screens */
+            .result-actions {
+                flex-direction: column;
+            }
+            .result-actions .button {
+                width: 100%;
+            }
         }
 
         /* High Contrast, Focus and Reduced Motion Accessibility overrides */
@@ -684,6 +838,31 @@
             color: #ffffff !important;
         }
         
+        body.high-contrast .progress-stepper {
+            background-color: #121212 !important;
+            border: 2px solid #ffffff !important;
+        }
+
+        body.high-contrast .stepper-step {
+            color: #ffffff !important;
+        }
+
+        body.high-contrast .stepper-step .step-dot {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border: 2px solid #ffffff !important;
+        }
+
+        body.high-contrast .stepper-step.active .step-dot {
+            background-color: #ffff00 !important;
+            color: #000000 !important;
+        }
+
+        body.high-contrast .stepper-step.done .step-dot {
+            background-color: #00ffff !important;
+            color: #000000 !important;
+        }
+
         body.high-contrast .view-section,
         body.high-contrast .toolbar,
         body.high-contrast .timeline-toolbar,
@@ -843,7 +1022,6 @@
             z-index: 5;
         }
     </style>
-<link rel="stylesheet" href="/index.css">
 </head>
 <body>
 
@@ -875,6 +1053,29 @@
             <button id="btn-global-help" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: #e8f0fe; color: #1a73e8; width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ Help Guide</button>
         </div>
     </div>
+
+    <!-- Workflow Progress Stepper -->
+    <nav id="progress-stepper" class="progress-stepper" aria-label="Workflow progress">
+        <button type="button" class="stepper-step active" data-step-view="upload-view" disabled title="Upload your songboard and audio">
+            <span class="step-dot">1</span><span class="step-label">Upload</span>
+        </button>
+        <div class="stepper-connector"></div>
+        <button type="button" class="stepper-step" data-step-view="define-symbols-view" disabled title="Refine the symbol grid">
+            <span class="step-dot">2</span><span class="step-label">Refine Grid</span>
+        </button>
+        <div class="stepper-connector"></div>
+        <button type="button" class="stepper-step" data-step-view="order-view" disabled title="Set the reading order">
+            <span class="step-dot">3</span><span class="step-label">Set Order</span>
+        </button>
+        <div class="stepper-connector"></div>
+        <button type="button" class="stepper-step" data-step-view="sync-view" disabled title="Record and fine-tune timing">
+            <span class="step-dot">4</span><span class="step-label">Sync</span>
+        </button>
+        <div class="stepper-connector"></div>
+        <button type="button" class="stepper-step" data-step-view="result-view" disabled title="Preview and export the video">
+            <span class="step-dot">5</span><span class="step-label">Export</span>
+        </button>
+    </nav>
 
     <!-- Global Help Overlay Panel -->
     <div id="global-help-panel" style="display: none; background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.5; font-size: 0.95rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
@@ -952,7 +1153,7 @@
 
     <!-- 3. Refine (Define) Symbols View -->
     <div id="define-symbols-view" class="view-section">
-        <h2 style="text-align: center; margin-top: 0;">Step 1: Refine Grid</h2>
+        <h2 style="text-align: center; margin-top: 0;">Refine Grid</h2>
         <p class="helper-text" style="text-align: center;">Add, remove, or resize boxes to detect all symbols correctly.</p>
         
         <div class="toolbar">
@@ -1055,7 +1256,7 @@
 
     <!-- 4. Order View -->
     <div id="order-view" class="view-section">
-        <h2 style="text-align: center; margin-top: 0;">Step 2: Set Sequence</h2>
+        <h2 style="text-align: center; margin-top: 0;">Set Sequence</h2>
         <p class="helper-text" style="text-align: center;">Click symbols in order to define the reading path (1, 2, 3...).</p>
         
         <div class="toolbar">
@@ -1094,7 +1295,7 @@
 
     <!-- 5. Sync View (Record then Fine Tune) -->
     <div id="sync-view" class="view-section">
-        <h2 style="text-align: center;">Step 3: Synchronize</h2>
+        <h2 style="text-align: center;">Synchronize</h2>
         <p class="helper-text" style="text-align: center;">First, tap to record timing. Then, use the timeline below to fine-tune.</p>
         
         <div class="toolbar">
@@ -1171,7 +1372,7 @@
 
     <!-- 6. Result/Preview View -->
     <div id="result-view" class="view-section">
-        <h2 style="text-align: center;">Step 4: Preview & Export</h2>
+        <h2 style="text-align: center;">Preview & Export</h2>
         
         <div id="preview-container" style="text-align: center; margin-bottom: 20px;">
             <canvas id="preview-canvas" width="640" height="360" style="border: 1px solid #ddd; max-width: 100%; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></canvas>
@@ -1197,54 +1398,75 @@
         <!-- Customization Panel -->
         <details>
             <summary>🎨 Visual Settings & Customization</summary>
-            <div class="settings-grid">
-                <div class="setting-item">
-                    <label>Background Color</label>
-                    <input type="color" id="style-bg-color" value="#f0f8ff" style="width: 100%; height: 40px;">
-                </div>
-                <div class="setting-item">
-                    <label>Active Symbol Scale</label>
-                    <input type="range" id="style-active-scale" min="0.5" max="2.0" step="0.1" value="1.1">
-                </div>
-                
-                <div class="setting-item">
-                    <label>Next Tiles Count</label>
-                    <input type="range" id="style-next-count" min="0" max="4" step="1" value="2">
-                </div>
-                 <div class="setting-item">
-                    <label>Next Scale</label>
-                    <input type="range" id="style-next-scale" min="0.3" max="1.5" step="0.1" value="0.7">
-                </div>
-                <div class="setting-item">
-                    <label>Next Opacity</label>
-                    <input type="range" id="style-next-opacity" min="0" max="1" step="0.1" value="0.7">
-                </div>
 
-                <div class="setting-item">
-                    <label>Previous Tiles Count</label>
-                    <input type="range" id="style-prev-count" min="0" max="4" step="1" value="1">
+            <div class="settings-section">
+                <h4 class="settings-section-title">General</h4>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Background Color</label>
+                        <input type="color" id="style-bg-color" value="#f0f8ff" style="width: 100%; height: 40px;">
+                    </div>
+                    <div class="setting-item">
+                        <label>Tile Spacing <span class="setting-val" data-for="style-spacing"></span></label>
+                        <input type="range" id="style-spacing" min="100" max="400" step="10" value="200">
+                    </div>
                 </div>
-                <div class="setting-item">
-                    <label>Previous Scale</label>
-                    <input type="range" id="style-prev-scale" min="0.3" max="1.5" step="0.1" value="0.7">
-                </div>
-                <div class="setting-item">
-                    <label>Previous Opacity</label>
-                    <input type="range" id="style-prev-opacity" min="0" max="1" step="0.1" value="0.4">
-                </div>
+            </div>
 
-                <div class="setting-item">
-                    <label>Spacing (Offset)</label>
-                    <input type="range" id="style-spacing" min="100" max="400" step="10" value="200">
+            <div class="settings-section">
+                <h4 class="settings-section-title">Main Tile (Now Playing)</h4>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Scale <span class="setting-val" data-for="style-active-scale"></span></label>
+                        <input type="range" id="style-active-scale" min="0.5" max="2.0" step="0.1" value="1.1">
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">Next Tiles (Upcoming)</h4>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Count <span class="setting-val" data-for="style-next-count"></span></label>
+                        <input type="range" id="style-next-count" min="0" max="4" step="1" value="2">
+                    </div>
+                    <div class="setting-item">
+                        <label>Scale <span class="setting-val" data-for="style-next-scale"></span></label>
+                        <input type="range" id="style-next-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                    </div>
+                    <div class="setting-item">
+                        <label>Opacity <span class="setting-val" data-for="style-next-opacity"></span></label>
+                        <input type="range" id="style-next-opacity" min="0" max="1" step="0.1" value="0.7">
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">Previous Tiles (Already Played)</h4>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Count <span class="setting-val" data-for="style-prev-count"></span></label>
+                        <input type="range" id="style-prev-count" min="0" max="4" step="1" value="1">
+                    </div>
+                    <div class="setting-item">
+                        <label>Scale <span class="setting-val" data-for="style-prev-scale"></span></label>
+                        <input type="range" id="style-prev-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                    </div>
+                    <div class="setting-item">
+                        <label>Opacity <span class="setting-val" data-for="style-prev-opacity"></span></label>
+                        <input type="range" id="style-prev-opacity" min="0" max="1" step="0.1" value="0.4">
+                    </div>
                 </div>
             </div>
         </details>
 
-        <div class="button-group" style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">
-            <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">Download Video (Full)</button>
-            <button id="download-backing" class="button" style="background-color: #fbbc04; color: #333;" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
-            <button id="btn-export-manifest" class="button" style="background-color: #1a73e8; color: white;" title="Export song project manifest data">Export Manifest</button>
+        <div class="result-actions">
             <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
+            <div class="result-actions-exports">
+                <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">Download Video (Full)</button>
+                <button id="download-backing" class="button" style="background-color: #fbbc04; color: #333;" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
+                <button id="btn-export-manifest" class="button" style="background-color: #1a73e8; color: white;" title="Export song project manifest data">Export Manifest</button>
+            </div>
             <button id="reset-button" class="button secondary" style="color: #c5221f;" title="Start a completely new project">Start Over</button>
         </div>
     </div>

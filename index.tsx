@@ -254,6 +254,14 @@ function init() {
 }
 
 function setupEventListeners() {
+    // --- Workflow Stepper (jump back to completed steps) ---
+    document.querySelectorAll('#progress-stepper .stepper-step').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = (btn as HTMLElement).dataset.stepView;
+            if (target && !(btn as HTMLButtonElement).disabled) switchView(target);
+        });
+    });
+
     // --- Global Controls ---
     if (dom.global) {
         dom.global.btnUndo.addEventListener('click', historyUndo);
@@ -524,7 +532,15 @@ function setupEventListeners() {
     });
 
     // Style Inputs
+    const refreshStyleBadges = () => {
+        document.querySelectorAll('.setting-val[data-for]').forEach((span: Element) => {
+            const input = document.getElementById((span as HTMLElement).dataset.for!) as HTMLInputElement | null;
+            if (input) span.textContent = input.value;
+        });
+    };
+    refreshStyleBadges(); // Initial values on load
     const updateStyle = () => {
+        refreshStyleBadges();
         appState.styleConfig.backgroundColor = dom.result.styleBg.value;
         appState.styleConfig.activeScale = parseFloat(dom.result.styleActiveScale.value);
         appState.styleConfig.nextCount = parseInt(dom.result.styleNextCount.value);
@@ -1063,6 +1079,41 @@ function switchView(viewId: string) {
     if (viewId === 'order-view') setTimeout(setupOrderView, 50);
     if (viewId === 'sync-view') setupSyncView();
     if (viewId === 'result-view') setupResultView();
+
+    updateStepper(viewId);
+}
+
+// --- Workflow Progress Stepper ---
+const STEPPER_VIEWS = ['upload-view', 'define-symbols-view', 'order-view', 'sync-view', 'result-view'];
+
+function updateStepper(viewId: string) {
+    const stepper = document.getElementById('progress-stepper');
+    if (!stepper) return;
+
+    // Board mode has its own short flow (define view only) — the karaoke
+    // pipeline stepper would mislead, so hide it.
+    if (appState.mode === 'board') {
+        stepper.style.display = 'none';
+        return;
+    }
+    stepper.style.display = 'flex';
+
+    const current = STEPPER_VIEWS.indexOf(viewId);
+    if (current === -1) return; // loading view etc: keep previous state
+
+    stepper.querySelectorAll('.stepper-step').forEach((btn: Element, i: number) => {
+        const b = btn as HTMLButtonElement;
+        b.classList.toggle('active', i === current);
+        b.classList.toggle('done', i < current);
+        const dot = b.querySelector('.step-dot');
+        if (dot) dot.textContent = i < current ? '✓' : String(i + 1);
+        // Completed steps are clickable to jump back — except Upload, which
+        // has no safe re-entry path (restarting the project wipes work).
+        b.disabled = !(i < current && i > 0);
+    });
+    stepper.querySelectorAll('.stepper-connector').forEach((line: Element, i: number) => {
+        (line as HTMLElement).classList.toggle('done', i < current);
+    });
 }
 
 // --- AI Generation Logic (Nano Banana) ---
