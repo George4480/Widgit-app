@@ -331,7 +331,17 @@ function setupEventListeners() {
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
     dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
-    dom.upload.btnClearUploads.addEventListener('click', resetUploads);
+    dom.upload.btnClearUploads.addEventListener('click', () => {
+        const f = appState.files;
+        const hasFiles = !!f.pdf || f.images.length > 0 || !!f.audioVocal || !!f.audioBacking;
+        if (!hasFiles) { resetUploads(); return; }
+        showConfirm({
+            title: '🗑️ Clear all uploads?',
+            message: 'This removes every image, PDF and audio file you\'ve added so far. You\'ll need to upload them again.',
+            confirmText: 'Clear uploads',
+            onConfirm: resetUploads,
+        });
+    });
     
     // Assignment swapping logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
@@ -370,7 +380,16 @@ function setupEventListeners() {
     dom.define.btnPrev.addEventListener('click', () => changePage(-1));
     dom.define.btnNext.addEventListener('click', () => changePage(1));
     dom.define.btnAuto.addEventListener('click', runGridDetection);
-    dom.define.btnClear.addEventListener('click', clearCurrentPageSymbols);
+    dom.define.btnClear.addEventListener('click', () => {
+        const page = appState.pages[appState.currentPageIndex];
+        if (!page || page.symbols.length === 0) { clearCurrentPageSymbols(); return; }
+        showConfirm({
+            title: '🗑️ Clear all tiles on this page?',
+            message: `This removes all <strong>${page.symbols.length}</strong> tile(s) defined on this page, along with their ordering. This can't be undone.`,
+            confirmText: 'Clear tiles',
+            onConfirm: clearCurrentPageSymbols,
+        });
+    });
     dom.define.btnGoOrder.addEventListener('click', () => switchView('order-view'));
     dom.define.btnSelectColor.addEventListener('click', selectSimilarColors);
     dom.define.btnZoomIn.addEventListener('click', () => changeZoom(0.1));
@@ -414,16 +433,45 @@ function setupEventListeners() {
     dom.order.btnPrev.addEventListener('click', () => { changePage(-1); setupOrderView(); });
     dom.order.btnNext.addEventListener('click', () => { changePage(1); setupOrderView(); });
     dom.order.btnAuto.addEventListener('click', autoOrderPage);
-    dom.order.btnReset.addEventListener('click', resetOrderPage);
+    dom.order.btnReset.addEventListener('click', () => {
+        const page = appState.pages[appState.currentPageIndex];
+        if (!page || page.sequence.length === 0) { resetOrderPage(); return; }
+        showConfirm({
+            title: '↩️ Reset the order for this page?',
+            message: 'This clears the play order you\'ve set on this page. The tiles themselves are kept — only their sequence is cleared.',
+            confirmText: 'Reset order',
+            onConfirm: resetOrderPage,
+        });
+    });
     dom.order.btnBack.addEventListener('click', () => switchView('define-symbols-view'));
-    dom.order.btnFinish.addEventListener('click', finishOrderingSymbols);
+    dom.order.btnFinish.addEventListener('click', () => {
+        // If the user already recorded timings and came back to re-order,
+        // finishing again rebuilds the tile list and would wipe that work.
+        const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
+        if (!hasTimings) { finishOrderingSymbols(); return; }
+        showConfirm({
+            title: '⏱️ Rebuild tiles and discard recorded timings?',
+            message: 'You\'ve already recorded timings for this song. Continuing rebuilds the tile list from the current order and clears all recorded timings. Choose Cancel to keep your recording and return with the "Sync" step instead.',
+            confirmText: 'Rebuild & discard timings',
+            onConfirm: finishOrderingSymbols,
+        });
+    });
     dom.order.btnPanUp.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
     dom.order.btnPanDown.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
 
 
     // --- Sync View (Waveform) ---
     dom.sync.btnRecord.addEventListener('click', handleSyncTapAction); 
-    dom.sync.btnReset.addEventListener('click', resetSync);
+    dom.sync.btnReset.addEventListener('click', () => {
+        const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
+        if (!hasTimings) { resetSync(); return; }
+        showConfirm({
+            title: '⏱️ Reset all recorded timings?',
+            message: 'This erases every timing you\'ve recorded and fine-tuned for this song and returns you to the start of recording. Your tiles and their order are kept.',
+            confirmText: 'Reset recording',
+            onConfirm: resetSync,
+        });
+    });
     dom.sync.btnBack.addEventListener('click', () => switchView('order-view'));
     dom.sync.btnFinish.addEventListener('click', () => switchView('result-view'));
     dom.sync.btnZoomIn.addEventListener('click', () => { appState.interaction.timelineZoom += 20; drawSyncTimeline(); });
@@ -450,7 +498,14 @@ function setupEventListeners() {
 
     // --- Result View ---
     dom.result.btnBack.addEventListener('click', () => switchView('sync-view'));
-    dom.result.btnReset.addEventListener('click', () => window.location.reload());
+    dom.result.btnReset.addEventListener('click', () => {
+        showConfirm({
+            title: '🔄 Start a completely new project?',
+            message: 'This discards your current song — all tiles, ordering and recorded timings — and reloads the app from scratch. Make sure you\'ve exported or saved anything you want to keep first.',
+            confirmText: 'Start over',
+            onConfirm: () => window.location.reload(),
+        });
+    });
     dom.result.btnPlay.addEventListener('click', playPreview);
     dom.result.btnPause.addEventListener('click', pausePreview);
     dom.result.btnRewind.addEventListener('click', rewindPreview);
@@ -2638,6 +2693,88 @@ function confirmExport(onConfirm: () => void) {
     });
 
     document.body.appendChild(overlay);
+}
+
+/**
+ * Reusable confirmation dialog for destructive / irreversible actions.
+ * Prevents an accidental click on a "Reset" / "Clear" / "Start Over" button
+ * from wiping the user's work without warning.
+ *
+ * Behaviour tuned for safety + seamlessness:
+ *  - The safe "Cancel" button is focused by default, so a stray Enter/Space
+ *    key press never triggers the destructive action.
+ *  - Escape and clicking the dim backdrop both cancel.
+ *  - The dialog only appears when the caller decides there is work to lose,
+ *    so it never gets in the way when there's nothing to protect.
+ */
+function showConfirm(opts: {
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+}) {
+    const overlay = document.createElement('div');
+    overlay.className = 'warning-modal-overlay';
+
+    const content = document.createElement('div');
+    content.className = 'warning-modal-content';
+    // Red accent for destructive actions, blue for neutral confirmations.
+    content.style.borderTopColor = opts.danger === false ? '#4285f4' : '#ea4335';
+
+    const title = document.createElement('h3');
+    title.className = 'warning-modal-title';
+    if (opts.danger === false) title.style.color = '#174ea6';
+    title.innerHTML = opts.title;
+
+    const body = document.createElement('div');
+    body.className = 'warning-modal-body';
+    body.innerHTML = `<p>${opts.message}</p>`;
+
+    const btnContainer = document.createElement('div');
+    btnContainer.className = 'warning-modal-buttons';
+
+    const close = () => {
+        if (overlay.parentNode) document.body.removeChild(overlay);
+        document.removeEventListener('keydown', onKey);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+    };
+
+    const btnCancel = document.createElement('button');
+    btnCancel.className = 'button secondary';
+    btnCancel.style.margin = '0';
+    btnCancel.textContent = opts.cancelText || 'Cancel';
+    btnCancel.addEventListener('click', close);
+
+    const btnConfirm = document.createElement('button');
+    btnConfirm.className = 'button';
+    btnConfirm.style.margin = '0';
+    if (opts.danger !== false) btnConfirm.style.backgroundColor = '#ea4335';
+    btnConfirm.textContent = opts.confirmText || 'Confirm';
+    btnConfirm.addEventListener('click', () => {
+        close();
+        opts.onConfirm();
+    });
+
+    btnContainer.appendChild(btnCancel);
+    btnContainer.appendChild(btnConfirm);
+    content.appendChild(title);
+    content.appendChild(body);
+    content.appendChild(btnContainer);
+    overlay.appendChild(content);
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) close();
+    });
+
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
+    // Focus the safe button so a stray Enter/Space can't destroy work.
+    btnCancel.focus();
 }
 
 async function saveProjectJson() {
