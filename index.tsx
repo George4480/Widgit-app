@@ -13,6 +13,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 const undoStack: string[] = [];
 const redoStack: string[] = [];
 
+// Sync-stage playback speed (slow the song to place taps / the round loop).
+let syncPlaybackRate = 1;
+
 // Object URL Memory Cleaner
 const activeObjectUrls = new Set<string>();
 
@@ -522,6 +525,16 @@ function setupEventListeners() {
         if (idx !== -1 && appState.symbols[idx]) {
             appState.symbols[idx].direction = (e.target as HTMLInputElement).value;
         }
+    });
+
+    // Playback speed (slow the song to place taps / the round loop precisely).
+    document.querySelectorAll('#sync-speed-panel .speed-group button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            syncPlaybackRate = parseFloat((btn as HTMLElement).dataset.speed || '1');
+            document.querySelectorAll('#sync-speed-panel .speed-group button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            dom.sync.audio.playbackRate = syncPlaybackRate;
+        });
     });
 
     // Musical Round: mark the looping section using the selected tile.
@@ -2229,6 +2242,7 @@ function setupSyncView() {
     // Hide Fine Tuning Tools
     dom.sync.containerFineTuning.style.display = 'none';
     
+    dom.sync.audio.playbackRate = syncPlaybackRate; // keep chosen speed on re-entry
     updateSyncButtonUI();
     renderSymbolNavStrip(); // Prepare, but hidden
     updateTimelineToolsUI();
@@ -2423,16 +2437,18 @@ function handleSyncTapAction() {
         dom.sync.containerFineTuning.style.display = 'none';
         
         dom.sync.audio.currentTime = 0;
+        dom.sync.audio.playbackRate = syncPlaybackRate;
         dom.sync.audio.play();
-        
+
         // Reset timings to 0 (will be overwritten)
         appState.symbols.forEach(s => { s.startTime = 0; s.endTime = 0; });
         updateSyncButtonUI();
     } else {
         // Tap to Advance
         const time = dom.sync.audio.currentTime;
-        // Reaction Time compensation (recording only)
-        const reactionComp = -0.15; 
+        // Reaction-time compensation, scaled by playback speed (slower song =
+        // less song-time passes during the same human reaction, so less to shave).
+        const reactionComp = -0.15 * syncPlaybackRate;
         const adjustedTime = Math.max(0, time + reactionComp);
         
         const idx = appState.currentSyncIndex;
@@ -2811,6 +2827,7 @@ function syncStyleControls() {
 
 async function setupResultView() {
     dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    dom.sync.audio.playbackRate = 1; // preview always plays at normal speed
     _bboxCache.clear(); // sheet-mode crop boxes recomputed for current tiles
     syncStyleControls();
     appState.preview.loadedImages.clear();
