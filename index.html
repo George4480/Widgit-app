@@ -1467,6 +1467,32 @@
         /* High-contrast must fully clear the themed background gradients. */
         body.high-contrast { background: #000000 !important; }
 
+        /* ---- Playback speed control ---- */
+        .speed-group {
+            display: inline-flex;
+            gap: 4px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 3px;
+            vertical-align: middle;
+        }
+        .speed-group button {
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font: inherit;
+            font-weight: 600;
+            font-size: 0.85rem;
+            padding: 5px 12px;
+            border-radius: 7px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+            touch-action: manipulation;
+        }
+        .speed-group button:hover { background: var(--surface-3); }
+        .speed-group button.active { background: var(--primary); color: #fff; }
+
         /* ---- Video import frame picker ---- */
         .vframe {
             position: relative;
@@ -1920,6 +1946,16 @@
 
         <div class="sync-area">
              <button id="record-tap-button" class="button">Start Recording / Tap</button>
+        </div>
+
+        <!-- Playback speed: slow the song down to place taps / the round loop accurately -->
+        <div id="sync-speed-panel" style="text-align: center; margin: 0 0 10px 0;">
+            <span style="font-weight: 600; font-size: 0.85rem; margin-right: 8px;">🐢 Playback speed:</span>
+            <span class="speed-group" data-speed-group>
+                <button type="button" data-speed="0.5">0.5×</button>
+                <button type="button" data-speed="0.75">0.75×</button>
+                <button type="button" data-speed="1" class="active">1×</button>
+            </span>
         </div>
 
         <!-- Musical Round: mark the looping section live while you tap (or later while fine-tuning) -->
