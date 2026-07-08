@@ -3,7 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title>Mr. Bunn's Widget Machine</title>
+    <title>See Song — symbol karaoke maker</title>
+    <meta name="description" content="See Song turns symbol songboards into audio-synced karaoke videos. Everything runs in your browser — your files never leave your device.">
+    <meta name="theme-color" content="#4f46e5">
+    <!-- Social / link previews -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="See Song">
+    <meta property="og:title" content="See Song — symbol karaoke maker">
+    <meta property="og:description" content="Turn symbol songboards into audio-synced karaoke videos, right in your browser.">
+    <meta property="og:url" content="https://www.seesong.co.uk/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="See Song — symbol karaoke maker">
+    <meta name="twitter:description" content="Turn symbol songboards into audio-synced karaoke videos, right in your browser.">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
     <script>
         /* Apply saved theme before first paint to avoid a flash of the wrong theme. */
@@ -1608,8 +1619,8 @@
 
 <main class="container">
     <div class="header">
-        <h1>Mr. Bunn's Widget Machine</h1>
-        <p>Convert symbol charts into animated karaoke videos</p>
+        <h1>See Song</h1>
+        <p>Turn symbol songboards into audio-synced karaoke videos</p>
     </div>
 
     <!-- Global Control & Accessibility Bar -->
@@ -1661,7 +1672,7 @@
 
     <!-- Global Help Overlay Panel -->
     <div id="global-help-panel" style="display: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.5; font-size: 0.95rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-        <h3 style="margin-top: 0; color: var(--primary-text); display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">📖 Mr. Bunn's Widget Machine Guide</h3>
+        <h3 style="margin-top: 0; color: var(--primary-text); display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">📖 See Song Guide</h3>
         <p style="margin-bottom: 15px; color: var(--text);">Convert communication symbol charts into beautifully timed karaoke animations and boards:</p>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
             <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
@@ -1896,7 +1907,7 @@
             
             <!-- Musical Direction Input -->
             <div id="sync-symbol-properties" style="margin-top: 10px; text-align: center; display: none;">
-                <label style="font-weight: 500; font-size: 0.9rem;">Musical Direction (Active Tile): 
+                <label style="font-weight: 500; font-size: 0.9rem;">Musical Direction (Active Tile):
                     <input type="text" id="input-sync-direction" placeholder="e.g. Loud, Soft, Breath..." class="text-input" style="width: 250px; margin-bottom: 0; padding: 8px;">
                 </label>
             </div>
@@ -1911,7 +1922,16 @@
              <button id="record-tap-button" class="button">Start Recording / Tap</button>
         </div>
 
-        <audio id="sync-audio-player" style="width: 100%; margin: 20px 0;" controls></audio>
+        <!-- Musical Round: mark the looping section live while you tap (or later while fine-tuning) -->
+        <div id="sync-round-panel" style="margin: 0 auto 8px auto; max-width: 680px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: center;">
+            <span style="font-weight: 600; font-size: 0.85rem;">🎶 Musical round:</span>
+            <button id="btn-round-set-start" class="button secondary small" title="Mark the tile you're on now as where the round's loop starts (press [ )">Set loop start</button>
+            <button id="btn-round-set-end" class="button secondary small" title="Mark the tile you're on now as where the round's loop ends (press ] )">Set loop end</button>
+            <span id="round-range-label" style="font-family: monospace; font-size: 0.82rem; color: var(--text-muted);">No loop set</span>
+            <button id="btn-round-clear" class="button secondary small" style="color: #c5221f;" title="Clear the round loop">Clear</button>
+        </div>
+
+        <audio id="sync-audio-player" style="width: 100%; margin: 12px 0 20px 0;" controls></audio>
         
         <div class="button-group">
             <button id="reset-sync-button" class="button secondary">Reset Recording</button>
@@ -2106,9 +2126,9 @@
 
     <!-- Footer with Version Number & Branding -->
     <footer style="text-align: center; margin-top: 50px; padding: 25px 0 10px 0; border-top: 1px solid #dadce0; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6;">
-        <p style="margin: 0; font-weight: 600; color: var(--text);">Widget Machine v0.1.0</p>
+        <p style="margin: 0; font-weight: 600; color: var(--text);">See Song v0.1.0</p>
         <p style="margin: 2px 0 0 0;">Designed and built by George Bunn</p>
-        <p style="margin: 2px 0 0 0; font-style: italic; color: #80868b;">AI-assisted development prototype</p>
+        <p style="margin: 2px 0 0 0; font-style: italic; color: #80868b;">Runs entirely in your browser — your files never leave your device.</p>
     </footer>
 
 </main>

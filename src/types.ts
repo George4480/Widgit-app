@@ -79,6 +79,8 @@ export interface AppState {
     currentPageIndex: number;
     /** Canonical reading order across all pages (supports revisits & repeats). */
     globalSequence: SequenceStep[];
+    /** Round loop section defined at the Sync stage, by flat tile index (-1 = unset). */
+    round: { start: number; end: number };
     symbols: SymbolTile[];
     isRecordingSync: boolean;
     currentSyncIndex: number;
@@ -130,6 +132,8 @@ export interface ProjectSaveData {
     latencyOffset: number;
     /** Cross-page reading order. Absent in files saved before this feature. */
     globalSequence?: SequenceStep[];
+    /** Round loop section by tile index. Absent in older files. */
+    round?: { start: number; end: number };
     pages: {
         pageIndex: number;
         width: number;
