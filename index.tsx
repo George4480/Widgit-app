@@ -239,15 +239,12 @@ function init() {
             // Style Controls
             styleBg: document.getElementById('style-bg-color'),
             styleActiveScale: document.getElementById('style-active-scale'),
-            styleNextCount: document.getElementById('style-next-count'),
             styleNextScale: document.getElementById('style-next-scale'),
             styleNextOpacity: document.getElementById('style-next-opacity'),
-            stylePrevCount: document.getElementById('style-prev-count'),
             stylePrevScale: document.getElementById('style-prev-scale'),
             stylePrevOpacity: document.getElementById('style-prev-opacity'),
             styleSpacing: document.getElementById('style-spacing'),
             styleRoundEnabled: document.getElementById('style-round-enabled'),
-            styleRoundVoices: document.getElementById('style-round-voices'),
             styleRoundGap: document.getElementById('style-round-gap'),
             roundSettings: document.getElementById('round-settings')
         },
@@ -563,46 +560,54 @@ function setupEventListeners() {
     });
 
     // Style Inputs
-    const refreshStyleBadges = () => {
-        document.querySelectorAll('.setting-val[data-for]').forEach((span: Element) => {
-            const input = document.getElementById((span as HTMLElement).dataset.for!) as HTMLInputElement | null;
-            if (input) span.textContent = input.value;
-        });
-    };
-    refreshStyleBadges(); // Initial values on load
     const updateStyle = () => {
-        refreshStyleBadges();
+        formatStyleBadges();
         appState.styleConfig.backgroundColor = dom.result.styleBg.value;
         appState.styleConfig.activeScale = parseFloat(dom.result.styleActiveScale.value);
-        appState.styleConfig.nextCount = parseInt(dom.result.styleNextCount.value);
+        appState.styleConfig.nextCount = segGet('nextCount');
         appState.styleConfig.nextScale = parseFloat(dom.result.styleNextScale.value);
         appState.styleConfig.nextOpacity = parseFloat(dom.result.styleNextOpacity.value);
-        appState.styleConfig.prevCount = parseInt(dom.result.stylePrevCount.value);
+        appState.styleConfig.prevCount = segGet('prevCount');
         appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
         appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
-        appState.styleConfig.roundVoices = parseInt(dom.result.styleRoundVoices.value);
+        appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
         appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
         // Enable/disable the round sub-controls to match the toggle.
         const on = appState.styleConfig.roundEnabled;
-        (dom.result.styleRoundVoices as HTMLInputElement).disabled = !on;
         (dom.result.styleRoundGap as HTMLInputElement).disabled = !on;
-        if (dom.result.roundSettings) dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
+        if (dom.result.roundSettings) {
+            dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
+            dom.result.roundSettings.setAttribute('aria-disabled', on ? 'false' : 'true');
+        }
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
+
+    // Wire the segmented pickers (tap a number to select it).
+    document.querySelectorAll('.seg-group').forEach(group => {
+        group.addEventListener('click', (e) => {
+            const btn = (e.target as HTMLElement).closest('button');
+            if (!btn || (group.parentElement?.closest('[aria-disabled="true"]'))) return;
+            group.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            updateStyle();
+        });
+    });
+
     dom.result.styleBg.addEventListener('input', updateStyle);
     dom.result.styleActiveScale.addEventListener('input', updateStyle);
-    dom.result.styleNextCount.addEventListener('input', updateStyle);
     dom.result.styleNextScale.addEventListener('input', updateStyle);
     dom.result.styleNextOpacity.addEventListener('input', updateStyle);
-    dom.result.stylePrevCount.addEventListener('input', updateStyle);
     dom.result.stylePrevScale.addEventListener('input', updateStyle);
     dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
     dom.result.styleRoundEnabled.addEventListener('change', updateStyle);
-    dom.result.styleRoundVoices.addEventListener('input', updateStyle);
     dom.result.styleRoundGap.addEventListener('input', updateStyle);
+
+    // Reflect the current styleConfig onto every control (sliders + segments +
+    // badges), so the panel always shows the real values — including on load.
+    syncStyleControls();
 
     // Canvas Events
     setupCanvasInteractions();
@@ -2597,8 +2602,63 @@ function handleTimelineMouseUp() {
 }
 
 // --- Preview Logic ---
+// --- Visual Settings control helpers (shared by live editing & sync-back) ---
+
+// Format each slider's read-out badge in human terms (percent / px / seconds).
+function formatStyleBadges() {
+    document.querySelectorAll('.setting-val[data-for]').forEach((span: Element) => {
+        const el = span as HTMLElement;
+        const input = document.getElementById(el.dataset.for!) as HTMLInputElement | null;
+        if (!input) return;
+        const v = parseFloat(input.value);
+        const fmt = el.dataset.format;
+        el.textContent = fmt === 'percent' ? Math.round(v * 100) + '%'
+            : fmt === 'px' ? Math.round(v) + 'px'
+            : fmt === 'seconds' ? v.toFixed(1) + 's'
+            : input.value;
+    });
+}
+
+// Read the selected value of a segmented (button-group) picker.
+function segGet(key: string): number {
+    const active = document.querySelector(`.seg-group[data-style="${key}"] button.active`) as HTMLElement | null;
+    return active ? parseInt(active.dataset.value!) : 0;
+}
+// Select a value in a segmented picker.
+function segSet(key: string, val: number) {
+    document.querySelectorAll(`.seg-group[data-style="${key}"] button`).forEach(b => {
+        b.classList.toggle('active', parseInt((b as HTMLElement).dataset.value!) === val);
+    });
+}
+
+// Push the current styleConfig onto every control so the panel always shows the
+// real values (e.g. after loading a project or reopening the Result view).
+function syncStyleControls() {
+    const c = appState.styleConfig;
+    const set = (el: HTMLInputElement | null, v: string | number) => { if (el) el.value = String(v); };
+    set(dom.result.styleBg as HTMLInputElement, c.backgroundColor);
+    set(dom.result.styleActiveScale as HTMLInputElement, c.activeScale);
+    set(dom.result.styleNextScale as HTMLInputElement, c.nextScale);
+    set(dom.result.styleNextOpacity as HTMLInputElement, c.nextOpacity);
+    set(dom.result.stylePrevScale as HTMLInputElement, c.prevScale);
+    set(dom.result.stylePrevOpacity as HTMLInputElement, c.prevOpacity);
+    set(dom.result.styleSpacing as HTMLInputElement, c.spacing);
+    set(dom.result.styleRoundGap as HTMLInputElement, c.roundGap);
+    (dom.result.styleRoundEnabled as HTMLInputElement).checked = !!c.roundEnabled;
+    segSet('nextCount', c.nextCount);
+    segSet('prevCount', c.prevCount);
+    segSet('roundVoices', c.roundVoices || 2);
+    (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled;
+    if (dom.result.roundSettings) {
+        dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
+        dom.result.roundSettings.setAttribute('aria-disabled', c.roundEnabled ? 'false' : 'true');
+    }
+    formatStyleBadges();
+}
+
 async function setupResultView() {
     dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    syncStyleControls();
     appState.preview.loadedImages.clear();
     const promises = appState.symbols.map((sym, idx) => new Promise<void>((resolve) => {
         const img = new Image();

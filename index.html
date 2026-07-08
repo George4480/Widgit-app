@@ -1517,6 +1517,54 @@
             .order-sequence-item .seq-controls { opacity: 1; }
         }
 
+        /* ---- Friendlier setting controls ---- */
+        .slider-ends {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            color: var(--text-faint);
+            margin-top: 3px;
+        }
+        .section-note {
+            font-size: 0.72rem;
+            font-weight: 500;
+            text-transform: none;
+            letter-spacing: 0;
+            color: var(--text-faint);
+            margin-left: 4px;
+        }
+        .seg-group {
+            display: inline-flex;
+            gap: 4px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 3px;
+            flex-wrap: wrap;
+        }
+        .seg-group button {
+            flex: 1 1 auto;
+            min-width: 34px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font: inherit;
+            font-weight: 600;
+            font-size: 0.9rem;
+            padding: 7px 10px;
+            border-radius: 7px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+            touch-action: manipulation;
+        }
+        .seg-group button:hover { background: var(--surface-3); }
+        .seg-group button.active {
+            background: var(--primary);
+            color: #fff;
+            box-shadow: var(--shadow-sm);
+        }
+        #round-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
+
         /* ---- Musical round toggle ---- */
         .round-toggle-row { padding: 10px 0 4px; }
         .round-toggle {
@@ -1913,64 +1961,82 @@
                 <h4 class="settings-section-title">General</h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Background Color</label>
+                        <label>Background colour</label>
                         <input type="color" id="style-bg-color" value="#f0f8ff" style="width: 100%; height: 40px;">
                     </div>
                     <div class="setting-item">
-                        <label>Tile Spacing <span class="setting-val" data-for="style-spacing"></span></label>
+                        <label>Gap between tiles <span class="setting-val" data-for="style-spacing" data-format="px"></span></label>
                         <input type="range" id="style-spacing" min="100" max="400" step="10" value="200">
+                        <div class="slider-ends"><span>Close together</span><span>Spread out</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Main Tile (Now Playing)</h4>
+                <h4 class="settings-section-title">Main tile <span class="section-note">the word being sung now</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-active-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-active-scale" data-format="percent"></span></label>
                         <input type="range" id="style-active-scale" min="0.5" max="2.0" step="0.1" value="1.1">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Next Tiles (Upcoming)</h4>
+                <h4 class="settings-section-title">Next tiles <span class="section-note">the words coming up</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Count <span class="setting-val" data-for="style-next-count"></span></label>
-                        <input type="range" id="style-next-count" min="0" max="4" step="1" value="2">
+                        <label>How many to show ahead</label>
+                        <div class="seg-group" data-style="nextCount" aria-label="Number of upcoming tiles to show">
+                            <button type="button" data-value="0">0</button>
+                            <button type="button" data-value="1">1</button>
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4">4</button>
+                        </div>
                     </div>
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-next-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-next-scale" data-format="percent"></span></label>
                         <input type="range" id="style-next-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                     <div class="setting-item">
-                        <label>Opacity <span class="setting-val" data-for="style-next-opacity"></span></label>
+                        <label>Fade <span class="setting-val" data-for="style-next-opacity" data-format="percent"></span></label>
                         <input type="range" id="style-next-opacity" min="0" max="1" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Faint</span><span>Solid</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Previous Tiles (Already Played)</h4>
+                <h4 class="settings-section-title">Previous tiles <span class="section-note">the words already sung</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Count <span class="setting-val" data-for="style-prev-count"></span></label>
-                        <input type="range" id="style-prev-count" min="0" max="4" step="1" value="1">
+                        <label>How many to keep behind</label>
+                        <div class="seg-group" data-style="prevCount" aria-label="Number of already-played tiles to show">
+                            <button type="button" data-value="0">0</button>
+                            <button type="button" data-value="1">1</button>
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4">4</button>
+                        </div>
                     </div>
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-prev-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-prev-scale" data-format="percent"></span></label>
                         <input type="range" id="style-prev-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                     <div class="setting-item">
-                        <label>Opacity <span class="setting-val" data-for="style-prev-opacity"></span></label>
+                        <label>Fade <span class="setting-val" data-for="style-prev-opacity" data-format="percent"></span></label>
                         <input type="range" id="style-prev-opacity" min="0" max="1" step="0.1" value="0.4">
+                        <div class="slider-ends"><span>Faint</span><span>Solid</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">🎶 Musical Round (Canon)</h4>
+                <h4 class="settings-section-title">🎶 Musical round (canon)</h4>
                 <div class="round-toggle-row">
                     <label class="round-toggle">
                         <input type="checkbox" id="style-round-enabled">
@@ -1979,12 +2045,16 @@
                 </div>
                 <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
                     <div class="setting-item">
-                        <label>Voices (groups) <span class="setting-val" data-for="style-round-voices"></span></label>
-                        <input type="range" id="style-round-voices" min="2" max="3" step="1" value="2" disabled>
+                        <label>How many groups</label>
+                        <div class="seg-group" data-style="roundVoices" aria-label="Number of groups in the round">
+                            <button type="button" data-value="2">2 groups</button>
+                            <button type="button" data-value="3">3 groups</button>
+                        </div>
                     </div>
                     <div class="setting-item">
-                        <label>Entry gap (seconds) <span class="setting-val" data-for="style-round-gap"></span></label>
+                        <label>Each group starts after <span class="setting-val" data-for="style-round-gap" data-format="seconds"></span></label>
                         <input type="range" id="style-round-gap" min="0.5" max="12" step="0.5" value="4" disabled>
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
                     </div>
                 </div>
             </div>
