@@ -624,6 +624,9 @@ function setupEventListeners() {
             deleteSelectedSymbols();
         }
         if (appState.currentView === 'sync-view') {
+            // [ and ] mark the round loop start/end — works while tapping too.
+            if (e.key === '[') { e.preventDefault(); setRoundMarker('start'); return; }
+            if (e.key === ']') { e.preventDefault(); setRoundMarker('end'); return; }
             // Space / Enter still taps to record.
             if (e.key === ' ' || e.key === 'Enter') {
                 e.preventDefault();
@@ -2552,10 +2555,16 @@ function selectTimelineTile(delta: number) {
     drawSyncTimeline();
 }
 
-// Mark the currently-selected tile as the round loop's start or end.
+// Mark the round loop's start/end. While tapping, that's the tile you're on
+// right now (currentSyncIndex); while fine-tuning, it's the selected tile.
 function setRoundMarker(which: 'start' | 'end') {
-    const idx = appState.interaction.selectedSyncIndex;
-    if (idx === -1) { alert('Select a tile on the timeline first, then set it as the loop start or end.'); return; }
+    const idx = appState.isRecordingSync ? appState.currentSyncIndex : appState.interaction.selectedSyncIndex;
+    if (idx === -1) {
+        alert(appState.isRecordingSync
+            ? 'Start tapping first — then mark the loop start/end on the tile you\'re on.'
+            : 'Select a tile on the timeline first, then set it as the loop start or end.');
+        return;
+    }
     const r = appState.round;
     if (which === 'start') {
         r.start = idx;

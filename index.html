@@ -1901,15 +1901,6 @@
                 </label>
             </div>
 
-            <!-- Musical Round: mark the looping section on the timeline -->
-            <div id="sync-round-panel" style="margin-top: 12px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: center;">
-                <span style="font-weight: 600; font-size: 0.85rem;">🎶 Musical round:</span>
-                <button id="btn-round-set-start" class="button secondary small" title="Mark the selected tile as where the round's loop starts">Set loop start</button>
-                <button id="btn-round-set-end" class="button secondary small" title="Mark the selected tile as where the round's loop ends">Set loop end</button>
-                <span id="round-range-label" style="font-family: monospace; font-size: 0.82rem; color: var(--text-muted);">No loop set</span>
-                <button id="btn-round-clear" class="button secondary small" style="color: #c5221f;" title="Clear the round loop">Clear</button>
-            </div>
-
             <!-- Virtual Scrolling Timeline -->
             <div id="sync-timeline-container" class="timeline-scroll-container" style="margin-top: 15px;">
                 <canvas id="sync-timeline-canvas"></canvas>
@@ -1920,7 +1911,16 @@
              <button id="record-tap-button" class="button">Start Recording / Tap</button>
         </div>
 
-        <audio id="sync-audio-player" style="width: 100%; margin: 20px 0;" controls></audio>
+        <!-- Musical Round: mark the looping section live while you tap (or later while fine-tuning) -->
+        <div id="sync-round-panel" style="margin: 0 auto 8px auto; max-width: 680px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: center;">
+            <span style="font-weight: 600; font-size: 0.85rem;">🎶 Musical round:</span>
+            <button id="btn-round-set-start" class="button secondary small" title="Mark the tile you're on now as where the round's loop starts (press [ )">Set loop start</button>
+            <button id="btn-round-set-end" class="button secondary small" title="Mark the tile you're on now as where the round's loop ends (press ] )">Set loop end</button>
+            <span id="round-range-label" style="font-family: monospace; font-size: 0.82rem; color: var(--text-muted);">No loop set</span>
+            <button id="btn-round-clear" class="button secondary small" style="color: #c5221f;" title="Clear the round loop">Clear</button>
+        </div>
+
+        <audio id="sync-audio-player" style="width: 100%; margin: 12px 0 20px 0;" controls></audio>
         
         <div class="button-group">
             <button id="reset-sync-button" class="button secondary">Reset Recording</button>
