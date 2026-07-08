@@ -3612,7 +3612,7 @@ async function saveProjectJson() {
     }
 
     const projectData: ProjectSaveData = {
-        app: "Widget Machine",
+        app: "See Song",
         version: "0.1.0",
         date: new Date().toISOString(),
         songTitle: appState.songTitle,
@@ -3650,8 +3650,8 @@ function handleProjectLoadFile(e: Event) {
     reader.onload = async (event) => {
         try {
             const data = JSON.parse(event.target?.result as string);
-            if (data.app !== "Widget Machine") {
-                alert("Invalid project file. Must be a 'Widget Machine' project.");
+            if (data.app !== "See Song" && data.app !== "Widget Machine") {
+                alert("Invalid project file. Must be a See Song project.");
                 return;
             }
 
@@ -3749,7 +3749,7 @@ function handleProjectLoadFile(e: Event) {
             alert(`Project "${appState.songTitle}" loaded successfully! If you'd like to restore the original full-resolution background templates, please drop the corresponding source PDF or image files on the creator area.`);
         } catch (err) {
             console.error("Load project failed:", err);
-            alert("Failed to parse project file. Make sure it's a valid Widget Machine project JSON.");
+            alert("Failed to parse project file. Make sure it's a valid See Song project JSON.");
         }
     };
     reader.readAsText(file);
@@ -3777,8 +3777,8 @@ function exportProjectManifest() {
     const appVersion = "v0.1.0";
 
     const manifestData = {
-        title: "Widget Machine Export Manifest",
-        header: "Widget Machine Export",
+        title: "See Song Export Manifest",
+        header: "See Song Export",
         songName: songName,
         date: dateStr,
         mode: modeStr,
@@ -3786,7 +3786,7 @@ function exportProjectManifest() {
         sourceAudioFilename: sourceAudio,
         numberOfSymbols: numSymbols,
         syncMethod: syncMethod,
-        estimatedProductionMethod: "Automated Widget Machine Karaoke Renderer",
+        estimatedProductionMethod: "Automated See Song Karaoke Renderer",
         previousManualMethodReference: "Manual PowerPoint timeline animation / video editor",
         appVersion: appVersion,
         credits: "Designed and built by George Bunn (Georgeharrybunn96@gmail.com)"
