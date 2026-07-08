@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Mr. Bunn's Widget Machine</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎵</text></svg>">
+    <script>
+        /* Apply saved theme before first paint to avoid a flash of the wrong theme. */
+        (function () {
+            try {
+                var t = localStorage.getItem('wm-theme');
+                if (t === 'dark') document.documentElement.classList.add('dark-mode');
+                else if (t === 'light') document.documentElement.classList.add('light-mode');
+            } catch (e) {}
+        })();
+    </script>
     <style>
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -1021,6 +1031,553 @@
             font-weight: bold;
             z-index: 5;
         }
+        /* ============================================================
+           REDESIGN LAYER — token-driven design system (2026 refresh)
+           Appended last so it overrides the legacy rules above by cascade.
+           Every legacy class/id hook is preserved; only the look changes.
+           ============================================================ */
+
+        :root {
+            /* Surfaces & text (light) */
+            --bg: #eef0f8;
+            --bg-accent: #e7e9fb;
+            --surface: #ffffff;
+            --surface-2: #f5f6fb;
+            --surface-3: #eaecf5;
+            --border: #e2e5f0;
+            --border-strong: #cdd2e4;
+            --text: #191b2a;
+            --text-muted: #565c72;
+            --text-faint: #878da3;
+
+            /* Brand & semantic */
+            --primary: #4f46e5;
+            --primary-strong: #4338ca;
+            --primary-soft: #eef1ff;
+            --primary-text: #4338ca;
+            --btn-primary: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            --btn-primary-hover: linear-gradient(135deg, #5b57f0 0%, #4036c9 100%);
+
+            --success: #16a34a;
+            --success-soft: #dcfce7;
+            --warning: #d97706;
+            --warning-soft: #fef3c7;
+            --danger: #dc2626;
+            --danger-soft: #fee2e2;
+
+            /* Elevation & shape */
+            --shadow-sm: 0 1px 2px rgba(23, 23, 60, 0.06);
+            --shadow: 0 6px 20px rgba(23, 23, 60, 0.08);
+            --shadow-lg: 0 18px 42px rgba(23, 23, 60, 0.16);
+            --radius-lg: 20px;
+            --radius: 14px;
+            --radius-sm: 10px;
+            --ring: rgba(79, 70, 229, 0.35);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not(.light-mode) {
+                --bg: #0d0f16;
+                --bg-accent: #121520;
+                --surface: #181b26;
+                --surface-2: #1f2331;
+                --surface-3: #292f41;
+                --border: #2b3042;
+                --border-strong: #3a4157;
+                --text: #e9ebf5;
+                --text-muted: #a6acc2;
+                --text-faint: #767d96;
+                --primary: #818cf8;
+                --primary-strong: #a5b4fc;
+                --primary-soft: #20264a;
+                --primary-text: #bcc4ff;
+                --success: #4ade80;
+                --success-soft: #123020;
+                --warning: #fbbf24;
+                --warning-soft: #362a0b;
+                --danger: #f87171;
+                --danger-soft: #3a1c1c;
+                --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+                --shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+                --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.6);
+                --ring: rgba(129, 140, 248, 0.4);
+            }
+        }
+
+        :root.dark-mode {
+            --bg: #0d0f16;
+            --bg-accent: #121520;
+            --surface: #181b26;
+            --surface-2: #1f2331;
+            --surface-3: #292f41;
+            --border: #2b3042;
+            --border-strong: #3a4157;
+            --text: #e9ebf5;
+            --text-muted: #a6acc2;
+            --text-faint: #767d96;
+            --primary: #818cf8;
+            --primary-strong: #a5b4fc;
+            --primary-soft: #20264a;
+            --primary-text: #bcc4ff;
+            --success: #4ade80;
+            --success-soft: #123020;
+            --warning: #fbbf24;
+            --warning-soft: #362a0b;
+            --danger: #f87171;
+            --danger-soft: #3a1c1c;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+            --shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+            --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.6);
+            --ring: rgba(129, 140, 248, 0.4);
+        }
+
+        /* ---- Base ---- */
+        body {
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background:
+                radial-gradient(1100px 600px at 12% -8%, var(--bg-accent), transparent 60%),
+                radial-gradient(900px 500px at 100% 0%, var(--primary-soft), transparent 55%),
+                var(--bg);
+            background-attachment: fixed;
+            color: var(--text);
+            -webkit-font-smoothing: antialiased;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        main.container { max-width: 1080px; }
+
+        .header { color: var(--text); margin-bottom: 22px; }
+        .header h1 {
+            font-size: 2.4rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            background: linear-gradient(120deg, #6366f1 0%, #a855f7 55%, #ec4899 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p { color: var(--text-muted); }
+
+        /* ---- Cards / views ---- */
+        .view-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            padding: 32px;
+        }
+        .view-section h2 { color: var(--text); letter-spacing: -0.02em; }
+        .helper-text, .card-status { color: var(--text-muted); }
+
+        /* ---- Global control bar ---- */
+        .global-control-bar {
+            background: var(--surface) !important;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm) !important;
+            border-radius: var(--radius) !important;
+        }
+
+        /* ---- Buttons ---- */
+        .button {
+            background: var(--btn-primary);
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            box-shadow: 0 2px 6px rgba(79, 70, 229, 0.28);
+            transition: transform 0.12s ease, box-shadow 0.2s ease, background 0.2s ease, filter 0.2s ease;
+        }
+        .button:hover {
+            background: var(--btn-primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(79, 70, 229, 0.34);
+        }
+        .button:active { transform: translateY(0); }
+        .button:disabled {
+            background: var(--surface-3);
+            color: var(--text-faint);
+            box-shadow: none;
+            transform: none;
+        }
+        .button.secondary {
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+            box-shadow: none;
+        }
+        .button.secondary:hover {
+            background: var(--surface-3);
+            border-color: var(--border-strong);
+            transform: translateY(-1px);
+        }
+
+        /* Semantic action buttons — the base gradient would otherwise flatten
+           these to indigo and lose their meaning. Restyle as themed gradients.
+           (These IDs previously carried inline background-color values.) */
+        #download-full-mix, #btn-add-tile {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+            color: #fff !important;
+            box-shadow: 0 2px 8px rgba(22, 163, 74, 0.32) !important;
+        }
+        #download-backing, #btn-create-board {
+            background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%) !important;
+            color: #1a1c2a !important;
+            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.32) !important;
+        }
+        #record-tap-button {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+        }
+        #record-tap-button.recording {
+            background: linear-gradient(135deg, #f87171 0%, #ef4444 100%) !important;
+        }
+
+        /* ---- Inputs ---- */
+        .text-input {
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+        }
+        .text-input::placeholder { color: var(--text-faint); }
+        .text-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--ring);
+        }
+        input[type="color"] {
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            cursor: pointer;
+            padding: 3px;
+        }
+
+        /* Custom range sliders */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 6px;
+            border-radius: 999px;
+            background: var(--surface-3);
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: var(--primary);
+            border: 2px solid var(--surface);
+            box-shadow: var(--shadow-sm);
+            cursor: pointer;
+            transition: transform 0.1s ease;
+        }
+        input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.18); }
+        input[type="range"]::-moz-range-thumb {
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            background: var(--primary);
+            border: 2px solid var(--surface);
+            cursor: pointer;
+        }
+        input[type="range"]::-moz-range-track { height: 6px; border-radius: 999px; background: var(--surface-3); }
+
+        /* ---- Upload / assignment cards ---- */
+        .unified-upload-area {
+            background: var(--surface-2);
+            border: 2px dashed var(--border-strong);
+            border-radius: var(--radius);
+        }
+        .unified-upload-area:hover, .unified-upload-area.drag-over {
+            border-color: var(--primary);
+            background: var(--primary-soft);
+        }
+        .unified-upload-area p.main-text { color: var(--text); }
+        .unified-upload-area p.sub-text { color: var(--text-muted); }
+
+        .assignment-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+            transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .assignment-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+        .assignment-card.filled {
+            background: var(--primary-soft);
+            border-color: var(--primary);
+            color: var(--primary-text);
+        }
+        .assignment-card.selected {
+            border: 2px solid var(--success);
+            box-shadow: 0 0 0 4px var(--success-soft);
+        }
+        .card-title { color: var(--text); }
+
+        /* ---- Chips ---- */
+        .chip {
+            background: var(--primary-soft);
+            border: 1px solid transparent;
+            color: var(--primary-text);
+            border-radius: 999px;
+        }
+        .chip:hover { background: var(--surface-3); border-color: var(--border-strong); }
+
+        /* ---- Toolbars ---- */
+        .toolbar {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        /* ---- Canvas ---- */
+        .canvas-container {
+            background: var(--surface-3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        canvas { background: #fff; border-radius: 6px; }
+
+        /* ---- Strips & tiles ---- */
+        .symbol-nav-strip, .order-sequence-strip {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .nav-symbol-item, .order-sequence-item {
+            background: var(--surface);
+            border: 2px solid var(--border);
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow-sm);
+        }
+        .nav-symbol-item.active, .order-sequence-item.active {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px var(--ring);
+        }
+
+        /* ---- Sync visual cue ---- */
+        #sync-visual-cue {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .cue-label { color: var(--text-muted); }
+        .cue-box.next img { border-color: var(--primary); }
+
+        /* ---- Timeline ---- */
+        .timeline-toolbar {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .timeline-toolbar span { color: var(--text); }
+        .timeline-scroll-container { border-radius: var(--radius); border-color: var(--border-strong); }
+
+        /* ---- Collapsibles / settings ---- */
+        details {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        summary { color: var(--primary-text); }
+        .settings-section-title { color: var(--text-muted); border-bottom-color: var(--border); }
+        .setting-item label { color: var(--text-muted); }
+        .setting-val { background: var(--primary-soft); color: var(--primary-text); }
+
+        /* ---- Error box ---- */
+        #error-box {
+            background: var(--danger-soft);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+            border-radius: var(--radius-sm);
+        }
+
+        /* ---- Progress stepper ---- */
+        .progress-stepper {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            border-radius: var(--radius);
+        }
+        .stepper-step { color: var(--text-muted); }
+        .stepper-step .step-dot { background: var(--surface-3); color: var(--text-muted); }
+        .stepper-step.active { color: var(--primary-text); }
+        .stepper-step.active .step-dot { background: var(--primary); color: #fff; }
+        .stepper-step.done { color: var(--success); }
+        .stepper-step.done .step-dot { background: var(--success-soft); color: var(--success); }
+        .stepper-step.done:hover { background: var(--success-soft); }
+        .stepper-connector { background: var(--border-strong); }
+        .stepper-connector.done { background: var(--success); }
+
+        /* ---- Result actions ---- */
+        .result-actions { border-top-color: var(--border); }
+
+        /* ---- Modal ---- */
+        .warning-modal-content {
+            background: var(--surface);
+            color: var(--text);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-lg);
+        }
+        .warning-modal-body { color: var(--text-muted); }
+        .warning-issue-list { background: var(--surface-2); border-color: var(--border); }
+        .warning-issue-item { color: var(--text); }
+
+        /* ---- Loader ---- */
+        .loader { border-color: var(--surface-3); border-top-color: var(--primary); }
+
+        /* ---- Focus ring uses brand color ---- */
+        :focus-visible { outline-color: var(--primary) !important; }
+
+        /* ---- Theme-aware fallbacks for inline-styled panels ----
+           A few panels set literal light backgrounds inline. In dark mode
+           these substring selectors (with !important, the only way to beat
+           inline styles) re-tint them so nothing stays glaringly white. */
+        :root.dark-mode [style*="background: white"],
+        :root.dark-mode [style*="background:#fff"],
+        :root.dark-mode [style*="background: #fff"] {
+            background: var(--surface-2) !important;
+            border-color: var(--border) !important;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not(.light-mode) [style*="background: white"],
+            :root:not(.light-mode) [style*="background:#fff"],
+            :root:not(.light-mode) [style*="background: #fff"] {
+                background: var(--surface-2) !important;
+                border-color: var(--border) !important;
+            }
+        }
+
+        /* ---- Theme toggle button label spacing ---- */
+        #btn-toggle-theme { width: auto; }
+
+        /* Footer */
+        footer { border-top-color: var(--border) !important; color: var(--text-faint) !important; }
+        footer p { color: var(--text-muted) !important; }
+
+        /* High-contrast must fully clear the themed background gradients. */
+        body.high-contrast { background: #000000 !important; }
+
+        /* ---- Cross-page sequence strip ---- */
+        .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
+        .order-sequence-item {
+            flex: 0 0 84px;
+            height: 84px;
+            cursor: grab;
+        }
+        .order-sequence-item.dragging { opacity: 0.4; }
+        .order-sequence-item .page-tag {
+            position: absolute;
+            bottom: 2px;
+            left: 2px;
+            background: var(--primary);
+            color: #fff;
+            font-size: 0.6rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 5px;
+            z-index: 4;
+            letter-spacing: 0.02em;
+        }
+        .order-sequence-item .seq-controls {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: stretch;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            background: linear-gradient(to top, rgba(0,0,0,0.55), transparent);
+            z-index: 6;
+        }
+        .order-sequence-item:hover .seq-controls,
+        .order-sequence-item:focus-within .seq-controls { opacity: 1; }
+        .order-sequence-item .seq-btn {
+            flex: 1;
+            border: none;
+            background: transparent;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 700;
+            line-height: 1;
+            padding: 5px 0;
+            cursor: pointer;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+        }
+        .order-sequence-item .seq-btn:hover { background: rgba(255,255,255,0.2); }
+        .seq-empty {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            padding: 8px 14px;
+            text-align: center;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        /* On touch devices the controls can't rely on hover — always show them. */
+        @media (hover: none) {
+            .order-sequence-item .seq-controls { opacity: 1; }
+        }
+
+        /* ---- Friendlier setting controls ---- */
+        .slider-ends {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+            color: var(--text-faint);
+            margin-top: 3px;
+        }
+        .section-note {
+            font-size: 0.72rem;
+            font-weight: 500;
+            text-transform: none;
+            letter-spacing: 0;
+            color: var(--text-faint);
+            margin-left: 4px;
+        }
+        .seg-group {
+            display: inline-flex;
+            gap: 4px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 3px;
+            flex-wrap: wrap;
+        }
+        .seg-group button {
+            flex: 1 1 auto;
+            min-width: 34px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font: inherit;
+            font-weight: 600;
+            font-size: 0.9rem;
+            padding: 7px 10px;
+            border-radius: 7px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+            touch-action: manipulation;
+        }
+        .seg-group button:hover { background: var(--surface-3); }
+        .seg-group button.active {
+            background: var(--primary);
+            color: #fff;
+            box-shadow: var(--shadow-sm);
+        }
+        #round-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
+
+        /* ---- Musical round toggle ---- */
+        .round-toggle-row { padding: 10px 0 4px; }
+        .round-toggle {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: var(--text);
+            cursor: pointer;
+            line-height: 1.45;
+        }
+        .round-toggle input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; accent-color: var(--primary); }
+        #round-settings { transition: opacity 0.2s ease; }
     </style>
 </head>
 <body>
@@ -1032,13 +1589,13 @@
     </div>
 
     <!-- Global Control & Accessibility Bar -->
-    <div class="global-control-bar" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; align-items: center; background: #fff; padding: 12px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
+    <div class="global-control-bar" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; align-items: center; background: var(--surface); padding: 12px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <!-- Undo/Redo -->
             <button id="btn-global-undo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Undo last change (Ctrl+Z)" aria-label="Undo last action">↩️ Undo</button>
             <button id="btn-global-redo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Redo change (Ctrl+Y)" aria-label="Redo last undone action">🔁 Redo</button>
             
-            <div style="width: 1px; height: 24px; background: #ccc; margin: 0 5px;"></div>
+            <div style="width: 1px; height: 24px; background: var(--border-strong); margin: 0 5px;"></div>
             
             <!-- Save/Load -->
             <button id="btn-global-save" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Save current project to file" aria-label="Save current project to a JSON file">💾 Save Project</button>
@@ -1048,9 +1605,10 @@
         
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <!-- Accessibility Toggles -->
+            <button id="btn-toggle-theme" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Switch between light and dark theme" aria-label="Toggle dark mode">🌙 Dark</button>
             <button id="btn-toggle-high-contrast" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle high contrast colors" aria-label="Toggle High Contrast Mode">👁️ Contrast</button>
             <button id="btn-toggle-reduced-motion" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle animations on/off" aria-label="Toggle Reduced Motion Mode">🏃‍♂️ Motion</button>
-            <button id="btn-global-help" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: #e8f0fe; color: #1a73e8; width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ Help Guide</button>
+            <button id="btn-global-help" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: var(--primary-soft); color: var(--primary-text); width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ Help Guide</button>
         </div>
     </div>
 
@@ -1078,29 +1636,29 @@
     </nav>
 
     <!-- Global Help Overlay Panel -->
-    <div id="global-help-panel" style="display: none; background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.5; font-size: 0.95rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-        <h3 style="margin-top: 0; color: #1a73e8; display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">📖 Mr. Bunn's Widget Machine Guide</h3>
-        <p style="margin-bottom: 15px; color: #333;">Convert communication symbol charts into beautifully timed karaoke animations and boards:</p>
+    <div id="global-help-panel" style="display: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; line-height: 1.5; font-size: 0.95rem; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+        <h3 style="margin-top: 0; color: var(--primary-text); display: flex; align-items: center; gap: 8px; font-size: 1.15rem;">📖 Mr. Bunn's Widget Machine Guide</h3>
+        <p style="margin-bottom: 15px; color: var(--text);">Convert communication symbol charts into beautifully timed karaoke animations and boards:</p>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;">
-            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <strong style="display: block; margin-bottom: 5px; color: #1a73e8; font-size: 0.9rem;">1. Upload Media</strong>
+            <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <strong style="display: block; margin-bottom: 5px; color: var(--primary-text); font-size: 0.9rem;">1. Upload Media</strong>
                 Drag and drop your symbol chart PDF/images, and the song vocal/backing track. Set your song title!
             </div>
-            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #34a853; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #34a853; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <strong style="display: block; margin-bottom: 5px; color: #34a853; font-size: 0.9rem;">2. Refine Grid</strong>
                 Draw, delete, and resize the boxes around each symbol. Optionally toggle AI Mode to generate or edit individual tiles safely.
             </div>
-            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #fbbc04; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #fbbc04; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <strong style="display: block; margin-bottom: 5px; color: #fbbc04; font-size: 0.9rem;">3. Sequence Path</strong>
                 Click the symbol boxes in the exact order they should be read (1, 2, 3...) to establish the vocal timing order.
             </div>
-            <div style="background: white; padding: 12px; border-radius: 6px; border-left: 4px solid #ea4335; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #ea4335; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <strong style="display: block; margin-bottom: 5px; color: #ea4335; font-size: 0.9rem;">4. Sync & Export</strong>
                 Play the audio and press the <code>Spacebar</code>/<code>Enter</code> or tap-button as each word is sung. Review and export!
             </div>
         </div>
-        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; font-size: 0.85rem; color: #5f6368; display: flex; flex-wrap: wrap; gap: 15px;">
-            <span><strong>💡 Keyboard Shortcuts:</strong> Arrow keys to cycle tiles; <code>Spacebar</code>/<code>Enter</code> to tap; <code>Ctrl+Z</code> / <code>Ctrl+Y</code> for Undo/Redo.</span>
+        <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 15px;">
+            <span><strong>💡 Keyboard Shortcuts:</strong> <code>Spacebar</code>/<code>Enter</code> to tap while recording. On the fine-tune timeline: <code>↑</code>/<code>↓</code> select a tile, <code>←</code>/<code>→</code> nudge its timing (hold <code>Shift</code> for bigger steps). <code>Ctrl+Z</code> / <code>Ctrl+Y</code> for Undo/Redo.</span>
         </div>
     </div>
 
@@ -1140,7 +1698,7 @@
 
         <div class="button-group">
             <button id="generate-button" class="button" disabled>Start Project (Karaoke)</button>
-            <button id="btn-create-board" class="button secondary" style="background-color: #fbbc04; color: #333;">Create Symbol Board (No Audio)</button>
+            <button id="btn-create-board" class="button secondary" style="background-color: #fbbc04; color: var(--text);">Create Symbol Board (No Audio)</button>
             <button id="btn-clear-uploads" class="button secondary" style="color: #c5221f;">Clear All</button>
         </div>
     </div>
@@ -1173,34 +1731,34 @@
 
         <!-- AI Creator -->
         <details id="ai-creator-details">
-            <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: #1a73e8;">✨ Optional AI Creator Mode</summary>
-            <div style="padding: 15px; background: #f8f9fa; border-radius: 4px; border: 1px solid #dadce0; margin-top: 5px;">
+            <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: var(--primary-text);">✨ Optional AI Creator Mode</summary>
+            <div style="padding: 15px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); margin-top: 5px;">
                 <!-- Mandated Privacy Disclaimer -->
                 <div class="ai-disclaimer" style="background-color: #fef7e0; border-left: 4px solid #fbbc04; padding: 12px; margin-bottom: 15px; border-radius: 6px; font-size: 0.85rem; color: #b06000; line-height: 1.4;">
                     <strong>🛡️ Pupils & Privacy Disclaimer:</strong> AI symbol generation is optional. Do not upload pupil data, pupil photographs, confidential documents, or identifiable pupil material.
                 </div>
                 
-                <div id="ai-mode-toggle-container" style="margin-bottom: 15px; background: white; padding: 12px; border-radius: 6px; border: 1px solid #dadce0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div id="ai-mode-toggle-container" style="margin-bottom: 15px; background: var(--surface); padding: 12px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
                     <div>
-                        <strong style="display: block; font-size: 0.9rem; color: #333;">AI Symbol Creator Mode</strong>
-                        <span style="font-size: 0.75rem; color: #666;">Turn on to use Gemini 3.1 Flash Image generation features.</span>
+                        <strong style="display: block; font-size: 0.9rem; color: var(--text);">AI Symbol Creator Mode</strong>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">Turn on to use Gemini 3.1 Flash Image generation features.</span>
                     </div>
                     <button id="btn-toggle-ai-mode" class="button small secondary" style="margin: 0; min-height: 36px; padding: 6px 12px; font-size: 0.85rem; width: auto;" title="Toggle AI Creator features">Enable AI Mode</button>
                 </div>
 
                 <div id="ai-creator-inputs" style="display: none; transition: opacity 0.2s;">
-                    <p style="font-size: 0.85rem; margin-top:0; color: #5f6368;">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
+                    <p style="font-size: 0.85rem; margin-top:0; color: var(--text-muted);">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
                     
                     <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
                         placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'" aria-label="AI Symbol generation prompt"></textarea>
                     
                     <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
                          <input type="checkbox" id="ai-multi-toggle" style="width:16px; height:16px;" aria-label="Generate 3 variations toggle"> 
-                         <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500; color: #333;">Generate 3 Variations</label>
+                         <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500; color: var(--text);">Generate 3 Variations</label>
                     </div>
 
                     <div id="ai-prompt-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px;">
-                        <span style="font-size: 0.8rem; color: #666; align-self: center;">Suggestions:</span>
+                        <span style="font-size: 0.8rem; color: var(--text-muted); align-self: center;">Suggestions:</span>
                         <button class="chip" style="min-height: 32px;" title="Use suggestion: Person walking">Person walking</button>
                         <button class="chip" style="min-height: 32px;" title="Use suggestion: Happy face">Happy face</button>
                         <button class="chip" style="min-height: 32px;" title="Use suggestion: Question mark">Question mark</button>
@@ -1214,7 +1772,7 @@
                          <button id="btn-upload-symbol" class="button secondary small" aria-label="Upload custom image file" title="Upload Image">Upload Image</button>
                          <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
                     </div>
-                    <div id="ai-loading" style="display:none; font-size: 0.8rem; color: #1a73e8; margin-top: 10px; align-items: center; gap: 5px;">
+                    <div id="ai-loading" style="display:none; font-size: 0.8rem; color: var(--primary-text); margin-top: 10px; align-items: center; gap: 5px;">
                         <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
                     </div>
                 </div>
@@ -1224,7 +1782,7 @@
         <details>
             <summary>Tools</summary>
             <div id="karaoke-tools">
-                <div class="toolbar" style="background: white; border: none; padding-left: 0; padding-right: 0;">
+                <div class="toolbar" style="background: var(--surface); border: none; padding-left: 0; padding-right: 0;">
                     <button id="btn-autocomplete-grid" class="button small">Auto-Complete</button>
                     <button id="btn-select-matching-color" class="button secondary small">Select Color Match</button>
                     <button id="btn-clear-page" class="button secondary small" style="color: #c5221f;">Clear Page</button>
@@ -1232,14 +1790,14 @@
                 <div style="display: flex; align-items: center; gap: 10px; padding: 10px;">
                     <label for="grid-sensitivity" style="font-size: 0.9rem; font-weight: 500;">Grid Sensitivity:</label>
                     <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2" style="flex-grow: 1;">
-                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: #666;">Very High</span>
+                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: var(--text-muted);">Very High</span>
                 </div>
             </div>
 
             <!-- Board Mode Tools -->
-            <div id="board-tools" style="display:none; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px;">
-                <p style="font-size: 0.85rem; color: #666; margin-bottom: 10px;">Board Creator Mode</p>
-                <div class="toolbar" style="background: white; border: none; padding-left: 0; padding-right: 0;">
+            <div id="board-tools" style="display:none; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;">
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 10px;">Board Creator Mode</p>
+                <div class="toolbar" style="background: var(--surface); border: none; padding-left: 0; padding-right: 0;">
                      <button id="btn-add-tile" class="button small" style="background-color: #34a853;">+ Add Empty Tile</button>
                      <button id="btn-download-pdf" class="button secondary small">Download PDF</button>
                      <button id="btn-download-zip" class="button secondary small">Download Images (ZIP)</button>
@@ -1256,8 +1814,8 @@
 
     <!-- 4. Order View -->
     <div id="order-view" class="view-section">
-        <h2 style="text-align: center; margin-top: 0;">Set Sequence</h2>
-        <p class="helper-text" style="text-align: center;">Click symbols in order to define the reading path (1, 2, 3...).</p>
+        <h2 style="text-align: center; margin-top: 0;">Set Reading Order</h2>
+        <p class="helper-text" style="text-align: center;">Tap tiles in the order they're sung (1, 2, 3…). The order flows across pages — switch pages any time and revisit a page to <strong>repeat</strong> tiles for choruses. Tap the same tile again to repeat it.</p>
         
         <div class="toolbar">
             <div class="toolbar-group">
@@ -1268,8 +1826,8 @@
             <div class="toolbar-group">
                  <button id="btn-order-pan-up" class="button secondary small">↑</button>
                  <button id="btn-order-pan-down" class="button secondary small">↓</button>
-                <button id="btn-auto-order" class="button secondary small">Auto Order</button>
-                <button id="btn-reset-order" class="button secondary small" style="color: #c5221f;">Reset</button>
+                <button id="btn-auto-order" class="button secondary small" title="Auto-order this page's tiles (reading order) and add them to the sequence">Auto Order Page</button>
+                <button id="btn-reset-order" class="button secondary small" style="color: #c5221f;" title="Remove this page's tiles from the reading order">Clear Page</button>
             </div>
         </div>
 
@@ -1277,13 +1835,13 @@
             <canvas id="order-canvas"></canvas>
         </div>
 
-        <p class="helper-text">Sequence Preview (Rolodex):</p>
+        <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, or tap a tile to jump to its page:</p>
         <div id="order-sequence-strip" class="order-sequence-strip">
             <!-- Items injected by JS -->
         </div>
 
-        <div style="margin-top: 15px; padding: 10px; background: #f1f3f4; border-radius: 8px;">
-            <p style="margin: 0 0 5px 0; font-size: 0.8rem; font-weight: bold; color: #5f6368;">Preview Audio:</p>
+        <div style="margin-top: 15px; padding: 10px; background: var(--surface-2); border-radius: 8px;">
+            <p style="margin: 0 0 5px 0; font-size: 0.8rem; font-weight: bold; color: var(--text-muted);">Preview Audio:</p>
             <audio id="order-audio-player" style="width: 100%;" controls></audio>
         </div>
 
@@ -1296,7 +1854,7 @@
     <!-- 5. Sync View (Record then Fine Tune) -->
     <div id="sync-view" class="view-section">
         <h2 style="text-align: center;">Synchronize</h2>
-        <p class="helper-text" style="text-align: center;">First, tap to record timing. Then, use the timeline below to fine-tune.</p>
+        <p class="helper-text" style="text-align: center;">First, tap to record timing. Then fine-tune on the timeline — click a tile or use <strong>↑ ↓</strong> to select it, and <strong>← →</strong> to nudge its timing (hold <strong>Shift</strong> for bigger steps).</p>
         
         <div class="toolbar">
              <div class="toolbar-group">
@@ -1378,14 +1936,14 @@
             <canvas id="preview-canvas" width="640" height="360" style="border: 1px solid #ddd; max-width: 100%; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></canvas>
         </div>
 
-        <div style="margin: 0 auto 20px auto; padding: 15px; background: #eee; border-radius: 8px; max-width: 600px;">
+        <div style="margin: 0 auto 20px auto; padding: 15px; background: var(--surface-2); border-radius: 8px; max-width: 600px;">
             <div class="setting-item">
-                <label for="latency-slider" style="font-weight: bold; color: #1a73e8;">Global Timing Correction (Sync Offset): <span id="latency-val">0.00</span>s</label>
+                <label for="latency-slider" style="font-weight: bold; color: var(--primary-text);">Global Timing Correction (Sync Offset): <span id="latency-val">0.00</span>s</label>
                 <div style="display:flex; justify-content:space-between; font-size: 0.75rem; color:#666;">
                     <span>Earlier</span><span>Later</span>
                 </div>
                 <input type="range" id="latency-slider" min="-1000" max="1000" value="0" step="10" style="width: 100%;">
-                <p style="font-size: 0.8rem; margin: 5px 0 0 0; color: #555;">Use this to nudge the entire video if audio is out of sync.</p>
+                <p style="font-size: 0.8rem; margin: 5px 0 0 0; color: var(--text-muted);">Use this to nudge the entire video if audio is out of sync.</p>
             </div>
         </div>
 
@@ -1403,58 +1961,100 @@
                 <h4 class="settings-section-title">General</h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Background Color</label>
+                        <label>Background colour</label>
                         <input type="color" id="style-bg-color" value="#f0f8ff" style="width: 100%; height: 40px;">
                     </div>
                     <div class="setting-item">
-                        <label>Tile Spacing <span class="setting-val" data-for="style-spacing"></span></label>
+                        <label>Gap between tiles <span class="setting-val" data-for="style-spacing" data-format="px"></span></label>
                         <input type="range" id="style-spacing" min="100" max="400" step="10" value="200">
+                        <div class="slider-ends"><span>Close together</span><span>Spread out</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Main Tile (Now Playing)</h4>
+                <h4 class="settings-section-title">Main tile <span class="section-note">the word being sung now</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-active-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-active-scale" data-format="percent"></span></label>
                         <input type="range" id="style-active-scale" min="0.5" max="2.0" step="0.1" value="1.1">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Next Tiles (Upcoming)</h4>
+                <h4 class="settings-section-title">Next tiles <span class="section-note">the words coming up</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Count <span class="setting-val" data-for="style-next-count"></span></label>
-                        <input type="range" id="style-next-count" min="0" max="4" step="1" value="2">
+                        <label>How many to show ahead</label>
+                        <div class="seg-group" data-style="nextCount" aria-label="Number of upcoming tiles to show">
+                            <button type="button" data-value="0">0</button>
+                            <button type="button" data-value="1">1</button>
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4">4</button>
+                        </div>
                     </div>
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-next-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-next-scale" data-format="percent"></span></label>
                         <input type="range" id="style-next-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                     <div class="setting-item">
-                        <label>Opacity <span class="setting-val" data-for="style-next-opacity"></span></label>
+                        <label>Fade <span class="setting-val" data-for="style-next-opacity" data-format="percent"></span></label>
                         <input type="range" id="style-next-opacity" min="0" max="1" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Faint</span><span>Solid</span></div>
                     </div>
                 </div>
             </div>
 
             <div class="settings-section">
-                <h4 class="settings-section-title">Previous Tiles (Already Played)</h4>
+                <h4 class="settings-section-title">Previous tiles <span class="section-note">the words already sung</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
-                        <label>Count <span class="setting-val" data-for="style-prev-count"></span></label>
-                        <input type="range" id="style-prev-count" min="0" max="4" step="1" value="1">
+                        <label>How many to keep behind</label>
+                        <div class="seg-group" data-style="prevCount" aria-label="Number of already-played tiles to show">
+                            <button type="button" data-value="0">0</button>
+                            <button type="button" data-value="1">1</button>
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4">4</button>
+                        </div>
                     </div>
                     <div class="setting-item">
-                        <label>Scale <span class="setting-val" data-for="style-prev-scale"></span></label>
+                        <label>Size <span class="setting-val" data-for="style-prev-scale" data-format="percent"></span></label>
                         <input type="range" id="style-prev-scale" min="0.3" max="1.5" step="0.1" value="0.7">
+                        <div class="slider-ends"><span>Smaller</span><span>Bigger</span></div>
                     </div>
                     <div class="setting-item">
-                        <label>Opacity <span class="setting-val" data-for="style-prev-opacity"></span></label>
+                        <label>Fade <span class="setting-val" data-for="style-prev-opacity" data-format="percent"></span></label>
                         <input type="range" id="style-prev-opacity" min="0" max="1" step="0.1" value="0.4">
+                        <div class="slider-ends"><span>Faint</span><span>Solid</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">🎶 Musical round (canon)</h4>
+                <div class="round-toggle-row">
+                    <label class="round-toggle">
+                        <input type="checkbox" id="style-round-enabled">
+                        <span>Show as a round — each group sings the same tiles, entering one after another in its own colour row.</span>
+                    </label>
+                </div>
+                <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
+                    <div class="setting-item">
+                        <label>How many groups</label>
+                        <div class="seg-group" data-style="roundVoices" aria-label="Number of groups in the round">
+                            <button type="button" data-value="2">2 groups</button>
+                            <button type="button" data-value="3">3 groups</button>
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <label>Each group starts after <span class="setting-val" data-for="style-round-gap" data-format="seconds"></span></label>
+                        <input type="range" id="style-round-gap" min="0.5" max="12" step="0.5" value="4" disabled>
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
                     </div>
                 </div>
             </div>
@@ -1464,8 +2064,8 @@
             <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
             <div class="result-actions-exports">
                 <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">Download Video (Full)</button>
-                <button id="download-backing" class="button" style="background-color: #fbbc04; color: #333;" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
-                <button id="btn-export-manifest" class="button" style="background-color: #1a73e8; color: white;" title="Export song project manifest data">Export Manifest</button>
+                <button id="download-backing" class="button" style="background-color: #fbbc04; color: var(--text);" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
+                <button id="btn-export-manifest" class="button" style="background-color: var(--primary-text); color: white;" title="Export song project manifest data">Export Manifest</button>
             </div>
             <button id="reset-button" class="button secondary" style="color: #c5221f;" title="Start a completely new project">Start Over</button>
         </div>
@@ -1473,14 +2073,14 @@
     
     <!-- Rendering Overlay -->
     <div id="rendering-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; justify-content: center; align-items: center; flex-direction: column;">
-        <div class="loader" style="border-top-color: #1a73e8; width: 60px; height: 60px;"></div>
+        <div class="loader" style="border-top-color: var(--primary-text); width: 60px; height: 60px;"></div>
         <h3 style="color: white; margin-top: 20px;">Rendering Video...</h3>
         <p id="rendering-progress-text" style="color: #ddd;">0%</p>
     </div>
 
     <!-- Footer with Version Number & Branding -->
-    <footer style="text-align: center; margin-top: 50px; padding: 25px 0 10px 0; border-top: 1px solid #dadce0; font-size: 0.85rem; color: #5f6368; line-height: 1.6;">
-        <p style="margin: 0; font-weight: 600; color: #3c4043;">Widget Machine v0.1.0</p>
+    <footer style="text-align: center; margin-top: 50px; padding: 25px 0 10px 0; border-top: 1px solid #dadce0; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6;">
+        <p style="margin: 0; font-weight: 600; color: var(--text);">Widget Machine v0.1.0</p>
         <p style="margin: 2px 0 0 0;">Designed and built by George Bunn</p>
         <p style="margin: 2px 0 0 0; font-style: italic; color: #80868b;">AI-assisted development prototype</p>
     </footer>

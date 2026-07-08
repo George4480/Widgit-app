@@ -17,7 +17,18 @@ export interface ProjectPage {
     width: number;
     height: number;
     symbols: SymbolTile[];
+    /**
+     * Legacy per-page ordering. Retained for backward compatibility with
+     * saved projects and as a fallback, but the canonical reading order is
+     * now AppState.globalSequence, which can span and revisit pages.
+     */
     sequence: number[];
+}
+
+/** One step in the continuous cross-page reading order. */
+export interface SequenceStep {
+    page: number;   // page index
+    sym: number;    // symbol index within that page
 }
 
 export interface SyncTiming {
@@ -35,6 +46,11 @@ export interface StyleConfig {
     prevCount: number;
     prevScale: number;
     prevOpacity: number;
+    // Musical round (canon): extra voices sing the same sequence, entering
+    // one gap later each, shown as their own colour-coded row.
+    roundEnabled: boolean;
+    roundVoices: number;   // total voices including the leader (2-3)
+    roundGap: number;      // seconds each following voice enters after the previous
 }
 
 export interface GridConfig {
@@ -57,6 +73,8 @@ export interface AppState {
     };
     pages: ProjectPage[];
     currentPageIndex: number;
+    /** Canonical reading order across all pages (supports revisits & repeats). */
+    globalSequence: SequenceStep[];
     symbols: SymbolTile[];
     isRecordingSync: boolean;
     currentSyncIndex: number;
@@ -107,6 +125,8 @@ export interface ProjectSaveData {
     styleConfig: StyleConfig;
     gridConfig: GridConfig;
     latencyOffset: number;
+    /** Cross-page reading order. Absent in files saved before this feature. */
+    globalSequence?: SequenceStep[];
     pages: {
         pageIndex: number;
         width: number;
