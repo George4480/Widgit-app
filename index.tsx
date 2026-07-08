@@ -73,6 +73,8 @@ const appState: AppState = {
         roundEnabled: false,
         roundVoices: 2,
         roundGap: 4,
+        roundCountdown: true,
+        roundCountInBeats: 4,
         sheetMode: false
     },
     interaction: {
@@ -246,6 +248,9 @@ function init() {
             styleSpacing: document.getElementById('style-spacing'),
             styleRoundEnabled: document.getElementById('style-round-enabled'),
             styleRoundGap: document.getElementById('style-round-gap'),
+            styleRoundCountdown: document.getElementById('style-round-countdown'),
+            styleRoundCountin: document.getElementById('style-round-countin'),
+            roundCountinItem: document.getElementById('round-countin-item'),
             roundSettings: document.getElementById('round-settings')
         },
         rendering: {
@@ -584,6 +589,12 @@ function setupEventListeners() {
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
         appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
+        appState.styleConfig.roundCountdown = (dom.result.styleRoundCountdown as HTMLInputElement).checked;
+        appState.styleConfig.roundCountInBeats = parseInt((dom.result.styleRoundCountin as HTMLSelectElement).value) || 4;
+        if (dom.result.roundCountinItem) {
+            (dom.result.roundCountinItem as HTMLElement).style.opacity = appState.styleConfig.roundCountdown ? '1' : '0.45';
+            (dom.result.styleRoundCountin as HTMLSelectElement).disabled = !appState.styleConfig.roundCountdown;
+        }
         appState.styleConfig.sheetMode = segGet('displayMode') === 1;
         // Enable/disable the round sub-controls to match the toggle.
         const on = appState.styleConfig.roundEnabled;
@@ -617,6 +628,8 @@ function setupEventListeners() {
     dom.result.styleSpacing.addEventListener('input', updateStyle);
     dom.result.styleRoundEnabled.addEventListener('change', updateStyle);
     dom.result.styleRoundGap.addEventListener('input', updateStyle);
+    dom.result.styleRoundCountdown.addEventListener('change', updateStyle);
+    dom.result.styleRoundCountin.addEventListener('change', updateStyle);
 
     // Reflect the current styleConfig onto every control (sliders + segments +
     // badges), so the panel always shows the real values — including on load.
@@ -2864,6 +2877,8 @@ function syncStyleControls() {
     set(dom.result.styleSpacing as HTMLInputElement, c.spacing);
     set(dom.result.styleRoundGap as HTMLInputElement, c.roundGap);
     (dom.result.styleRoundEnabled as HTMLInputElement).checked = !!c.roundEnabled;
+    (dom.result.styleRoundCountdown as HTMLInputElement).checked = c.roundCountdown !== false;
+    (dom.result.styleRoundCountin as HTMLSelectElement).value = String(c.roundCountInBeats || 4);
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('roundVoices', c.roundVoices || 2);
@@ -2940,7 +2955,9 @@ function drawPreviewFrame(rawTime: number) {
         const gap = roundGapSeconds();
         const loopStartTime = hasRoundLoop() ? (appState.symbols[appState.round.start].startTime || 0) : firstStart;
         const maxVoices = Math.max(2, Math.min(3, cfg.roundVoices || 2));
-        const PREROLL = 1.2; // let a voice's row slide in just before it enters
+        // With the count-in on, the row appears a full loop early so the beats
+        // can be counted across it at the song's pace; otherwise a short slide-in.
+        const PREROLL = cfg.roundCountdown ? gap : 1.2;
         let active = 1;
         for (let v = 1; v < maxVoices; v++) {
             if (time >= loopStartTime + v * gap - PREROLL) active++;
@@ -3231,13 +3248,35 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
         // Has this voice started yet?
         if (effTime < voiceStart) {
+            const secondsUntil = voiceStart - effTime; // song-time until this voice enters
             ctx.save();
-            ctx.globalAlpha = 0.5;
-            ctx.fillStyle = tint;
-            ctx.font = 'italic 15px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
+            if (v > 0 && appState.styleConfig.roundCountdown && gap > 0.2) {
+                // Self-conducting count-in: count the song's beats (from the
+                // chosen time signature) across the loop, so the group can start
+                // itself in time. e.g. 4/4 shows 4·3·2·1 over the run-up.
+                const beats = Math.max(1, Math.min(8, appState.styleConfig.roundCountInBeats || 4));
+                const beatDur = gap / beats;
+                const elapsed = gap - secondsUntil;              // 0 → gap through the count-in
+                const beatIdx = Math.min(beats - 1, Math.max(0, Math.floor(elapsed / beatDur)));
+                const n = beats - beatIdx;                       // counts beats → 1
+                const f = (elapsed - beatIdx * beatDur) / beatDur; // 0→1 within the beat
+                const pop = 1 + 0.28 * (1 - f);                  // pops as each beat lands
+                ctx.fillStyle = tint;
+                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92) * pop)}px sans-serif`;
+                ctx.globalAlpha = 0.4 + 0.6 * (1 - f);
+                ctx.fillText(String(n), w / 2, cy);
+                ctx.globalAlpha = 0.85;
+                ctx.fillStyle = tint;
+                ctx.font = 'bold 13px sans-serif';
+                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56));
+            } else {
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = tint;
+                ctx.font = 'italic 15px sans-serif';
+                ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
+            }
             ctx.restore();
         } else {
             const activeIdx = activeIndexAt(effTime);
