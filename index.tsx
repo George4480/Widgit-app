@@ -2307,6 +2307,29 @@ function renderSymbolNavStrip() {
 
     // Dynamically apply warnings and badges
     updateNavStripWarnings();
+    updateNavStripRoundMarks();
+}
+
+// Badge the loop start/end tiles (and tint the tiles in between) in the strip.
+function updateNavStripRoundMarks() {
+    const items = dom.sync.navStrip.querySelectorAll('.nav-symbol-item');
+    const r = appState.round;
+    items.forEach((item: HTMLElement, i: number) => {
+        item.querySelectorAll('.loop-badge').forEach(b => b.remove());
+        item.classList.remove('loop-start', 'loop-end', 'loop-mid');
+        if (r.start < 0) return;
+        if (i === r.start || (r.end > r.start && i === r.end)) {
+            const isStart = i === r.start;
+            const b = document.createElement('div');
+            b.className = 'loop-badge';
+            b.textContent = isStart ? '⟲ start' : 'end';
+            b.title = isStart ? 'Round loop start' : 'Round loop end';
+            item.appendChild(b);
+            item.classList.add(isStart ? 'loop-start' : 'loop-end');
+        } else if (r.end > r.start && i > r.start && i < r.end) {
+            item.classList.add('loop-mid');
+        }
+    });
 }
 
 // NEW: Update Highlight in Strip
@@ -2372,7 +2395,35 @@ function drawSyncTimeline() {
         }
     }
     ctx.stroke();
-    
+
+    // Shade the round loop section + flag its start/end so it's obvious.
+    const r = appState.round;
+    if (r.start >= 0 && r.end > r.start && appState.symbols[r.start] && appState.symbols[r.end]) {
+        const loopS = appState.symbols[r.start].startTime || 0;
+        const loopE = appState.symbols[r.end].startTime || 0;
+        const lx = (loopS - startTime) * zoom;
+        const rx = (loopE - startTime) * zoom;
+        if (rx > 0 && lx < viewportW) {
+            ctx.fillStyle = 'rgba(129, 140, 248, 0.20)';
+            ctx.fillRect(lx, 0, rx - lx, viewportH);
+            ctx.strokeStyle = '#818cf8';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 3]);
+            ctx.beginPath();
+            ctx.moveTo(lx, 0); ctx.lineTo(lx, viewportH);
+            ctx.moveTo(rx, 0); ctx.lineTo(rx, viewportH);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#c7cbff';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText('⟲ LOOP START', lx + 5, 13);
+            ctx.textAlign = 'right';
+            ctx.fillText('LOOP END', rx - 5, 13);
+            ctx.textAlign = 'left';
+        }
+    }
+
     // Draw Range Bars (Symbols)
     const barY = 30;
     const barH = viewportH - 60;
@@ -2604,6 +2655,7 @@ function updateRoundUI() {
     if (r.end === -1) { label.textContent = `Loop start: ${startTile} — now set the loop end.`; return; }
     const gap = roundGapSeconds();
     label.textContent = `Loop: Tile ${r.start + 1} → ${r.end + 1}  (2nd voice enters ${gap.toFixed(1)}s later)`;
+    updateNavStripRoundMarks();
 }
 
 // The round's entry interval in seconds: the length of the marked loop section.
