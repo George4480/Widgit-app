@@ -1,4 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
@@ -69,7 +68,8 @@ const appState: AppState = {
         prevOpacity: 0.4,
         roundEnabled: false,
         roundVoices: 2,
-        roundGap: 4
+        roundGap: 4,
+        sheetMode: false
     },
     interaction: {
         isDragging: false,
@@ -92,8 +92,7 @@ const appState: AppState = {
         animationId: 0,
         startTime: 0,
         loadedImages: new Map<number, HTMLImageElement>()
-    },
-    aiModeEnabled: false // Optional AI Mode is disabled by default
+    }
 };
 
 // DOM Elements
@@ -113,9 +112,6 @@ function init() {
             btnToggleMotion: document.getElementById('btn-toggle-reduced-motion'),
             btnHelp: document.getElementById('btn-global-help'),
             helpPanel: document.getElementById('global-help-panel'),
-            btnToggleAiMode: document.getElementById('btn-toggle-ai-mode'),
-            aiCreatorInputs: document.getElementById('ai-creator-inputs'),
-            aiModeToggleContainer: document.getElementById('ai-mode-toggle-container'),
             btnExportManifest: document.getElementById('btn-export-manifest'),
         },
         views: {
@@ -169,15 +165,10 @@ function init() {
             btnAddTile: document.getElementById('btn-add-tile'),
             btnDownloadPdf: document.getElementById('btn-download-pdf'),
             btnDownloadZip: document.getElementById('btn-download-zip'),
-            
-            // AI Creator
-            aiPrompt: document.getElementById('ai-prompt'),
-            btnAiGenerate: document.getElementById('btn-ai-generate'),
-            btnAiEdit: document.getElementById('btn-ai-edit'),
+
+            // Add-your-own-image (non-AI)
             btnUploadSymbol: document.getElementById('btn-upload-symbol'),
             inputUploadSymbol: document.getElementById('input-upload-symbol'),
-            aiLoading: document.getElementById('ai-loading'),
-            aiMultiToggle: document.getElementById('ai-multi-toggle')
         },
         order: {
             canvasContainer: document.getElementById('order-canvas-container'),
@@ -317,15 +308,6 @@ function setupEventListeners() {
             dom.global.btnHelp.style.color = isHidden ? '#fff' : 'var(--primary-text)';
         });
 
-        dom.global.btnToggleAiMode.addEventListener('click', () => {
-            appState.aiModeEnabled = !appState.aiModeEnabled;
-            const enabled = appState.aiModeEnabled;
-            dom.global.aiCreatorInputs.style.display = enabled ? 'block' : 'none';
-            dom.global.btnToggleAiMode.textContent = enabled ? "Disable AI Mode" : "Enable AI Mode";
-            dom.global.aiModeToggleContainer.style.backgroundColor = enabled ? 'var(--primary-soft)' : 'var(--surface)';
-            dom.global.aiModeToggleContainer.style.borderColor = enabled ? 'var(--primary)' : 'var(--border)';
-        });
-
         dom.global.btnExportManifest.addEventListener('click', () => confirmExport(exportProjectManifest));
     }
 
@@ -370,6 +352,22 @@ function setupEventListeners() {
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
     dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
+
+    // Import from video
+    const btnImportVideo = document.getElementById('btn-import-video');
+    const inputVideo = document.getElementById('input-video-import') as HTMLInputElement;
+    if (btnImportVideo && inputVideo) {
+        btnImportVideo.addEventListener('click', () => inputVideo.click());
+        inputVideo.addEventListener('change', (e) => {
+            const f = (e.target as HTMLInputElement).files?.[0];
+            if (f) handleVideoImport(f);
+            inputVideo.value = '';
+        });
+    }
+    document.getElementById('btn-video-cancel')?.addEventListener('click', () => {
+        document.getElementById('video-picker-overlay')!.style.display = 'none';
+    });
+    document.getElementById('btn-video-create')?.addEventListener('click', createProjectFromVideoFrames);
     dom.upload.btnClearUploads.addEventListener('click', () => {
         const f = appState.files;
         const hasFiles = !!f.pdf || f.images.length > 0 || !!f.audioVocal || !!f.audioBacking;
@@ -448,24 +446,9 @@ function setupEventListeners() {
     dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
     dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
 
-    // AI Creator Events
-    dom.define.btnAiGenerate.addEventListener('click', generateAiSymbol);
-    dom.define.btnAiEdit.addEventListener('click', editAiSymbol);
+    // Add-your-own-image (non-AI)
     dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
     dom.define.inputUploadSymbol.addEventListener('change', (e: Event) => handleSymbolUpload((e.target as HTMLInputElement).files));
-    
-    // AI Chips
-    const chipsContainer = document.getElementById('ai-prompt-chips');
-    if (chipsContainer) {
-        chipsContainer.querySelectorAll('.chip').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const text = (e.target as HTMLElement).textContent;
-                const promptInput = dom.define.aiPrompt as HTMLTextAreaElement;
-                promptInput.value = text || '';
-                promptInput.focus();
-            });
-        });
-    }
 
 
     // --- Order View ---
@@ -574,6 +557,7 @@ function setupEventListeners() {
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
         appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
+        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
         // Enable/disable the round sub-controls to match the toggle.
         const on = appState.styleConfig.roundEnabled;
         (dom.result.styleRoundGap as HTMLInputElement).disabled = !on;
@@ -581,6 +565,8 @@ function setupEventListeners() {
             dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
             dom.result.roundSettings.setAttribute('aria-disabled', on ? 'false' : 'true');
         }
+        // Hide conveyor-only settings when following the sheet.
+        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
 
@@ -1097,6 +1083,231 @@ async function processImageFile(file: File) {
     });
 }
 
+// ============================================================
+// Import from Video: pull the audio out (to use as the song) and grab a frame
+// each time the picture changes (candidate tiles), then rebuild an editable
+// project. All processing is local to the browser — nothing is uploaded.
+// ============================================================
+
+let _videoCandidates: { time: number; dataUrl: string }[] = [];
+let _videoAudioFile: File | null = null;
+
+async function handleVideoImport(file: File) {
+    const overlay = document.getElementById('video-processing-overlay')!;
+    const status = document.getElementById('video-processing-text')!;
+    overlay.style.display = 'flex';
+    const setStatus = (t: string) => { status.textContent = t; };
+
+    try {
+        const url = createLocalUrl(file);
+        const video = document.createElement('video');
+        video.src = url;
+        video.muted = true;
+        (video as any).playsInline = true;
+        video.preload = 'auto';
+        await new Promise<void>((res, rej) => {
+            video.onloadedmetadata = () => res();
+            video.onerror = () => rej(new Error('Could not read that video file.'));
+        });
+        const duration = isFinite(video.duration) ? video.duration : 0;
+        if (!duration) throw new Error('Video has no readable duration.');
+
+        // --- 1. Extract audio → a song file ---
+        setStatus('Extracting audio…');
+        _videoAudioFile = await extractAudioFromVideo(file, setStatus).catch(() => null);
+
+        // --- 2. Sample frames, keep one per visible change ---
+        setStatus('Looking for tiles…');
+        _videoCandidates = await sampleSceneFrames(video, duration, setStatus);
+
+        URL.revokeObjectURL(url);
+        overlay.style.display = 'none';
+        openVideoPicker();
+    } catch (e: any) {
+        overlay.style.display = 'none';
+        alert('Video import failed: ' + (e?.message || e));
+    }
+}
+
+// Fast path: decode the container's audio track and re-encode to WAV (no
+// realtime wait). Falls back to a realtime capture if the browser won't decode
+// the video's audio directly.
+async function extractAudioFromVideo(file: File, setStatus: (t: string) => void): Promise<File> {
+    try {
+        const ctx = new AudioContext();
+        const buf = await file.arrayBuffer();
+        const audioBuf = await ctx.decodeAudioData(buf.slice(0));
+        ctx.close();
+        const wav = audioBufferToWav(audioBuf);
+        return new File([wav], 'extracted-audio.wav', { type: 'audio/wav' });
+    } catch {
+        setStatus('Extracting audio (real-time)…');
+        return await captureAudioRealtime(file);
+    }
+}
+
+// Realtime fallback: play the video and record just its audio track.
+function captureAudioRealtime(file: File): Promise<File> {
+    return new Promise((resolve, reject) => {
+        const v = document.createElement('video');
+        v.src = createLocalUrl(file);
+        v.onloadedmetadata = () => {
+            const stream = (v as any).captureStream ? (v as any).captureStream() : (v as any).mozCaptureStream();
+            const audioTracks = stream.getAudioTracks();
+            if (!audioTracks.length) { reject(new Error('no audio track')); return; }
+            const rec = new MediaRecorder(new MediaStream(audioTracks));
+            const chunks: BlobPart[] = [];
+            rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+            rec.onstop = () => resolve(new File(chunks, 'extracted-audio.webm', { type: rec.mimeType || 'audio/webm' }));
+            rec.start();
+            v.play();
+            v.onended = () => rec.stop();
+        };
+        v.onerror = () => reject(new Error('audio capture failed'));
+    });
+}
+
+// Seek through the video and keep a full frame whenever the downscaled picture
+// differs enough from the last kept frame (a scene/tile change).
+async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setStatus: (t: string) => void) {
+    const step = Math.max(0.2, duration / 300);   // up to ~300 probes
+    const small = document.createElement('canvas'); small.width = 32; small.height = 18;
+    const sctx = small.getContext('2d')!;
+    const full = document.createElement('canvas');
+    full.width = video.videoWidth || 640; full.height = video.videoHeight || 360;
+    const fctx = full.getContext('2d')!;
+
+    const seek = (t: number) => new Promise<void>(res => {
+        const done = () => { video.removeEventListener('seeked', done); res(); };
+        video.addEventListener('seeked', done);
+        video.currentTime = Math.min(t, duration - 0.01);
+    });
+
+    const results: { time: number; dataUrl: string }[] = [];
+    let prev: Uint8ClampedArray | null = null;
+    const DIFF = 14; // mean per-channel difference (0-255) that counts as a change
+    for (let t = 0; t < duration; t += step) {
+        await seek(t);
+        sctx.drawImage(video, 0, 0, small.width, small.height);
+        const cur = sctx.getImageData(0, 0, small.width, small.height).data;
+        let changed = prev === null;
+        if (prev) {
+            let sum = 0;
+            for (let i = 0; i < cur.length; i += 4) sum += Math.abs(cur[i] - prev[i]) + Math.abs(cur[i+1] - prev[i+1]) + Math.abs(cur[i+2] - prev[i+2]);
+            const mean = sum / (cur.length / 4 * 3);
+            changed = mean > DIFF;
+        }
+        if (changed) {
+            fctx.drawImage(video, 0, 0, full.width, full.height);
+            results.push({ time: t, dataUrl: full.toDataURL('image/png') });
+            prev = cur.slice();
+            setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
+        }
+    }
+    return results;
+}
+
+function openVideoPicker() {
+    const grid = document.getElementById('video-frame-grid')!;
+    grid.innerHTML = '';
+    if (_videoCandidates.length === 0) {
+        grid.innerHTML = '<p style="color: var(--text-muted);">No distinct frames were found. The video may be too static.</p>';
+    }
+    _videoCandidates.forEach((c, i) => {
+        const cell = document.createElement('label');
+        cell.className = 'vframe';
+        cell.innerHTML =
+            `<input type="checkbox" data-idx="${i}" checked>` +
+            `<img src="${c.dataUrl}" alt="frame at ${c.time.toFixed(1)}s">` +
+            `<span class="vframe-time">${c.time.toFixed(1)}s</span>`;
+        grid.appendChild(cell);
+    });
+    document.getElementById('video-picker-overlay')!.style.display = 'flex';
+}
+
+async function createProjectFromVideoFrames() {
+    const checks = Array.from(document.querySelectorAll('#video-frame-grid input[type="checkbox"]')) as HTMLInputElement[];
+    const chosen = checks.filter(c => c.checked).map(c => _videoCandidates[parseInt(c.dataset.idx!)]);
+    if (chosen.length === 0) { alert('Pick at least one tile.'); return; }
+    document.getElementById('video-picker-overlay')!.style.display = 'none';
+
+    // Load the chosen frames as images.
+    const imgs = await Promise.all(chosen.map(c => new Promise<HTMLImageElement>((res) => {
+        const im = new Image(); im.onload = () => res(im); im.src = c.dataUrl;
+    })));
+
+    // Lay them out on a synthetic page as customImage tiles (grid, 4 per row).
+    const cols = Math.min(4, imgs.length);
+    const cell = 220, gap = 20, pad = 20;
+    const rows = Math.ceil(imgs.length / cols);
+    const width = pad * 2 + cols * cell + (cols - 1) * gap;
+    const height = pad * 2 + rows * cell + (rows - 1) * gap;
+    const bg = document.createElement('canvas'); bg.width = width; bg.height = height;
+    const bctx = bg.getContext('2d')!; bctx.fillStyle = '#ffffff'; bctx.fillRect(0, 0, width, height);
+    const bgImg = new Image();
+    await new Promise<void>(res => { bgImg.onload = () => res(); bgImg.src = bg.toDataURL(); });
+
+    const symbols = imgs.map((im, i) => {
+        const r = Math.floor(i / cols), c = i % cols;
+        return {
+            x: pad + c * (cell + gap),
+            y: pad + r * (cell + gap),
+            width: cell, height: cell,
+            customImage: im,
+        };
+    });
+
+    appState.mode = 'karaoke';
+    appState.globalSequence = [];
+    appState.pages = [{ image: bgImg, width, height, symbols, sequence: [] }];
+    appState.currentPageIndex = 0;
+
+    // Wire the extracted audio as the song.
+    if (_videoAudioFile) {
+        appState.files.audioVocal = _videoAudioFile;
+        const aurl = createLocalUrl(_videoAudioFile);
+        dom.sync.audio.src = aurl;
+        if (dom.order.audio) dom.order.audio.src = aurl;
+        try {
+            const ctx = new AudioContext();
+            appState.audioBuffer = await ctx.decodeAudioData(await _videoAudioFile.arrayBuffer());
+            ctx.close();
+        } catch { /* waveform optional */ }
+    }
+
+    undoStack.length = 0; redoStack.length = 0;
+    saveHistoryState();
+    switchView('define-symbols-view');
+    setTimeout(() => { resizeCanvas(); drawCanvas(); }, 100);
+}
+
+// Minimal WAV (PCM16) encoder for an AudioBuffer.
+function audioBufferToWav(buf: AudioBuffer): ArrayBuffer {
+    const numCh = Math.min(2, buf.numberOfChannels);
+    const sr = buf.sampleRate;
+    const len = buf.length;
+    const bytes = 44 + len * numCh * 2;
+    const ab = new ArrayBuffer(bytes);
+    const view = new DataView(ab);
+    const wr = (o: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    wr(0, 'RIFF'); view.setUint32(4, bytes - 8, true); wr(8, 'WAVE'); wr(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, numCh, true);
+    view.setUint32(24, sr, true); view.setUint32(28, sr * numCh * 2, true);
+    view.setUint16(32, numCh * 2, true); view.setUint16(34, 16, true);
+    wr(36, 'data'); view.setUint32(40, len * numCh * 2, true);
+    const chans: Float32Array[] = [];
+    for (let c = 0; c < numCh; c++) chans.push(buf.getChannelData(c));
+    let off = 44;
+    for (let i = 0; i < len; i++) {
+        for (let c = 0; c < numCh; c++) {
+            let s = Math.max(-1, Math.min(1, chans[c][i]));
+            view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            off += 2;
+        }
+    }
+    return ab;
+}
+
 async function processPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -1137,7 +1348,11 @@ function switchView(viewId: string) {
         if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'block';
         if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'block' : 'none';
         dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
-        
+
+        // Initialise the page indicator (changePage isn't called on first entry).
+        if (dom.define.labelPage) {
+            dom.define.labelPage.textContent = `Page ${appState.currentPageIndex + 1} / ${appState.pages.length}`;
+        }
         setTimeout(resizeCanvas, 50);
     }
 
@@ -1181,242 +1396,7 @@ function updateStepper(viewId: string) {
     });
 }
 
-// --- AI Generation Logic (Nano Banana) ---
-
-// Helper to get a reference image of the current style
-function getCurrentPageStyleReference(): string {
-    const page = appState.pages[appState.currentPageIndex];
-    if (!page) return "";
-    
-    // Capture a sample of the page (e.g., top-left 1024x1024 or full page scaled down)
-    // We want the AI to see the line weight, color palette, and vector style.
-    const canvas = document.createElement('canvas');
-    const size = Math.min(page.width, 1024); // Limit size for API efficiency
-    canvas.width = size;
-    canvas.height = size; // Square crop is fine for style ref
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return "";
-    
-    // Draw the top portion of the page as reference
-    ctx.drawImage(page.image, 0, 0, size, size, 0, 0, size, size);
-    
-    return canvas.toDataURL('image/png').split(',')[1];
-}
-
-async function generateAiSymbol() {
-    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
-    
-    const isMulti = (dom.define.aiMultiToggle as HTMLInputElement).checked;
-
-    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
-    const win = window as any;
-    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
-    }
-    
-    // Create new AI instance with current key
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    setAiLoading(true);
-    try {
-        const page = appState.pages[appState.currentPageIndex];
-        const styleRefBase64 = getCurrentPageStyleReference();
-
-        // Prompt engineering to enforce style consistency
-        const strictPrompt = `
-        Create a communication symbol for: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - The generated image MUST match the visual style of the provided reference image EXACTLY.
-        - Use the same line weight (thick black outlines).
-        - Use the same flat color palette found in the reference.
-        - Simple, 2D, iconographic, vector-art style.
-        - Pure white background.
-        - No shading, no gradients, no realism, no complexity.
-        - It must look like a standard Widgit/communication symbol.
-        `;
-
-        const parts: any[] = [{ text: strictPrompt }];
-        if (styleRefBase64) {
-            parts.unshift({ inlineData: { mimeType: 'image/png', data: styleRefBase64 } });
-        }
-
-        // Generate Multiple Loop
-        const count = isMulti ? 3 : 1;
-        const promises = [];
-        
-        for (let i = 0; i < count; i++) {
-             promises.push(ai.models.generateContent({
-                model: 'gemini-3.1-flash-image-preview', // High quality model
-                contents: { parts: parts },
-                config: { 
-                    imageConfig: { 
-                        aspectRatio: "1:1",
-                        imageSize: "1K" // Force high resolution
-                    } 
-                },
-            }));
-        }
-        
-        const responses = await Promise.all(promises);
-
-        let createdCount = 0;
-        appState.interaction.selectedIndices.clear();
-
-        for (let i = 0; i < responses.length; i++) {
-            const response = responses[i];
-            let imgBase64 = null;
-            if (response.candidates && response.candidates[0].content.parts) {
-                for (const part of response.candidates[0].content.parts) {
-                    if (part.inlineData) imgBase64 = part.inlineData.data;
-                }
-            }
-
-            if (imgBase64) {
-                const img = new Image();
-                // Fix Image Loading Race Condition: Set onload BEFORE src
-                await new Promise<void>((resolve) => {
-                    img.onload = () => {
-                        // Add new symbol to current page
-                        const size = 200;
-                        // Stagger positions if multi
-                        const offsetX = (i * 220) - ((count-1)*110);
-                        const x = Math.max(0, (page.width / 2) - (size / 2) + offsetX);
-                        const y = Math.max(0, (page.height / 2) - (size / 2));
-                        
-                        page.symbols.push({
-                            x: x, y: y, width: size, height: size,
-                            customImage: img // Store the custom image element
-                        });
-                        
-                        // Select all new ones
-                        appState.interaction.selectedIndices.add(page.symbols.length - 1);
-                        createdCount++;
-                        resolve();
-                    };
-                    img.src = `data:image/png;base64,${imgBase64}`;
-                });
-            }
-        }
-
-        if (createdCount > 0) {
-            updateToolbarUI();
-            drawCanvas();
-            // Ensure new symbol is visible
-            dom.define.canvasContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else {
-            alert("No images generated.");
-        }
-
-    } catch (e) {
-        console.error(e);
-        alert("Generation failed: " + e.message);
-    } finally {
-        setAiLoading(false);
-    }
-}
-
-async function editAiSymbol() {
-    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
-    if (appState.interaction.selectedIndices.size !== 1) {
-        alert("Please select exactly one tile to edit."); return;
-    }
-    
-    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
-    const win = window as any;
-    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
-    }
-
-    // Create new AI instance with current key
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-    setAiLoading(true);
-    try {
-        const page = appState.pages[appState.currentPageIndex];
-        const idx = appState.interaction.selectedIndices.values().next().value;
-        const sym = page.symbols[idx];
-
-        // 1. Get current symbol image as base64
-        const canvas = document.createElement('canvas');
-        canvas.width = sym.width;
-        canvas.height = sym.height;
-        const ctx = canvas.getContext('2d');
-        
-        if (sym.customImage) {
-            ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-        } else {
-            ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-        }
-        
-        const base64Data = canvas.toDataURL('image/png').split(',')[1];
-        
-        // 2. Strict Prompt for Editing
-        const strictPrompt = `
-        Edit this symbol to: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - PRESERVE the exact visual style of the original image and the reference document.
-        - Maintain thick black outlines, flat colors, and simple vector look.
-        - Do not change the art style. Do not make it realistic.
-        - Keep white background.
-        `;
-
-        const parts: any[] = [
-             { inlineData: { mimeType: 'image/png', data: base64Data } },
-             { text: strictPrompt }
-        ];
-
-        // 3. Call API
-        const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-image-preview', // High quality model
-            contents: { parts: parts },
-            config: { 
-                imageConfig: { 
-                    aspectRatio: "1:1",
-                    imageSize: "1K" // Force high resolution
-                } 
-            },
-        });
-
-         // 4. Parse result
-        let imgBase64 = null;
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) imgBase64 = part.inlineData.data;
-        }
-
-        if (imgBase64) {
-            const img = new Image();
-            // Fix Image Loading Race Condition
-            img.onload = () => {
-                // Update symbol
-                sym.customImage = img;
-                drawCanvas();
-            };
-            img.src = `data:image/png;base64,${imgBase64}`;
-        } else {
-            alert("No image returned from edit.");
-        }
-
-    } catch (e) {
-        console.error(e);
-        alert("Edit failed: " + e.message);
-    } finally {
-        setAiLoading(false);
-    }
-}
+// --- Add a custom image as a tile ---
 
 async function handleSymbolUpload(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
@@ -1425,37 +1405,99 @@ async function handleSymbolUpload(fileList: FileList | null) {
     if (!page) return;
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
         if (appState.interaction.selectedIndices.size === 1) {
-            // Replace selected
+            // Replace the selected tile's picture, keeping its box (already grid-uniform).
             const idx = appState.interaction.selectedIndices.values().next().value;
             page.symbols[idx].customImage = img;
         } else {
-            // Add new
-            const size = 200;
-            const x = Math.max(0, (page.width / 2) - (size / 2));
-            const y = Math.max(0, (page.height / 2) - (size / 2));
-            
-            page.symbols.push({
-                x, y, width: size, height: size,
-                customImage: img
-            });
-            
+            // Add a new tile that matches the existing tiles' size and drops into
+            // the next slot of the grid, growing the page downward if needed.
+            const slot = computeGridSlot(page);
+            await ensurePageCanvasFits(page, slot.y + slot.height);
+            page.symbols.push({ ...slot, customImage: img });
             appState.interaction.selectedIndices.clear();
             appState.interaction.selectedIndices.add(page.symbols.length - 1);
         }
+        resizeCanvas();
         drawCanvas();
         updateToolbarUI();
-        // Reset input
         dom.define.inputUploadSymbol.value = '';
     };
     img.src = createLocalUrl(file);
 }
 
-function setAiLoading(loading: boolean) {
-    dom.define.aiLoading.style.display = loading ? 'flex' : 'none';
-    dom.define.btnAiGenerate.disabled = loading;
-    dom.define.btnAiEdit.disabled = loading;
+// Work out where a newly-added tile should go so it is uniform with the grid:
+// same size as the typical existing tile, and in the next reading-order slot
+// (continue the current row, or start a new one). Falls back to a sensible box
+// when the page has no tiles yet.
+function computeGridSlot(page: ProjectPage): { x: number; y: number; width: number; height: number } {
+    const syms = page.symbols;
+    const med = (arr: number[]) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+    if (syms.length === 0) {
+        const w = Math.round(Math.min(220, page.width * 0.28));
+        return { x: Math.round(page.width * 0.05), y: Math.round(page.height * 0.05), width: w, height: w };
+    }
+
+    const w = Math.round(med(syms.map(s => s.width)));
+    const h = Math.round(med(syms.map(s => s.height)));
+    const rowThresh = Math.max(20, h * 0.6);
+
+    // Cluster tiles into rows by vertical centre.
+    const rows: { cy: number; items: typeof syms }[] = [];
+    [...syms].sort((a, b) => (a.y + a.height / 2) - (b.y + b.height / 2)).forEach(s => {
+        const cy = s.y + s.height / 2;
+        let row = rows.find(r => Math.abs(r.cy - cy) <= rowThresh);
+        if (!row) { row = { cy, items: [] }; rows.push(row); }
+        row.items.push(s);
+        row.cy = row.items.reduce((a, it) => a + (it.y + it.height / 2), 0) / row.items.length;
+    });
+    rows.forEach(r => r.items.sort((a, b) => a.x - b.x));
+
+    const gridLeft = Math.min(...syms.map(s => s.x));
+    const gapsX: number[] = [];
+    rows.forEach(r => { for (let i = 1; i < r.items.length; i++) gapsX.push(r.items[i].x - (r.items[i - 1].x + r.items[i - 1].width)); });
+    const gapX = gapsX.length ? Math.max(0, med(gapsX)) : Math.round(w * 0.12);
+    const maxCols = Math.max(...rows.map(r => r.items.length));
+
+    let gapY = Math.round(h * 0.15);
+    if (rows.length >= 2) {
+        const a = rows[rows.length - 2], b = rows[rows.length - 1];
+        const aBot = Math.max(...a.items.map(s => s.y + s.height));
+        const bTop = Math.min(...b.items.map(s => s.y));
+        gapY = Math.max(0, Math.round(bTop - aBot));
+    }
+
+    const lastRow = rows[rows.length - 1];
+    if (lastRow.items.length < maxCols) {
+        // Room in the current row → place to the right of the last tile.
+        const li = lastRow.items[lastRow.items.length - 1];
+        return { x: Math.round(li.x + li.width + gapX), y: Math.round(lastRow.items[0].y), width: w, height: h };
+    }
+    // Row full → start a new row aligned to the grid's left edge.
+    const lastBot = Math.max(...lastRow.items.map(s => s.y + s.height));
+    return { x: Math.round(gridLeft), y: Math.round(lastBot + gapY), width: w, height: h };
+}
+
+// Grow the page's background canvas downward (white) if a tile would fall below
+// it, so newly-added grid tiles stay visible.
+async function ensurePageCanvasFits(page: ProjectPage, neededBottom: number) {
+    if (neededBottom <= page.height) return;
+    const newH = Math.ceil(neededBottom + page.height * 0.02);
+    const c = document.createElement('canvas');
+    c.width = page.width; c.height = newH;
+    const ctx = c.getContext('2d');
+    if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, page.width, newH);
+        ctx.drawImage(page.image, 0, 0);
+    }
+    const img = new Image();
+    await new Promise<void>(r => { img.onload = () => r(); img.src = c.toDataURL(); });
+    page.image = img;
+    page.height = newH;
+    invalidatePageThumbs(appState.currentPageIndex);
 }
 
 // --- Define Symbols Logic ---
@@ -1564,7 +1606,7 @@ function drawCanvas() {
     
     ctx.lineWidth = 4 / appState.interaction.zoomLevel;
     page.symbols.forEach((s: any, idx: number) => {
-        // Render Custom AI Image if present
+        // Render custom image if present
         if (s.customImage) {
             ctx.drawImage(s.customImage, s.x, s.y, s.width, s.height);
         }
@@ -1948,6 +1990,7 @@ function invalidatePageThumbs(pageIdx: number) {
     Array.from(_thumbCache.keys())
         .filter(k => k.startsWith(`${pageIdx}:`))
         .forEach(k => _thumbCache.delete(k));
+    _bboxCache.delete(pageIdx);
 }
 
 function moveSequenceStep(from: number, to: number) {
@@ -2686,6 +2729,8 @@ function syncStyleControls() {
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('roundVoices', c.roundVoices || 2);
+    segSet('displayMode', c.sheetMode ? 1 : 0);
+    document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled;
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
@@ -2696,6 +2741,7 @@ function syncStyleControls() {
 
 async function setupResultView() {
     dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    _bboxCache.clear(); // sheet-mode crop boxes recomputed for current tiles
     syncStyleControls();
     appState.preview.loadedImages.clear();
     const promises = appState.symbols.map((sym, idx) => new Promise<void>((resolve) => {
@@ -2741,6 +2787,13 @@ function drawPreviewFrame(rawTime: number) {
 
     // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
+
+    // "Follow the sheet" mode shows the whole songsheet with a glowing
+    // highlight that scrolls down — a full-frame alternative to the conveyor.
+    if (cfg.sheetMode && appState.symbols.length > 0) {
+        drawSheetFrame(ctx, w, h, time, firstStart);
+        return;
+    }
 
     // Musical round mode takes over the whole frame (its own title/waiting
     // states per voice), so branch before the single-conveyor title card.
@@ -2856,6 +2909,136 @@ function activeIndexAt(time: number): number {
         idx = syms.length - 1; // hold on last tile past the end
     }
     return idx;
+}
+
+// Bounding box (in page pixels) of all tiles on a page, padded a little. Used
+// by "follow the sheet" mode to crop away header/footer logos and margins so
+// only the symbol content is shown and scrolled.
+const _bboxCache = new Map<number, { x: number; y: number; w: number; h: number }>();
+function pageContentBox(pageIdx: number) {
+    const cached = _bboxCache.get(pageIdx);
+    if (cached) return cached;
+    const page = appState.pages[pageIdx];
+    if (!page || page.symbols.length === 0) {
+        const full = { x: 0, y: 0, w: page?.width || 1, h: page?.height || 1 };
+        return full;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    page.symbols.forEach(s => {
+        minX = Math.min(minX, s.x); minY = Math.min(minY, s.y);
+        maxX = Math.max(maxX, s.x + s.width); maxY = Math.max(maxY, s.y + s.height);
+    });
+    const padX = page.width * 0.03;
+    const padY = page.height * 0.02;
+    const box = {
+        x: Math.max(0, minX - padX),
+        y: Math.max(0, minY - padY),
+        w: Math.min(page.width, maxX + padX) - Math.max(0, minX - padX),
+        h: Math.min(page.height, maxY + padY) - Math.max(0, minY - padY),
+    };
+    _bboxCache.set(pageIdx, box);
+    return box;
+}
+
+// "Follow the sheet": draw the current page cropped to its content, glow-
+// highlight the active tile, and scroll down smoothly as the sequence advances.
+function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cfg = appState.styleConfig;
+    ctx.fillStyle = cfg.backgroundColor;
+    ctx.fillRect(0, 0, w, h);
+
+    const syms = appState.symbols;
+    let idx = activeIndexAt(time);
+    const preStart = idx === -1;
+    if (idx === -1) idx = 0;
+    const sym = syms[idx];
+    const pageIdx = sym.pageIndex ?? 0;
+    const page = appState.pages[pageIdx];
+    if (!page || !page.image) return;
+
+    const box = pageContentBox(pageIdx);
+    const scale = w / box.w;                 // fit the sheet content to canvas width
+    const sheetPxH = box.h * scale;          // full cropped sheet height in canvas px
+
+    // Target scroll places a tile's centre ~38% down the viewport.
+    const anchor = h * 0.38;
+    const maxScroll = Math.max(0, sheetPxH - h);
+    const scrollForSym = (i: number) => {
+        const s = syms[i];
+        const cyOnSheet = (s.y + s.height / 2 - box.y) * scale;
+        return Math.min(maxScroll, Math.max(0, cyOnSheet - anchor));
+    };
+
+    // Keep the active tile anchored, then glide to the next tile's anchor over
+    // a short window before it takes over — smooth without flinging the current
+    // (highlighted) tile out of view when tiles are far apart.
+    const activeScroll = scrollForSym(idx);
+    let scroll = activeScroll;
+    const next = syms[idx + 1];
+    if (!preStart && next && (next.pageIndex ?? 0) === pageIdx) {
+        const curStart = sym.startTime || 0;
+        const nextStart = next.startTime || 0;
+        const dur = nextStart - curStart;
+        if (dur > 0.001) {
+            const glide = Math.min(0.7, dur * 0.5);
+            const gStart = nextStart - glide;
+            if (time > gStart) {
+                const p = Math.min(1, (time - gStart) / glide);
+                scroll = activeScroll + (scrollForSym(idx + 1) - activeScroll) * p;
+            }
+        }
+    }
+    if (preStart) scroll = 0;
+
+    // Safety net: never let the highlighted tile leave the viewport.
+    if (!preStart) {
+        const tileTop = (sym.y - box.y) * scale;
+        const tileBot = tileTop + sym.height * scale;
+        const margin = 14;
+        const lo = tileBot - h + margin;   // scroll at least this to show its bottom
+        const hi = tileTop - margin;       // scroll at most this to show its top
+        scroll = lo <= hi ? Math.max(lo, Math.min(hi, scroll)) : tileTop - margin;
+    }
+    scroll = Math.max(0, Math.min(maxScroll, scroll));
+
+    // Draw the visible window of the sheet.
+    const srcY = box.y + scroll / scale;
+    const srcH = h / scale;
+    ctx.drawImage(page.image, box.x, srcY, box.w, srcH, 0, 0, w, h);
+
+    // Glow highlight around the active tile (skip before the song starts).
+    if (!preStart) {
+        const hx = (sym.x - box.x) * scale;
+        const hy = (sym.y - box.y) * scale - scroll;
+        const hw = sym.width * scale;
+        const hh = sym.height * scale;
+        // Gentle breathing glow.
+        const pulse = 0.6 + 0.4 * Math.abs(Math.sin(time * 3.0));
+        ctx.save();
+        ctx.strokeStyle = '#ffd21e';
+        ctx.lineWidth = 4;
+        ctx.shadowColor = 'rgba(255, 210, 30, ' + pulse.toFixed(2) + ')';
+        ctx.shadowBlur = 26 * pulse;
+        roundRect(ctx, hx - 4, hy - 4, hw + 8, hh + 8, 10);
+        ctx.stroke();
+        // A second pass thickens the glow without a hard edge.
+        ctx.shadowBlur = 44 * pulse;
+        ctx.globalAlpha = 0.5;
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Musical direction caption for the active tile, if any.
+    if (!preStart && sym.direction) {
+        ctx.save();
+        ctx.font = 'italic 20px Georgia, serif';
+        ctx.fillStyle = '#333';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = 'rgba(255,255,255,0.9)';
+        ctx.shadowBlur = 6;
+        ctx.fillText(sym.direction, w / 2, h - 22);
+        ctx.restore();
+    }
 }
 
 // Colours used to distinguish the voices/groups of a round.
@@ -3009,15 +3192,27 @@ async function renderVideo(mode: 'full' | 'backing') {
     
     let recorder;
     try {
-        // iOS Safari Support Check
+        // Prefer WebM/VP9: far better compression efficiency for this content
+        // (symbols over mostly-flat backgrounds), which means smaller files and
+        // clean re-import in the same browsers. Fall back to MP4 for Safari,
+        // whose MediaRecorder can only produce MP4.
+        const preferredTypes = [
+            "video/webm;codecs=vp9",
+            "video/webm;codecs=vp8",
+            "video/webm",
+            "video/mp4",
+        ];
         let mime = "video/webm";
-        if (MediaRecorder.isTypeSupported("video/mp4")) {
-            mime = "video/mp4";
-        } else if (MediaRecorder.isTypeSupported("video/webm; codecs=vp9")) {
-            mime = "video/webm; codecs=vp9";
+        for (const t of preferredTypes) {
+            if (MediaRecorder.isTypeSupported(t)) { mime = t; break; }
         }
-        
-        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 2500000 });
+
+        // VP9's efficiency lets us drop the bitrate without visible loss, so the
+        // simple graphics content exports noticeably smaller. MP4 (H.264) is less
+        // efficient, so keep it a little higher there to hold quality.
+        const isMp4 = mime.includes("mp4");
+        const bitrate = isMp4 ? 2500000 : 1600000;
+        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
     } catch (e) { alert("Recording not supported or codec missing."); return; }
     
     const chunks: BlobPart[] = [];

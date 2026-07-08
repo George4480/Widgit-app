@@ -51,6 +51,10 @@ export interface StyleConfig {
     roundEnabled: boolean;
     roundVoices: number;   // total voices including the leader (2-3)
     roundGap: number;      // seconds each following voice enters after the previous
+    // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
+    // excluding header/footer logos), glow-highlight the current tile, and
+    // scroll down continuously as the song progresses. Alternative to conveyor.
+    sheetMode: boolean;
 }
 
 export interface GridConfig {
@@ -107,7 +111,6 @@ export interface AppState {
         startTime: number;
         loadedImages: Map<number, HTMLImageElement>;
     };
-    aiModeEnabled: boolean;
 }
 
 export interface ProjectSaveData {
