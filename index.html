@@ -1455,6 +1455,67 @@
 
         /* High-contrast must fully clear the themed background gradients. */
         body.high-contrast { background: #000000 !important; }
+
+        /* ---- Cross-page sequence strip ---- */
+        .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
+        .order-sequence-item {
+            flex: 0 0 84px;
+            height: 84px;
+            cursor: grab;
+        }
+        .order-sequence-item.dragging { opacity: 0.4; }
+        .order-sequence-item .page-tag {
+            position: absolute;
+            bottom: 2px;
+            left: 2px;
+            background: var(--primary);
+            color: #fff;
+            font-size: 0.6rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 5px;
+            z-index: 4;
+            letter-spacing: 0.02em;
+        }
+        .order-sequence-item .seq-controls {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: stretch;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            background: linear-gradient(to top, rgba(0,0,0,0.55), transparent);
+            z-index: 6;
+        }
+        .order-sequence-item:hover .seq-controls,
+        .order-sequence-item:focus-within .seq-controls { opacity: 1; }
+        .order-sequence-item .seq-btn {
+            flex: 1;
+            border: none;
+            background: transparent;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 700;
+            line-height: 1;
+            padding: 5px 0;
+            cursor: pointer;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+        }
+        .order-sequence-item .seq-btn:hover { background: rgba(255,255,255,0.2); }
+        .seq-empty {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            padding: 8px 14px;
+            text-align: center;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        /* On touch devices the controls can't rely on hover — always show them. */
+        @media (hover: none) {
+            .order-sequence-item .seq-controls { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -1691,8 +1752,8 @@
 
     <!-- 4. Order View -->
     <div id="order-view" class="view-section">
-        <h2 style="text-align: center; margin-top: 0;">Set Sequence</h2>
-        <p class="helper-text" style="text-align: center;">Click symbols in order to define the reading path (1, 2, 3...).</p>
+        <h2 style="text-align: center; margin-top: 0;">Set Reading Order</h2>
+        <p class="helper-text" style="text-align: center;">Tap tiles in the order they're sung (1, 2, 3…). The order flows across pages — switch pages any time and revisit a page to <strong>repeat</strong> tiles for choruses. Tap the same tile again to repeat it.</p>
         
         <div class="toolbar">
             <div class="toolbar-group">
@@ -1703,8 +1764,8 @@
             <div class="toolbar-group">
                  <button id="btn-order-pan-up" class="button secondary small">↑</button>
                  <button id="btn-order-pan-down" class="button secondary small">↓</button>
-                <button id="btn-auto-order" class="button secondary small">Auto Order</button>
-                <button id="btn-reset-order" class="button secondary small" style="color: #c5221f;">Reset</button>
+                <button id="btn-auto-order" class="button secondary small" title="Auto-order this page's tiles (reading order) and add them to the sequence">Auto Order Page</button>
+                <button id="btn-reset-order" class="button secondary small" style="color: #c5221f;" title="Remove this page's tiles from the reading order">Clear Page</button>
             </div>
         </div>
 
@@ -1712,7 +1773,7 @@
             <canvas id="order-canvas"></canvas>
         </div>
 
-        <p class="helper-text">Sequence Preview (Rolodex):</p>
+        <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, or tap a tile to jump to its page:</p>
         <div id="order-sequence-strip" class="order-sequence-strip">
             <!-- Items injected by JS -->
         </div>

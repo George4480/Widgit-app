@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData } from "./src/types";
+import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep } from "./src/types";
 
 // Set PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -41,6 +41,7 @@ const appState: AppState = {
     },
     pages: [] as ProjectPage[],
     currentPageIndex: 0,
+    globalSequence: [] as SequenceStep[], // Canonical cross-page reading order
     symbols: [] as SymbolTile[], // Flat list for Sync/Result
     isRecordingSync: false,
     currentSyncIndex: 0, // Used during recording
@@ -468,12 +469,13 @@ function setupEventListeners() {
     dom.order.btnNext.addEventListener('click', () => { changePage(1); setupOrderView(); });
     dom.order.btnAuto.addEventListener('click', autoOrderPage);
     dom.order.btnReset.addEventListener('click', () => {
-        const page = appState.pages[appState.currentPageIndex];
-        if (!page || page.sequence.length === 0) { resetOrderPage(); return; }
+        const pageIdx = appState.currentPageIndex;
+        const hasStepsHere = appState.globalSequence.some(s => s.page === pageIdx);
+        if (!hasStepsHere) { resetOrderPage(); return; }
         showConfirm({
-            title: '↩️ Reset the order for this page?',
-            message: 'This clears the play order you\'ve set on this page. The tiles themselves are kept — only their sequence is cleared.',
-            confirmText: 'Reset order',
+            title: '↩️ Clear this page from the order?',
+            message: 'This removes only this page\'s tiles from the reading order. Steps on other pages and the tiles themselves are kept.',
+            confirmText: 'Clear this page',
             onConfirm: resetOrderPage,
         });
     });
@@ -1436,6 +1438,8 @@ function clearCurrentPageSymbols() {
     if (page) {
         page.symbols = [];
         page.sequence = [];
+        pruneGlobalSequence(appState.currentPageIndex, { clearPage: true });
+        invalidatePageThumbs(appState.currentPageIndex);
         appState.interaction.selectedIndices.clear();
         appState.interaction.isDragging = false;
         updateToolbarUI();
@@ -1448,9 +1452,11 @@ function deleteSelectedSymbols() {
     const indicesToDelete = Array.from(appState.interaction.selectedIndices).sort((a: number, b: number) => b - a);
     indicesToDelete.forEach(index => {
         page.symbols.splice(index, 1);
-        // Also remove from sequence if present
+        // Keep both the legacy per-page order and the cross-page sequence valid.
         page.sequence = page.sequence.filter(i => i !== index).map(i => i > index ? i - 1 : i);
+        pruneGlobalSequence(appState.currentPageIndex, { removedSym: index });
     });
+    invalidatePageThumbs(appState.currentPageIndex);
     appState.interaction.selectedIndices.clear();
     appState.interaction.isDragging = false;
     updateToolbarUI();
@@ -1553,6 +1559,8 @@ function runGridDetection() {
     if (!page) return;
     page.symbols = []; // Clear previous
     page.sequence = [];
+    pruneGlobalSequence(appState.currentPageIndex, { clearPage: true });
+    invalidatePageThumbs(appState.currentPageIndex);
 
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = page.width; tempCanvas.height = page.height;
@@ -1708,10 +1716,55 @@ function handleDefineCanvasUp() {
 }
 
 // --- Order View Logic ---
+// --- Cross-page sequence helpers ---
+// The reading order is one continuous list of {page, sym} steps. This lets a
+// song jump between pages and come back (verse p1 -> chorus p2 -> verse p1),
+// and lets the same tile repeat anywhere. Legacy per-page page.sequence is
+// migrated in on demand so old projects / in-memory state keep working.
+function ensureGlobalSequence() {
+    if (appState.globalSequence.length > 0) return;
+    const anyLegacy = appState.pages.some(p => p.sequence && p.sequence.length > 0);
+    if (!anyLegacy) return;
+    const seq: SequenceStep[] = [];
+    appState.pages.forEach((p, pi) => {
+        (p.sequence || []).forEach(si => {
+            if (p.symbols[si]) seq.push({ page: pi, sym: si });
+        });
+    });
+    appState.globalSequence = seq;
+}
+
+// Global positions (1-based) at which a given tile on a page appears.
+function globalPositionsFor(pageIdx: number, symIdx: number): number[] {
+    const out: number[] = [];
+    appState.globalSequence.forEach((step, i) => {
+        if (step.page === pageIdx && step.sym === symIdx) out.push(i + 1);
+    });
+    return out;
+}
+
+// Remove every step that references a page, and (optionally) shift symbol
+// indices after a deleted symbol on that page. Used by delete/clear/redetect.
+function pruneGlobalSequence(pageIdx: number, opts: { removedSym?: number; clearPage?: boolean } = {}) {
+    appState.globalSequence = appState.globalSequence.filter(step => {
+        if (step.page !== pageIdx) return true;
+        if (opts.clearPage) return false;
+        if (opts.removedSym !== undefined && step.sym === opts.removedSym) return false;
+        return true;
+    }).map(step => {
+        if (step.page === pageIdx && opts.removedSym !== undefined && step.sym > opts.removedSym) {
+            return { page: step.page, sym: step.sym - 1 };
+        }
+        return step;
+    });
+}
+
 function setupOrderView() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    
+
+    ensureGlobalSequence();
+
     if (dom.order.audio) {
         dom.order.audio.parentElement!.style.display = (appState.files.audioVocal || appState.files.audioBacking) ? 'block' : 'none';
     }
@@ -1734,117 +1787,222 @@ function drawOrderCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(page.image, 0, 0, canvas.width, canvas.height);
 
-    // Draw lines connecting sequence
-    if (page.sequence.length > 1) {
-        ctx.beginPath();
-        ctx.strokeStyle = 'rgba(234, 67, 53, 0.6)';
-        ctx.lineWidth = 3;
-        const startSym = page.symbols[page.sequence[0]];
-        ctx.moveTo((startSym.x + startSym.width/2) * scale, (startSym.y + startSym.height/2) * scale);
-        
-        for (let i = 1; i < page.sequence.length; i++) {
-            const sym = page.symbols[page.sequence[i]];
-            ctx.lineTo((sym.x + sym.width/2) * scale, (sym.y + sym.height/2) * scale);
+    const pageIdx = appState.currentPageIndex;
+    const seq = appState.globalSequence;
+    const center = (si: number) => {
+        const s = page.symbols[si];
+        return { cx: (s.x + s.width / 2) * scale, cy: (s.y + s.height / 2) * scale };
+    };
+
+    // Draw the reading path THROUGH this page. We connect consecutive global
+    // steps that both land on this page; where the path arrives from or departs
+    // to another page, we mark it so cross-page flow is visible.
+    ctx.lineWidth = 3;
+    for (let i = 0; i < seq.length; i++) {
+        if (seq[i].page !== pageIdx) continue;
+        const here = center(seq[i].sym);
+
+        // Connector from the previous step, if it was also on this page.
+        if (i > 0 && seq[i - 1].page === pageIdx) {
+            const prev = center(seq[i - 1].sym);
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(79, 70, 229, 0.65)';
+            ctx.moveTo(prev.cx, prev.cy);
+            ctx.lineTo(here.cx, here.cy);
+            ctx.stroke();
+        } else if (i > 0) {
+            // Arrived from another page — draw a small inbound chevron.
+            drawPageJumpMarker(ctx, here.cx, here.cy, `from P${seq[i - 1].page + 1}`, true);
         }
-        ctx.stroke();
+        // Departs to another page after this step.
+        if (i < seq.length - 1 && seq[i + 1].page !== pageIdx) {
+            drawPageJumpMarker(ctx, here.cx, here.cy, `to P${seq[i + 1].page + 1}`, false);
+        }
     }
 
     page.symbols.forEach((sym, idx) => {
-        // Draw Custom image in order view too
         const x = sym.x * scale, y = sym.y * scale, w = sym.width * scale, h = sym.height * scale;
+        if (sym.customImage) ctx.drawImage(sym.customImage, x, y, w, h);
 
-        if (sym.customImage) {
-            ctx.drawImage(sym.customImage, x, y, w, h);
-        }
+        const positions = globalPositionsFor(pageIdx, idx);
 
-        // Find all occurrences in sequence
-        const seqIndices = page.sequence.reduce((acc, val, i) => {
-            if (val === idx) acc.push(i + 1);
-            return acc;
-        }, [] as number[]);
-        
-        ctx.strokeStyle = '#999';
-        if (seqIndices.length > 0) {
-            ctx.fillStyle = 'rgba(52, 168, 83, 0.3)';
-            ctx.strokeStyle = '#34a853';
+        if (positions.length > 0) {
+            ctx.fillStyle = 'rgba(79, 70, 229, 0.22)';
+            ctx.strokeStyle = '#4f46e5';
             ctx.lineWidth = 3;
         } else {
-             ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-             ctx.lineWidth = 1;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+            ctx.strokeStyle = '#999';
+            ctx.lineWidth = 1;
         }
-        
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
 
-        if (seqIndices.length > 0) {
-            // Draw Badge (top-right)
-            ctx.fillStyle = '#34a853';
-            ctx.beginPath();
-            ctx.arc(x + w - 15, y + 15, 12, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'white';
+        if (positions.length > 0) {
+            // Badge shows every global position this tile occupies (repeats).
+            const label = positions.join(',');
             ctx.font = 'bold 12px sans-serif';
             ctx.textAlign = 'center';
-            // Show the first position, but if multiple, add a '+'
-            const label = seqIndices.length > 1 ? `${seqIndices[0]}+` : seqIndices[0].toString();
-            ctx.fillText(label, x + w - 15, y + 19);
+            ctx.textBaseline = 'middle';
+            const padW = Math.max(24, ctx.measureText(label).width + 12);
+            const bx = x + w - padW / 2 - 3, by = y + 15;
+            ctx.fillStyle = '#4f46e5';
+            roundRect(ctx, bx - padW / 2, by - 11, padW, 22, 11);
+            ctx.fill();
+            ctx.fillStyle = 'white';
+            ctx.fillText(label, bx, by + 1);
+            ctx.textBaseline = 'alphabetic';
         }
     });
 }
 
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+}
+
+function drawPageJumpMarker(ctx: CanvasRenderingContext2D, cx: number, cy: number, label: string, inbound: boolean) {
+    ctx.save();
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(label).width + 12;
+    const y = inbound ? cy - 22 : cy + 22;
+    ctx.fillStyle = inbound ? '#0891b2' : '#d97706';
+    roundRect(ctx, cx - w / 2, y - 9, w, 18, 9);
+    ctx.fill();
+    ctx.fillStyle = 'white';
+    ctx.fillText(label, cx, y + 1);
+    ctx.restore();
+}
+
+// Thumbnail cache keyed by page:sym so re-rendering the strip is cheap even
+// with a long, repeat-heavy sequence.
+const _thumbCache = new Map<string, string>();
+function stepThumb(pageIdx: number, symIdx: number): string {
+    const key = `${pageIdx}:${symIdx}`;
+    const cached = _thumbCache.get(key);
+    if (cached) return cached;
+    const page = appState.pages[pageIdx];
+    const sym = page?.symbols[symIdx];
+    if (!sym) return '';
+    const off = document.createElement('canvas');
+    off.width = 80; off.height = 80;
+    const c = off.getContext('2d');
+    if (c) {
+        if (sym.customImage) c.drawImage(sym.customImage, 0, 0, 80, 80);
+        else c.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, 80, 80);
+    }
+    const url = off.toDataURL();
+    _thumbCache.set(key, url);
+    return url;
+}
+// Symbols on a page changed (deleted/cleared/redetected) — drop its thumbs.
+function invalidatePageThumbs(pageIdx: number) {
+    Array.from(_thumbCache.keys())
+        .filter(k => k.startsWith(`${pageIdx}:`))
+        .forEach(k => _thumbCache.delete(k));
+}
+
+function moveSequenceStep(from: number, to: number) {
+    const seq = appState.globalSequence;
+    if (to < 0 || to >= seq.length || from === to) return;
+    const [step] = seq.splice(from, 1);
+    seq.splice(to, 0, step);
+    saveHistoryState();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+}
+
+// Renders the ENTIRE cross-page reading order (not just the current page), so
+// the flow between pages is visible and editable in one place. Each item is
+// tagged with its page, can be nudged left/right or removed, dragged to
+// reorder, and clicking it jumps the canvas to that page.
 function renderOrderSequenceStrip() {
-    const page = appState.pages[appState.currentPageIndex];
     const strip = dom.order.sequenceStrip;
-    if (!strip || !page) return;
-
+    if (!strip) return;
     strip.innerHTML = '';
-    page.sequence.forEach((symIdx, seqIdx) => {
-        const sym = page.symbols[symIdx];
-        if (!sym) return;
 
+    if (appState.globalSequence.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'seq-empty';
+        empty.textContent = 'Tap tiles on the page above in reading order. Switch pages any time — the order flows across pages and you can revisit a page to repeat tiles.';
+        strip.appendChild(empty);
+        return;
+    }
+
+    appState.globalSequence.forEach((step, seqIdx) => {
         const item = document.createElement('div');
         item.className = 'order-sequence-item';
-        
-        // Generate thumbnail
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = 80;
-        offCanvas.height = 80;
-        const offCtx = offCanvas.getContext('2d');
-        if (offCtx) {
-            if (sym.customImage) {
-                offCtx.drawImage(sym.customImage, 0, 0, 80, 80);
-            } else {
-                // Draw crop from page image
-                offCtx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, 80, 80);
-            }
-        }
-        
+        item.draggable = true;
+        const onCurrentPage = step.page === appState.currentPageIndex;
+        if (onCurrentPage) item.classList.add('active');
+
         const img = document.createElement('img');
-        img.src = offCanvas.toDataURL();
+        img.src = stepThumb(step.page, step.sym);
         item.appendChild(img);
-        
+
         const badge = document.createElement('div');
         badge.className = 'number-badge';
         badge.textContent = (seqIdx + 1).toString();
         item.appendChild(badge);
-        
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'remove-btn';
-        removeBtn.textContent = '×';
-        removeBtn.title = 'Remove from sequence';
-        removeBtn.onclick = (e) => {
-            e.stopPropagation();
-            page.sequence.splice(seqIdx, 1);
+
+        // Page tag — only meaningful with multiple pages.
+        if (appState.pages.length > 1) {
+            const tag = document.createElement('div');
+            tag.className = 'page-tag';
+            tag.textContent = `P${step.page + 1}`;
+            item.appendChild(tag);
+        }
+
+        const controls = document.createElement('div');
+        controls.className = 'seq-controls';
+        const mkBtn = (txt: string, title: string, fn: () => void) => {
+            const b = document.createElement('button');
+            b.className = 'seq-btn';
+            b.textContent = txt;
+            b.title = title;
+            b.onclick = (e) => { e.stopPropagation(); fn(); };
+            return b;
+        };
+        controls.appendChild(mkBtn('‹', 'Move earlier', () => moveSequenceStep(seqIdx, seqIdx - 1)));
+        controls.appendChild(mkBtn('×', 'Remove from order', () => {
+            appState.globalSequence.splice(seqIdx, 1);
+            saveHistoryState();
             drawOrderCanvas();
             renderOrderSequenceStrip();
+        }));
+        controls.appendChild(mkBtn('›', 'Move later', () => moveSequenceStep(seqIdx, seqIdx + 1)));
+        item.appendChild(controls);
+
+        // Click the tile (not its buttons) to jump the canvas to its page.
+        item.onclick = () => {
+            if (step.page !== appState.currentPageIndex) {
+                appState.currentPageIndex = step.page;
+                setupOrderView();
+            }
         };
-        item.appendChild(removeBtn);
+
+        // Drag-to-reorder (desktop pointer).
+        item.addEventListener('dragstart', (e) => {
+            e.dataTransfer?.setData('text/plain', String(seqIdx));
+            item.classList.add('dragging');
+        });
+        item.addEventListener('dragend', () => item.classList.remove('dragging'));
+        item.addEventListener('dragover', (e) => e.preventDefault());
+        item.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const from = parseInt(e.dataTransfer?.getData('text/plain') || '', 10);
+            if (!Number.isNaN(from)) moveSequenceStep(from, seqIdx);
+        });
 
         strip.appendChild(item);
     });
-    
-    // Auto scroll to end when adding
-    setTimeout(() => { strip.scrollLeft = strip.scrollWidth; }, 50);
 }
 
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
@@ -1858,67 +2016,99 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
 
     const hitIdx = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
     if (hitIdx !== -1) {
-        // ALWAYS Add to sequence on click (allows multiple)
-        page.sequence.push(hitIdx);
+        // Append to the ONE continuous cross-page reading order. Clicking the
+        // same tile again (here or on a later visit to this page) just repeats
+        // it — exactly what a chorus / repeated word needs.
+        appState.globalSequence.push({ page: appState.currentPageIndex, sym: hitIdx });
+        saveHistoryState();
         drawOrderCanvas();
         renderOrderSequenceStrip();
     }
 }
-function autoOrderPage() {
-    const page = appState.pages[appState.currentPageIndex];
-    const indices = page.symbols.map((_, i) => i);
-    // Sort by Y, then X
-    indices.sort((a, b) => {
+
+// Robust reading order for a page: cluster tiles into rows using a threshold
+// derived from the tiles' own median height (not a fixed 50px, which breaks on
+// large/small symbols), then left-to-right within each row.
+function readingOrderIndices(page: ProjectPage): number[] {
+    const idx = page.symbols.map((_, i) => i);
+    if (idx.length === 0) return idx;
+    const heights = page.symbols.map(s => s.height).sort((a, b) => a - b);
+    const medianH = heights[Math.floor(heights.length / 2)] || 50;
+    const rowThreshold = Math.max(20, medianH * 0.6);
+    return idx.sort((a, b) => {
         const sA = page.symbols[a], sB = page.symbols[b];
-        const yDiff = Math.abs(sA.y - sB.y);
-        return yDiff > 50 ? sA.y - sB.y : sA.x - sB.x;
+        const yA = sA.y + sA.height / 2, yB = sB.y + sB.height / 2;
+        return Math.abs(yA - yB) > rowThreshold ? yA - yB : sA.x - sB.x;
     });
-    page.sequence = indices;
+}
+
+function autoOrderPage() {
+    // Append THIS page's tiles, in reading order, to the end of the continuous
+    // sequence. (Replaces this page's existing steps so re-running is stable.)
+    const pageIdx = appState.currentPageIndex;
+    const page = appState.pages[pageIdx];
+    pruneGlobalSequence(pageIdx, { clearPage: true });
+    readingOrderIndices(page).forEach(si => appState.globalSequence.push({ page: pageIdx, sym: si }));
+    saveHistoryState();
     drawOrderCanvas();
     renderOrderSequenceStrip();
 }
+
 function resetOrderPage() {
-    appState.pages[appState.currentPageIndex].sequence = [];
+    // Only clears THIS page's steps from the continuous sequence.
+    pruneGlobalSequence(appState.currentPageIndex, { clearPage: true });
     if (dom.order.audio) {
         dom.order.audio.pause();
         dom.order.audio.currentTime = 0;
     }
+    saveHistoryState();
     drawOrderCanvas();
     renderOrderSequenceStrip();
 }
-function finishOrderingSymbols() {
+// The reading order to flatten into the Sync/Result list. Uses the continuous
+// cross-page sequence; if none was defined, falls back to every tile on every
+// page in natural order (e.g. board mode).
+function effectiveSequence(): SequenceStep[] {
+    ensureGlobalSequence();
+    if (appState.globalSequence.length > 0) {
+        return appState.globalSequence.filter(st => appState.pages[st.page]?.symbols[st.sym]);
+    }
+    const seq: SequenceStep[] = [];
+    appState.pages.forEach((p, pi) => p.symbols.forEach((_, si) => seq.push({ page: pi, sym: si })));
+    return seq;
+}
+
+// Build the flat appState.symbols list (one entry per sequence step, so a
+// repeated tile becomes independent entries with their own timing).
+function buildFlatSymbols() {
     appState.symbols = [];
-    appState.pages.forEach((page, pIdx) => {
-        // Use defined sequence, or fallback to auto if empty
-        let order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
-        
-        order.forEach(symIdx => {
-            const sym = page.symbols[symIdx];
-            const canvas = document.createElement('canvas');
-            canvas.width = sym.width; canvas.height = sym.height;
-            const ctx = canvas.getContext('2d');
-            
-            // Check for Custom AI Image
-            if (sym.customImage) {
-                 ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-            } else {
-                 ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-            }
-            
-            appState.symbols.push({
-                globalIndex: appState.symbols.length,
-                pageIndex: pIdx,
-                imageSrc: canvas.toDataURL(),
-                startTime: 0,
-                endTime: 0,
-                direction: '', // Initialize direction
-                ...sym
-            });
+    effectiveSequence().forEach(step => {
+        const page = appState.pages[step.page];
+        const sym = page.symbols[step.sym];
+        if (!sym) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = sym.width; canvas.height = sym.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            if (sym.customImage) ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+            else ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+        }
+        appState.symbols.push({
+            globalIndex: appState.symbols.length,
+            pageIndex: step.page,
+            imageSrc: canvas.toDataURL(),
+            startTime: 0,
+            endTime: 0,
+            direction: '',
+            ...sym,
         });
     });
+}
 
+function finishOrderingSymbols() {
+    buildFlatSymbols();
     if (appState.symbols.length === 0) {
-        alert("No symbols selected! Please select symbols in order.");
+        alert("No tiles in the reading order yet! Tap tiles on the page in the order they should play.");
         return;
     }
     setupSyncView();
@@ -2914,6 +3104,7 @@ async function saveProjectJson() {
         styleConfig: appState.styleConfig,
         gridConfig: appState.gridConfig,
         latencyOffset: appState.interaction.latencyOffset,
+        globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym })),
         pages: savedPages
     };
 
@@ -3010,6 +3201,12 @@ function handleProjectLoadFile(e: Event) {
                 });
             }
 
+            // Cross-page order: use the saved global sequence if present,
+            // otherwise ensureGlobalSequence() migrates the legacy per-page one.
+            _thumbCache.clear();
+            appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
+            ensureGlobalSequence();
+
             // Rebuild Flat List
             rebuildGlobalSymbolsList();
             
@@ -3035,37 +3232,9 @@ function handleProjectLoadFile(e: Event) {
 }
 
 function rebuildGlobalSymbolsList() {
-    appState.symbols = [];
-    appState.pages.forEach((page, pIdx) => {
-        let order = page.sequence.length > 0 ? page.sequence : page.symbols.map((_, i) => i);
-        order.forEach(symIdx => {
-            const sym = page.symbols[symIdx];
-            if (!sym) return;
-            const canvas = document.createElement('canvas');
-            canvas.width = sym.width; canvas.height = sym.height;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                if (sym.customImage) {
-                    ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-                } else {
-                    ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-                }
-            }
-            appState.symbols.push({
-                globalIndex: appState.symbols.length,
-                pageIndex: pIdx,
-                imageSrc: canvas.toDataURL(),
-                startTime: sym.startTime || 0,
-                endTime: sym.endTime || 0,
-                direction: sym.direction || '',
-                x: sym.x,
-                y: sym.y,
-                width: sym.width,
-                height: sym.height,
-                customImage: sym.customImage
-            });
-        });
-    });
+    // Delegates to the shared builder, which walks the cross-page sequence
+    // (migrating legacy per-page order in if needed) and preserves timings.
+    buildFlatSymbols();
 }
 
 function exportProjectManifest() {
@@ -3146,6 +3315,7 @@ function saveHistoryState() {
     const snapshot = JSON.stringify({
         pages: pagesData,
         symbols: symbolsData,
+        globalSequence: appState.globalSequence,
         songTitle: appState.songTitle,
         mode: appState.mode,
         styleConfig: appState.styleConfig,
@@ -3200,6 +3370,8 @@ async function applyHistorySnapshot(snapshotStr: string) {
         appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;
+        appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
+        _thumbCache.clear();
 
         // Apply pages
         appState.pages = [];
