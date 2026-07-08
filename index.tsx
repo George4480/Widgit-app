@@ -371,6 +371,22 @@ function setupEventListeners() {
     });
     dom.upload.btnGenerate.addEventListener('click', startProject);
     dom.upload.btnCreateBoard.addEventListener('click', startBoardMode);
+
+    // Import from video
+    const btnImportVideo = document.getElementById('btn-import-video');
+    const inputVideo = document.getElementById('input-video-import') as HTMLInputElement;
+    if (btnImportVideo && inputVideo) {
+        btnImportVideo.addEventListener('click', () => inputVideo.click());
+        inputVideo.addEventListener('change', (e) => {
+            const f = (e.target as HTMLInputElement).files?.[0];
+            if (f) handleVideoImport(f);
+            inputVideo.value = '';
+        });
+    }
+    document.getElementById('btn-video-cancel')?.addEventListener('click', () => {
+        document.getElementById('video-picker-overlay')!.style.display = 'none';
+    });
+    document.getElementById('btn-video-create')?.addEventListener('click', createProjectFromVideoFrames);
     dom.upload.btnClearUploads.addEventListener('click', () => {
         const f = appState.files;
         const hasFiles = !!f.pdf || f.images.length > 0 || !!f.audioVocal || !!f.audioBacking;
@@ -1099,6 +1115,231 @@ async function processImageFile(file: File) {
         img.onerror = reject;
         img.src = createLocalUrl(file);
     });
+}
+
+// ============================================================
+// Import from Video: pull the audio out (to use as the song) and grab a frame
+// each time the picture changes (candidate tiles), then rebuild an editable
+// project. All processing is local to the browser — nothing is uploaded.
+// ============================================================
+
+let _videoCandidates: { time: number; dataUrl: string }[] = [];
+let _videoAudioFile: File | null = null;
+
+async function handleVideoImport(file: File) {
+    const overlay = document.getElementById('video-processing-overlay')!;
+    const status = document.getElementById('video-processing-text')!;
+    overlay.style.display = 'flex';
+    const setStatus = (t: string) => { status.textContent = t; };
+
+    try {
+        const url = createLocalUrl(file);
+        const video = document.createElement('video');
+        video.src = url;
+        video.muted = true;
+        (video as any).playsInline = true;
+        video.preload = 'auto';
+        await new Promise<void>((res, rej) => {
+            video.onloadedmetadata = () => res();
+            video.onerror = () => rej(new Error('Could not read that video file.'));
+        });
+        const duration = isFinite(video.duration) ? video.duration : 0;
+        if (!duration) throw new Error('Video has no readable duration.');
+
+        // --- 1. Extract audio → a song file ---
+        setStatus('Extracting audio…');
+        _videoAudioFile = await extractAudioFromVideo(file, setStatus).catch(() => null);
+
+        // --- 2. Sample frames, keep one per visible change ---
+        setStatus('Looking for tiles…');
+        _videoCandidates = await sampleSceneFrames(video, duration, setStatus);
+
+        URL.revokeObjectURL(url);
+        overlay.style.display = 'none';
+        openVideoPicker();
+    } catch (e: any) {
+        overlay.style.display = 'none';
+        alert('Video import failed: ' + (e?.message || e));
+    }
+}
+
+// Fast path: decode the container's audio track and re-encode to WAV (no
+// realtime wait). Falls back to a realtime capture if the browser won't decode
+// the video's audio directly.
+async function extractAudioFromVideo(file: File, setStatus: (t: string) => void): Promise<File> {
+    try {
+        const ctx = new AudioContext();
+        const buf = await file.arrayBuffer();
+        const audioBuf = await ctx.decodeAudioData(buf.slice(0));
+        ctx.close();
+        const wav = audioBufferToWav(audioBuf);
+        return new File([wav], 'extracted-audio.wav', { type: 'audio/wav' });
+    } catch {
+        setStatus('Extracting audio (real-time)…');
+        return await captureAudioRealtime(file);
+    }
+}
+
+// Realtime fallback: play the video and record just its audio track.
+function captureAudioRealtime(file: File): Promise<File> {
+    return new Promise((resolve, reject) => {
+        const v = document.createElement('video');
+        v.src = createLocalUrl(file);
+        v.onloadedmetadata = () => {
+            const stream = (v as any).captureStream ? (v as any).captureStream() : (v as any).mozCaptureStream();
+            const audioTracks = stream.getAudioTracks();
+            if (!audioTracks.length) { reject(new Error('no audio track')); return; }
+            const rec = new MediaRecorder(new MediaStream(audioTracks));
+            const chunks: BlobPart[] = [];
+            rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+            rec.onstop = () => resolve(new File(chunks, 'extracted-audio.webm', { type: rec.mimeType || 'audio/webm' }));
+            rec.start();
+            v.play();
+            v.onended = () => rec.stop();
+        };
+        v.onerror = () => reject(new Error('audio capture failed'));
+    });
+}
+
+// Seek through the video and keep a full frame whenever the downscaled picture
+// differs enough from the last kept frame (a scene/tile change).
+async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setStatus: (t: string) => void) {
+    const step = Math.max(0.2, duration / 300);   // up to ~300 probes
+    const small = document.createElement('canvas'); small.width = 32; small.height = 18;
+    const sctx = small.getContext('2d')!;
+    const full = document.createElement('canvas');
+    full.width = video.videoWidth || 640; full.height = video.videoHeight || 360;
+    const fctx = full.getContext('2d')!;
+
+    const seek = (t: number) => new Promise<void>(res => {
+        const done = () => { video.removeEventListener('seeked', done); res(); };
+        video.addEventListener('seeked', done);
+        video.currentTime = Math.min(t, duration - 0.01);
+    });
+
+    const results: { time: number; dataUrl: string }[] = [];
+    let prev: Uint8ClampedArray | null = null;
+    const DIFF = 14; // mean per-channel difference (0-255) that counts as a change
+    for (let t = 0; t < duration; t += step) {
+        await seek(t);
+        sctx.drawImage(video, 0, 0, small.width, small.height);
+        const cur = sctx.getImageData(0, 0, small.width, small.height).data;
+        let changed = prev === null;
+        if (prev) {
+            let sum = 0;
+            for (let i = 0; i < cur.length; i += 4) sum += Math.abs(cur[i] - prev[i]) + Math.abs(cur[i+1] - prev[i+1]) + Math.abs(cur[i+2] - prev[i+2]);
+            const mean = sum / (cur.length / 4 * 3);
+            changed = mean > DIFF;
+        }
+        if (changed) {
+            fctx.drawImage(video, 0, 0, full.width, full.height);
+            results.push({ time: t, dataUrl: full.toDataURL('image/png') });
+            prev = cur.slice();
+            setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
+        }
+    }
+    return results;
+}
+
+function openVideoPicker() {
+    const grid = document.getElementById('video-frame-grid')!;
+    grid.innerHTML = '';
+    if (_videoCandidates.length === 0) {
+        grid.innerHTML = '<p style="color: var(--text-muted);">No distinct frames were found. The video may be too static.</p>';
+    }
+    _videoCandidates.forEach((c, i) => {
+        const cell = document.createElement('label');
+        cell.className = 'vframe';
+        cell.innerHTML =
+            `<input type="checkbox" data-idx="${i}" checked>` +
+            `<img src="${c.dataUrl}" alt="frame at ${c.time.toFixed(1)}s">` +
+            `<span class="vframe-time">${c.time.toFixed(1)}s</span>`;
+        grid.appendChild(cell);
+    });
+    document.getElementById('video-picker-overlay')!.style.display = 'flex';
+}
+
+async function createProjectFromVideoFrames() {
+    const checks = Array.from(document.querySelectorAll('#video-frame-grid input[type="checkbox"]')) as HTMLInputElement[];
+    const chosen = checks.filter(c => c.checked).map(c => _videoCandidates[parseInt(c.dataset.idx!)]);
+    if (chosen.length === 0) { alert('Pick at least one tile.'); return; }
+    document.getElementById('video-picker-overlay')!.style.display = 'none';
+
+    // Load the chosen frames as images.
+    const imgs = await Promise.all(chosen.map(c => new Promise<HTMLImageElement>((res) => {
+        const im = new Image(); im.onload = () => res(im); im.src = c.dataUrl;
+    })));
+
+    // Lay them out on a synthetic page as customImage tiles (grid, 4 per row).
+    const cols = Math.min(4, imgs.length);
+    const cell = 220, gap = 20, pad = 20;
+    const rows = Math.ceil(imgs.length / cols);
+    const width = pad * 2 + cols * cell + (cols - 1) * gap;
+    const height = pad * 2 + rows * cell + (rows - 1) * gap;
+    const bg = document.createElement('canvas'); bg.width = width; bg.height = height;
+    const bctx = bg.getContext('2d')!; bctx.fillStyle = '#ffffff'; bctx.fillRect(0, 0, width, height);
+    const bgImg = new Image();
+    await new Promise<void>(res => { bgImg.onload = () => res(); bgImg.src = bg.toDataURL(); });
+
+    const symbols = imgs.map((im, i) => {
+        const r = Math.floor(i / cols), c = i % cols;
+        return {
+            x: pad + c * (cell + gap),
+            y: pad + r * (cell + gap),
+            width: cell, height: cell,
+            customImage: im,
+        };
+    });
+
+    appState.mode = 'karaoke';
+    appState.globalSequence = [];
+    appState.pages = [{ image: bgImg, width, height, symbols, sequence: [] }];
+    appState.currentPageIndex = 0;
+
+    // Wire the extracted audio as the song.
+    if (_videoAudioFile) {
+        appState.files.audioVocal = _videoAudioFile;
+        const aurl = createLocalUrl(_videoAudioFile);
+        dom.sync.audio.src = aurl;
+        if (dom.order.audio) dom.order.audio.src = aurl;
+        try {
+            const ctx = new AudioContext();
+            appState.audioBuffer = await ctx.decodeAudioData(await _videoAudioFile.arrayBuffer());
+            ctx.close();
+        } catch { /* waveform optional */ }
+    }
+
+    undoStack.length = 0; redoStack.length = 0;
+    saveHistoryState();
+    switchView('define-symbols-view');
+    setTimeout(() => { resizeCanvas(); drawCanvas(); }, 100);
+}
+
+// Minimal WAV (PCM16) encoder for an AudioBuffer.
+function audioBufferToWav(buf: AudioBuffer): ArrayBuffer {
+    const numCh = Math.min(2, buf.numberOfChannels);
+    const sr = buf.sampleRate;
+    const len = buf.length;
+    const bytes = 44 + len * numCh * 2;
+    const ab = new ArrayBuffer(bytes);
+    const view = new DataView(ab);
+    const wr = (o: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    wr(0, 'RIFF'); view.setUint32(4, bytes - 8, true); wr(8, 'WAVE'); wr(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, numCh, true);
+    view.setUint32(24, sr, true); view.setUint32(28, sr * numCh * 2, true);
+    view.setUint16(32, numCh * 2, true); view.setUint16(34, 16, true);
+    wr(36, 'data'); view.setUint32(40, len * numCh * 2, true);
+    const chans: Float32Array[] = [];
+    for (let c = 0; c < numCh; c++) chans.push(buf.getChannelData(c));
+    let off = 44;
+    for (let i = 0; i < len; i++) {
+        for (let c = 0; c < numCh; c++) {
+            let s = Math.max(-1, Math.min(1, chans[c][i]));
+            view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            off += 2;
+        }
+    }
+    return ab;
 }
 
 async function processPdf(file: File) {

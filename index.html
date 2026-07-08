@@ -1456,6 +1456,26 @@
         /* High-contrast must fully clear the themed background gradients. */
         body.high-contrast { background: #000000 !important; }
 
+        /* ---- Video import frame picker ---- */
+        .vframe {
+            position: relative;
+            display: block;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            background: var(--surface-2);
+        }
+        .vframe img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; }
+        .vframe input { position: absolute; top: 6px; left: 6px; width: 18px; height: 18px; accent-color: var(--primary); z-index: 2; }
+        .vframe:has(input:not(:checked)) { opacity: 0.45; border-style: dashed; }
+        .vframe:has(input:checked) { border-color: var(--primary); }
+        .vframe-time {
+            position: absolute; bottom: 4px; right: 6px;
+            background: rgba(0,0,0,0.6); color: #fff;
+            font-size: 0.7rem; padding: 1px 6px; border-radius: 6px;
+        }
+
         /* ---- Cross-page sequence strip ---- */
         .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
         .order-sequence-item {
@@ -1704,6 +1724,12 @@
             <button id="generate-button" class="button" disabled>Start Project (Karaoke)</button>
             <button id="btn-create-board" class="button secondary" style="background-color: #fbbc04; color: var(--text);">Create Symbol Board (No Audio)</button>
             <button id="btn-clear-uploads" class="button secondary" style="color: #c5221f;">Clear All</button>
+        </div>
+
+        <div style="margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--border);">
+            <p class="section-note" style="margin: 0 0 8px 0;">Have a finished video instead of a songboard? Pull the tiles and the audio back out of it to rebuild an editable project.</p>
+            <button id="btn-import-video" class="button secondary" style="background-color: var(--primary-soft); color: var(--primary-text);">🎬 Import from Video (extract tiles &amp; audio)</button>
+            <input type="file" id="input-video-import" style="display: none;" accept="video/*">
         </div>
     </div>
 
@@ -2092,6 +2118,28 @@
         <div class="loader" style="border-top-color: var(--primary-text); width: 60px; height: 60px;"></div>
         <h3 style="color: white; margin-top: 20px;">Rendering Video...</h3>
         <p id="rendering-progress-text" style="color: #ddd;">0%</p>
+    </div>
+
+    <!-- Video Import: processing overlay -->
+    <div id="video-processing-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 2100; justify-content: center; align-items: center; flex-direction: column;">
+        <div class="loader" style="border-top-color: var(--primary-text); width: 60px; height: 60px;"></div>
+        <h3 style="color: white; margin-top: 20px;">Analysing video…</h3>
+        <p id="video-processing-text" style="color: #ddd;">Starting…</p>
+    </div>
+
+    <!-- Video Import: frame picker modal -->
+    <div id="video-picker-overlay" class="warning-modal-overlay" style="display: none;">
+        <div class="warning-modal-content" style="max-width: 860px; border-top-color: var(--primary);">
+            <h3 class="warning-modal-title" style="color: var(--primary-text);">🎬 Choose tiles from the video</h3>
+            <div class="warning-modal-body">
+                <p style="margin-top:0;">We captured a frame each time the picture changed. Untick any you don't want, then create the project. The audio has been extracted as the song.</p>
+                <div id="video-frame-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; max-height: 52vh; overflow-y: auto; padding: 4px;"></div>
+            </div>
+            <div class="warning-modal-buttons">
+                <button id="btn-video-cancel" class="button secondary" style="margin:0;">Cancel</button>
+                <button id="btn-video-create" class="button" style="margin:0;">Create project from selected</button>
+            </div>
+        </div>
     </div>
 
     <!-- Footer with Version Number & Branding -->
