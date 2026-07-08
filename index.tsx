@@ -3009,15 +3009,27 @@ async function renderVideo(mode: 'full' | 'backing') {
     
     let recorder;
     try {
-        // iOS Safari Support Check
+        // Prefer WebM/VP9: far better compression efficiency for this content
+        // (symbols over mostly-flat backgrounds), which means smaller files and
+        // clean re-import in the same browsers. Fall back to MP4 for Safari,
+        // whose MediaRecorder can only produce MP4.
+        const preferredTypes = [
+            "video/webm;codecs=vp9",
+            "video/webm;codecs=vp8",
+            "video/webm",
+            "video/mp4",
+        ];
         let mime = "video/webm";
-        if (MediaRecorder.isTypeSupported("video/mp4")) {
-            mime = "video/mp4";
-        } else if (MediaRecorder.isTypeSupported("video/webm; codecs=vp9")) {
-            mime = "video/webm; codecs=vp9";
+        for (const t of preferredTypes) {
+            if (MediaRecorder.isTypeSupported(t)) { mime = t; break; }
         }
-        
-        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: 2500000 });
+
+        // VP9's efficiency lets us drop the bitrate without visible loss, so the
+        // simple graphics content exports noticeably smaller. MP4 (H.264) is less
+        // efficient, so keep it a little higher there to hold quality.
+        const isMp4 = mime.includes("mp4");
+        const bitrate = isMp4 ? 2500000 : 1600000;
+        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
     } catch (e) { alert("Recording not supported or codec missing."); return; }
     
     const chunks: BlobPart[] = [];
