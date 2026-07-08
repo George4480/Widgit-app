@@ -111,7 +111,6 @@ export interface AppState {
         startTime: number;
         loadedImages: Map<number, HTMLImageElement>;
     };
-    aiModeEnabled: boolean;
 }
 
 export interface ProjectSaveData {

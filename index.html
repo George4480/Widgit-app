@@ -1670,7 +1670,7 @@
             </div>
             <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #34a853; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <strong style="display: block; margin-bottom: 5px; color: #34a853; font-size: 0.9rem;">2. Refine Grid</strong>
-                Draw, delete, and resize the boxes around each symbol. Optionally toggle AI Mode to generate or edit individual tiles safely.
+                Draw, delete, and resize the boxes around each symbol. You can also add your own image as a tile.
             </div>
             <div style="background: var(--surface); padding: 12px; border-radius: 6px; border-left: 4px solid #fbbc04; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <strong style="display: block; margin-bottom: 5px; color: #fbbc04; font-size: 0.9rem;">3. Sequence Path</strong>
@@ -1760,51 +1760,13 @@
         </div>
 
         <!-- AI Creator -->
-        <details id="ai-creator-details">
-            <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: var(--primary-text);">✨ Optional AI Creator Mode</summary>
+        <details id="custom-image-details">
+            <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: var(--primary-text);">🖼️ Add your own image as a tile</summary>
             <div style="padding: 15px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); margin-top: 5px;">
-                <!-- Mandated Privacy Disclaimer -->
-                <div class="ai-disclaimer" style="background-color: #fef7e0; border-left: 4px solid #fbbc04; padding: 12px; margin-bottom: 15px; border-radius: 6px; font-size: 0.85rem; color: #b06000; line-height: 1.4;">
-                    <strong>🛡️ Pupils & Privacy Disclaimer:</strong> AI symbol generation is optional. Do not upload pupil data, pupil photographs, confidential documents, or identifiable pupil material.
-                </div>
-                
-                <div id="ai-mode-toggle-container" style="margin-bottom: 15px; background: var(--surface); padding: 12px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                    <div>
-                        <strong style="display: block; font-size: 0.9rem; color: var(--text);">AI Symbol Creator Mode</strong>
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">Turn on to use Gemini 3.1 Flash Image generation features.</span>
-                    </div>
-                    <button id="btn-toggle-ai-mode" class="button small secondary" style="margin: 0; min-height: 36px; padding: 6px 12px; font-size: 0.85rem; width: auto;" title="Toggle AI Creator features">Enable AI Mode</button>
-                </div>
-
-                <div id="ai-creator-inputs" style="display: none; transition: opacity 0.2s;">
-                    <p style="font-size: 0.85rem; margin-top:0; color: var(--text-muted);">Generate new symbols or edit existing ones using Gemini 3.1 Flash Image.</p>
-                    
-                    <textarea id="ai-prompt" class="text-input" style="height: 70px; margin-bottom: 10px;" 
-                        placeholder="Enter description...&#10;Try: 'A happy dog', 'Person running', 'Add a green hat'" aria-label="AI Symbol generation prompt"></textarea>
-                    
-                    <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
-                         <input type="checkbox" id="ai-multi-toggle" style="width:16px; height:16px;" aria-label="Generate 3 variations toggle"> 
-                         <label for="ai-multi-toggle" style="font-size: 0.9rem; font-weight: 500; color: var(--text);">Generate 3 Variations</label>
-                    </div>
-
-                    <div id="ai-prompt-chips" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px;">
-                        <span style="font-size: 0.8rem; color: var(--text-muted); align-self: center;">Suggestions:</span>
-                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Person walking">Person walking</button>
-                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Happy face">Happy face</button>
-                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Question mark">Question mark</button>
-                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Remove background">Remove background</button>
-                        <button class="chip" style="min-height: 32px;" title="Use suggestion: Make it blue">Make it blue</button>
-                    </div>
-
-                    <div class="button-group" style="margin: 0; justify-content: flex-start;">
-                         <button id="btn-ai-generate" class="button small" aria-label="Generate new tile with AI" title="Generate New Tile">Generate New Tile</button>
-                         <button id="btn-ai-edit" class="button secondary small" aria-label="Edit selected tile with AI" title="Edit Selected Tile">Edit Selected Tile</button>
-                         <button id="btn-upload-symbol" class="button secondary small" aria-label="Upload custom image file" title="Upload Image">Upload Image</button>
-                         <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
-                    </div>
-                    <div id="ai-loading" style="display:none; font-size: 0.8rem; color: var(--primary-text); margin-top: 10px; align-items: center; gap: 5px;">
-                        <div class="loader" style="width: 15px; height: 15px; border-width: 2px; margin: 0;"></div> Generating...
-                    </div>
+                <p style="font-size: 0.85rem; margin-top:0; color: var(--text-muted);">Add a picture from your device as a new tile — a photo, a custom symbol, anything. It stays on your device.</p>
+                <div class="button-group" style="margin: 0; justify-content: flex-start;">
+                     <button id="btn-upload-symbol" class="button secondary small" aria-label="Upload custom image file" title="Upload Image">Upload Image</button>
+                     <input type="file" id="input-upload-symbol" style="display: none;" accept="image/*">
                 </div>
             </div>
         </details>

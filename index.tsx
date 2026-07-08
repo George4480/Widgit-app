@@ -1,4 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
@@ -93,8 +92,7 @@ const appState: AppState = {
         animationId: 0,
         startTime: 0,
         loadedImages: new Map<number, HTMLImageElement>()
-    },
-    aiModeEnabled: false // Optional AI Mode is disabled by default
+    }
 };
 
 // DOM Elements
@@ -114,9 +112,6 @@ function init() {
             btnToggleMotion: document.getElementById('btn-toggle-reduced-motion'),
             btnHelp: document.getElementById('btn-global-help'),
             helpPanel: document.getElementById('global-help-panel'),
-            btnToggleAiMode: document.getElementById('btn-toggle-ai-mode'),
-            aiCreatorInputs: document.getElementById('ai-creator-inputs'),
-            aiModeToggleContainer: document.getElementById('ai-mode-toggle-container'),
             btnExportManifest: document.getElementById('btn-export-manifest'),
         },
         views: {
@@ -170,15 +165,10 @@ function init() {
             btnAddTile: document.getElementById('btn-add-tile'),
             btnDownloadPdf: document.getElementById('btn-download-pdf'),
             btnDownloadZip: document.getElementById('btn-download-zip'),
-            
-            // AI Creator
-            aiPrompt: document.getElementById('ai-prompt'),
-            btnAiGenerate: document.getElementById('btn-ai-generate'),
-            btnAiEdit: document.getElementById('btn-ai-edit'),
+
+            // Add-your-own-image (non-AI)
             btnUploadSymbol: document.getElementById('btn-upload-symbol'),
             inputUploadSymbol: document.getElementById('input-upload-symbol'),
-            aiLoading: document.getElementById('ai-loading'),
-            aiMultiToggle: document.getElementById('ai-multi-toggle')
         },
         order: {
             canvasContainer: document.getElementById('order-canvas-container'),
@@ -316,15 +306,6 @@ function setupEventListeners() {
             panel.style.display = isHidden ? 'block' : 'none';
             dom.global.btnHelp.style.backgroundColor = isHidden ? 'var(--primary)' : 'var(--primary-soft)';
             dom.global.btnHelp.style.color = isHidden ? '#fff' : 'var(--primary-text)';
-        });
-
-        dom.global.btnToggleAiMode.addEventListener('click', () => {
-            appState.aiModeEnabled = !appState.aiModeEnabled;
-            const enabled = appState.aiModeEnabled;
-            dom.global.aiCreatorInputs.style.display = enabled ? 'block' : 'none';
-            dom.global.btnToggleAiMode.textContent = enabled ? "Disable AI Mode" : "Enable AI Mode";
-            dom.global.aiModeToggleContainer.style.backgroundColor = enabled ? 'var(--primary-soft)' : 'var(--surface)';
-            dom.global.aiModeToggleContainer.style.borderColor = enabled ? 'var(--primary)' : 'var(--border)';
         });
 
         dom.global.btnExportManifest.addEventListener('click', () => confirmExport(exportProjectManifest));
@@ -465,24 +446,9 @@ function setupEventListeners() {
     dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
     dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
 
-    // AI Creator Events
-    dom.define.btnAiGenerate.addEventListener('click', generateAiSymbol);
-    dom.define.btnAiEdit.addEventListener('click', editAiSymbol);
+    // Add-your-own-image (non-AI)
     dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
     dom.define.inputUploadSymbol.addEventListener('change', (e: Event) => handleSymbolUpload((e.target as HTMLInputElement).files));
-    
-    // AI Chips
-    const chipsContainer = document.getElementById('ai-prompt-chips');
-    if (chipsContainer) {
-        chipsContainer.querySelectorAll('.chip').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const text = (e.target as HTMLElement).textContent;
-                const promptInput = dom.define.aiPrompt as HTMLTextAreaElement;
-                promptInput.value = text || '';
-                promptInput.focus();
-            });
-        });
-    }
 
 
     // --- Order View ---
@@ -1430,242 +1396,7 @@ function updateStepper(viewId: string) {
     });
 }
 
-// --- AI Generation Logic (Nano Banana) ---
-
-// Helper to get a reference image of the current style
-function getCurrentPageStyleReference(): string {
-    const page = appState.pages[appState.currentPageIndex];
-    if (!page) return "";
-    
-    // Capture a sample of the page (e.g., top-left 1024x1024 or full page scaled down)
-    // We want the AI to see the line weight, color palette, and vector style.
-    const canvas = document.createElement('canvas');
-    const size = Math.min(page.width, 1024); // Limit size for API efficiency
-    canvas.width = size;
-    canvas.height = size; // Square crop is fine for style ref
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return "";
-    
-    // Draw the top portion of the page as reference
-    ctx.drawImage(page.image, 0, 0, size, size, 0, 0, size, size);
-    
-    return canvas.toDataURL('image/png').split(',')[1];
-}
-
-async function generateAiSymbol() {
-    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
-    
-    const isMulti = (dom.define.aiMultiToggle as HTMLInputElement).checked;
-
-    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
-    const win = window as any;
-    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
-    }
-    
-    // Create new AI instance with current key
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    setAiLoading(true);
-    try {
-        const page = appState.pages[appState.currentPageIndex];
-        const styleRefBase64 = getCurrentPageStyleReference();
-
-        // Prompt engineering to enforce style consistency
-        const strictPrompt = `
-        Create a communication symbol for: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - The generated image MUST match the visual style of the provided reference image EXACTLY.
-        - Use the same line weight (thick black outlines).
-        - Use the same flat color palette found in the reference.
-        - Simple, 2D, iconographic, vector-art style.
-        - Pure white background.
-        - No shading, no gradients, no realism, no complexity.
-        - It must look like a standard Widgit/communication symbol.
-        `;
-
-        const parts: any[] = [{ text: strictPrompt }];
-        if (styleRefBase64) {
-            parts.unshift({ inlineData: { mimeType: 'image/png', data: styleRefBase64 } });
-        }
-
-        // Generate Multiple Loop
-        const count = isMulti ? 3 : 1;
-        const promises = [];
-        
-        for (let i = 0; i < count; i++) {
-             promises.push(ai.models.generateContent({
-                model: 'gemini-3.1-flash-image-preview', // High quality model
-                contents: { parts: parts },
-                config: { 
-                    imageConfig: { 
-                        aspectRatio: "1:1",
-                        imageSize: "1K" // Force high resolution
-                    } 
-                },
-            }));
-        }
-        
-        const responses = await Promise.all(promises);
-
-        let createdCount = 0;
-        appState.interaction.selectedIndices.clear();
-
-        for (let i = 0; i < responses.length; i++) {
-            const response = responses[i];
-            let imgBase64 = null;
-            if (response.candidates && response.candidates[0].content.parts) {
-                for (const part of response.candidates[0].content.parts) {
-                    if (part.inlineData) imgBase64 = part.inlineData.data;
-                }
-            }
-
-            if (imgBase64) {
-                const img = new Image();
-                // Fix Image Loading Race Condition: Set onload BEFORE src
-                await new Promise<void>((resolve) => {
-                    img.onload = () => {
-                        // Add new symbol to current page
-                        const size = 200;
-                        // Stagger positions if multi
-                        const offsetX = (i * 220) - ((count-1)*110);
-                        const x = Math.max(0, (page.width / 2) - (size / 2) + offsetX);
-                        const y = Math.max(0, (page.height / 2) - (size / 2));
-                        
-                        page.symbols.push({
-                            x: x, y: y, width: size, height: size,
-                            customImage: img // Store the custom image element
-                        });
-                        
-                        // Select all new ones
-                        appState.interaction.selectedIndices.add(page.symbols.length - 1);
-                        createdCount++;
-                        resolve();
-                    };
-                    img.src = `data:image/png;base64,${imgBase64}`;
-                });
-            }
-        }
-
-        if (createdCount > 0) {
-            updateToolbarUI();
-            drawCanvas();
-            // Ensure new symbol is visible
-            dom.define.canvasContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else {
-            alert("No images generated.");
-        }
-
-    } catch (e) {
-        console.error(e);
-        alert("Generation failed: " + e.message);
-    } finally {
-        setAiLoading(false);
-    }
-}
-
-async function editAiSymbol() {
-    const promptText = (dom.define.aiPrompt as HTMLTextAreaElement).value.trim();
-    if (!promptText) { alert("Please enter a prompt."); return; }
-    if (appState.interaction.selectedIndices.size !== 1) {
-        alert("Please select exactly one tile to edit."); return;
-    }
-    
-    // Check for API Key first (Required for gemini-3.1-flash-image-preview)
-    const win = window as any;
-    if (win.aistudio && !await win.aistudio.hasSelectedApiKey()) {
-        try {
-            await win.aistudio.openSelectKey();
-        } catch (e) {
-            alert("API Key selection failed or was cancelled.");
-            return;
-        }
-    }
-
-    // Create new AI instance with current key
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-    setAiLoading(true);
-    try {
-        const page = appState.pages[appState.currentPageIndex];
-        const idx = appState.interaction.selectedIndices.values().next().value;
-        const sym = page.symbols[idx];
-
-        // 1. Get current symbol image as base64
-        const canvas = document.createElement('canvas');
-        canvas.width = sym.width;
-        canvas.height = sym.height;
-        const ctx = canvas.getContext('2d');
-        
-        if (sym.customImage) {
-            ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-        } else {
-            ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-        }
-        
-        const base64Data = canvas.toDataURL('image/png').split(',')[1];
-        
-        // 2. Strict Prompt for Editing
-        const strictPrompt = `
-        Edit this symbol to: "${promptText}".
-        
-        CRITICAL STYLE INSTRUCTIONS:
-        - PRESERVE the exact visual style of the original image and the reference document.
-        - Maintain thick black outlines, flat colors, and simple vector look.
-        - Do not change the art style. Do not make it realistic.
-        - Keep white background.
-        `;
-
-        const parts: any[] = [
-             { inlineData: { mimeType: 'image/png', data: base64Data } },
-             { text: strictPrompt }
-        ];
-
-        // 3. Call API
-        const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-image-preview', // High quality model
-            contents: { parts: parts },
-            config: { 
-                imageConfig: { 
-                    aspectRatio: "1:1",
-                    imageSize: "1K" // Force high resolution
-                } 
-            },
-        });
-
-         // 4. Parse result
-        let imgBase64 = null;
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) imgBase64 = part.inlineData.data;
-        }
-
-        if (imgBase64) {
-            const img = new Image();
-            // Fix Image Loading Race Condition
-            img.onload = () => {
-                // Update symbol
-                sym.customImage = img;
-                drawCanvas();
-            };
-            img.src = `data:image/png;base64,${imgBase64}`;
-        } else {
-            alert("No image returned from edit.");
-        }
-
-    } catch (e) {
-        console.error(e);
-        alert("Edit failed: " + e.message);
-    } finally {
-        setAiLoading(false);
-    }
-}
+// --- Add a custom image as a tile ---
 
 async function handleSymbolUpload(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
@@ -1699,12 +1430,6 @@ async function handleSymbolUpload(fileList: FileList | null) {
         dom.define.inputUploadSymbol.value = '';
     };
     img.src = createLocalUrl(file);
-}
-
-function setAiLoading(loading: boolean) {
-    dom.define.aiLoading.style.display = loading ? 'flex' : 'none';
-    dom.define.btnAiGenerate.disabled = loading;
-    dom.define.btnAiEdit.disabled = loading;
 }
 
 // --- Define Symbols Logic ---
@@ -1813,7 +1538,7 @@ function drawCanvas() {
     
     ctx.lineWidth = 4 / appState.interaction.zoomLevel;
     page.symbols.forEach((s: any, idx: number) => {
-        // Render Custom AI Image if present
+        // Render custom image if present
         if (s.customImage) {
             ctx.drawImage(s.customImage, s.x, s.y, s.width, s.height);
         }
