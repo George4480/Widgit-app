@@ -104,6 +104,7 @@ function init() {
             btnSave: document.getElementById('btn-global-save'),
             btnLoad: document.getElementById('btn-global-load'),
             inputLoad: document.getElementById('input-global-load'),
+            btnToggleTheme: document.getElementById('btn-toggle-theme'),
             btnToggleContrast: document.getElementById('btn-toggle-high-contrast'),
             btnToggleMotion: document.getElementById('btn-toggle-reduced-motion'),
             btnHelp: document.getElementById('btn-global-help'),
@@ -270,6 +271,27 @@ function setupEventListeners() {
         dom.global.btnLoad.addEventListener('click', triggerProjectLoad);
         dom.global.inputLoad.addEventListener('change', handleProjectLoadFile);
         
+        // Theme (light/dark) toggle. Class lives on <html> so the pre-paint
+        // head script and this handler agree; choice persists in localStorage.
+        const isDarkActive = () => {
+            const root = document.documentElement;
+            if (root.classList.contains('dark-mode')) return true;
+            if (root.classList.contains('light-mode')) return false;
+            return window.matchMedia('(prefers-color-scheme: dark)').matches;
+        };
+        const syncThemeButton = () => {
+            dom.global.btnToggleTheme.textContent = isDarkActive() ? "☀️ Light" : "🌙 Dark";
+        };
+        syncThemeButton();
+        dom.global.btnToggleTheme.addEventListener('click', () => {
+            const goDark = !isDarkActive();
+            const root = document.documentElement;
+            root.classList.toggle('dark-mode', goDark);
+            root.classList.toggle('light-mode', !goDark);
+            try { localStorage.setItem('wm-theme', goDark ? 'dark' : 'light'); } catch (e) {}
+            syncThemeButton();
+        });
+
         dom.global.btnToggleContrast.addEventListener('click', () => {
             document.body.classList.toggle('high-contrast');
             const active = document.body.classList.contains('high-contrast');
@@ -286,8 +308,8 @@ function setupEventListeners() {
             const panel = dom.global.helpPanel;
             const isHidden = panel.style.display === 'none';
             panel.style.display = isHidden ? 'block' : 'none';
-            dom.global.btnHelp.style.backgroundColor = isHidden ? '#1a73e8' : '#e8f0fe';
-            dom.global.btnHelp.style.color = isHidden ? 'white' : '#1a73e8';
+            dom.global.btnHelp.style.backgroundColor = isHidden ? 'var(--primary)' : 'var(--primary-soft)';
+            dom.global.btnHelp.style.color = isHidden ? '#fff' : 'var(--primary-text)';
         });
 
         dom.global.btnToggleAiMode.addEventListener('click', () => {
@@ -295,8 +317,8 @@ function setupEventListeners() {
             const enabled = appState.aiModeEnabled;
             dom.global.aiCreatorInputs.style.display = enabled ? 'block' : 'none';
             dom.global.btnToggleAiMode.textContent = enabled ? "Disable AI Mode" : "Enable AI Mode";
-            dom.global.aiModeToggleContainer.style.backgroundColor = enabled ? '#e8f0fe' : 'white';
-            dom.global.aiModeToggleContainer.style.borderColor = enabled ? '#1a73e8' : '#dadce0';
+            dom.global.aiModeToggleContainer.style.backgroundColor = enabled ? 'var(--primary-soft)' : 'var(--surface)';
+            dom.global.aiModeToggleContainer.style.borderColor = enabled ? 'var(--primary)' : 'var(--border)';
         });
 
         dom.global.btnExportManifest.addEventListener('click', () => confirmExport(exportProjectManifest));
