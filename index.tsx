@@ -1141,7 +1141,11 @@ function switchView(viewId: string) {
         if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'block';
         if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'block' : 'none';
         dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
-        
+
+        // Initialise the page indicator (changePage isn't called on first entry).
+        if (dom.define.labelPage) {
+            dom.define.labelPage.textContent = `Page ${appState.currentPageIndex + 1} / ${appState.pages.length}`;
+        }
         setTimeout(resizeCanvas, 50);
     }
 
