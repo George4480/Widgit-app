@@ -46,6 +46,11 @@ export interface StyleConfig {
     prevCount: number;
     prevScale: number;
     prevOpacity: number;
+    // Musical round (canon): extra voices sing the same sequence, entering
+    // one gap later each, shown as their own colour-coded row.
+    roundEnabled: boolean;
+    roundVoices: number;   // total voices including the leader (2-3)
+    roundGap: number;      // seconds each following voice enters after the previous
 }
 
 export interface GridConfig {

@@ -66,7 +66,10 @@ const appState: AppState = {
         spacing: 200,
         prevCount: 1,
         prevScale: 0.7,
-        prevOpacity: 0.4
+        prevOpacity: 0.4,
+        roundEnabled: false,
+        roundVoices: 2,
+        roundGap: 4
     },
     interaction: {
         isDragging: false,
@@ -242,7 +245,11 @@ function init() {
             stylePrevCount: document.getElementById('style-prev-count'),
             stylePrevScale: document.getElementById('style-prev-scale'),
             stylePrevOpacity: document.getElementById('style-prev-opacity'),
-            styleSpacing: document.getElementById('style-spacing')
+            styleSpacing: document.getElementById('style-spacing'),
+            styleRoundEnabled: document.getElementById('style-round-enabled'),
+            styleRoundVoices: document.getElementById('style-round-voices'),
+            styleRoundGap: document.getElementById('style-round-gap'),
+            roundSettings: document.getElementById('round-settings')
         },
         rendering: {
             overlay: document.getElementById('rendering-overlay'),
@@ -574,6 +581,14 @@ function setupEventListeners() {
         appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
         appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
+        appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
+        appState.styleConfig.roundVoices = parseInt(dom.result.styleRoundVoices.value);
+        appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
+        // Enable/disable the round sub-controls to match the toggle.
+        const on = appState.styleConfig.roundEnabled;
+        (dom.result.styleRoundVoices as HTMLInputElement).disabled = !on;
+        (dom.result.styleRoundGap as HTMLInputElement).disabled = !on;
+        if (dom.result.roundSettings) dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
     dom.result.styleBg.addEventListener('input', updateStyle);
@@ -585,6 +600,9 @@ function setupEventListeners() {
     dom.result.stylePrevScale.addEventListener('input', updateStyle);
     dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
+    dom.result.styleRoundEnabled.addEventListener('change', updateStyle);
+    dom.result.styleRoundVoices.addEventListener('input', updateStyle);
+    dom.result.styleRoundGap.addEventListener('input', updateStyle);
 
     // Canvas Events
     setupCanvasInteractions();
@@ -2625,7 +2643,14 @@ function drawPreviewFrame(rawTime: number) {
 
     // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
-    
+
+    // Musical round mode takes over the whole frame (its own title/waiting
+    // states per voice), so branch before the single-conveyor title card.
+    if (cfg.roundEnabled && appState.symbols.length > 0) {
+        drawRoundFrame(ctx, w, h, time, firstStart);
+        return;
+    }
+
     if (appState.songTitle && time < firstStart) {
         // Draw Title Card
         ctx.save();
@@ -2652,15 +2677,7 @@ function drawPreviewFrame(rawTime: number) {
     }
 
     // Logic to determine active index based on start/end times
-    let activeIndex = appState.symbols.findIndex(s => time >= s.startTime && time < (s.endTime || 99999));
-    
-    // Fallback logic if gaps or pre-start
-    if (activeIndex === -1) {
-         if (appState.symbols.length > 0 && time < appState.symbols[0].startTime) {
-             // Pre-start: activeIndex remains -1
-         }
-         else if (appState.symbols.length > 0 && time > appState.symbols[appState.symbols.length-1].startTime) activeIndex = appState.symbols.length - 1; // End
-    }
+    let activeIndex = activeIndexAt(time);
 
     const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
         if (!appState.preview.loadedImages.has(idx)) return;
@@ -2731,6 +2748,138 @@ function drawPreviewFrame(rawTime: number) {
             }
         }
     }
+}
+
+// Which tile is active at a given time (shared by preview & round voices).
+function activeIndexAt(time: number): number {
+    const syms = appState.symbols;
+    let idx = syms.findIndex(s => time >= (s.startTime || 0) && time < (s.endTime || 99999));
+    if (idx === -1 && syms.length > 0 && time > (syms[syms.length - 1].startTime || 0)) {
+        idx = syms.length - 1; // hold on last tile past the end
+    }
+    return idx;
+}
+
+// Colours used to distinguish the voices/groups of a round.
+const VOICE_COLORS = ['#4f46e5', '#ea4335', '#16a34a'];
+const VOICE_NAMES = ['Group 1', 'Group 2', 'Group 3'];
+
+// Render the round: each voice is the same sequence shifted later by roundGap,
+// drawn in its own horizontal band, colour-coded, separated by divider lines.
+function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cfg = appState.styleConfig;
+    const voices = Math.max(2, Math.min(3, cfg.roundVoices || 2));
+    const gap = Math.max(0.1, cfg.roundGap || 4);
+    const bandH = h / voices;
+
+    for (let v = 0; v < voices; v++) {
+        const tint = VOICE_COLORS[v % VOICE_COLORS.length];
+        const cy = bandH * v + bandH / 2;
+        // Following voices are the same melody entering `gap` seconds later each.
+        const effTime = time - v * gap;
+
+        // Subtle band wash in the voice colour.
+        ctx.save();
+        ctx.globalAlpha = 0.06;
+        ctx.fillStyle = tint;
+        ctx.fillRect(0, bandH * v, w, bandH);
+        ctx.restore();
+
+        // Group label pill on the left.
+        ctx.save();
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textBaseline = 'middle';
+        const label = VOICE_NAMES[v % VOICE_NAMES.length];
+        const lw = ctx.measureText(label).width + 18;
+        ctx.fillStyle = tint;
+        roundRect(ctx, 12, cy - 13, lw, 26, 13);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, 12 + lw / 2, cy + 1);
+        ctx.restore();
+
+        // Has this voice started yet?
+        if (effTime < firstStart) {
+            ctx.save();
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = tint;
+            ctx.font = 'italic 15px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(v === 0 ? '♪ singing…' : 'waiting to come in…', w / 2, cy);
+            ctx.restore();
+        } else {
+            const activeIdx = activeIndexAt(effTime);
+            if (activeIdx !== -1) {
+                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
+            }
+        }
+
+        // Divider line between bands.
+        if (v > 0) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(120,120,140,0.55)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, bandH * v);
+            ctx.lineTo(w, bandH * v);
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+}
+
+// One voice's conveyor (prev / active / next) in a band centred at cy, with the
+// tiles sat on colour-coded cards so each group can follow its own colour.
+function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
+    const cfg = appState.styleConfig;
+    const rowScale = Math.min(1, bandH / 240);
+    const baseSize = 200 * rowScale;
+    const spacing = cfg.spacing * rowScale;
+    const cx = w / 2;
+
+    const drawTile = (idx: number, x: number, scale: number, opacity: number, active: boolean) => {
+        if (!appState.preview.loadedImages.has(idx)) return;
+        const img = appState.preview.loadedImages.get(idx)!;
+        const size = baseSize * scale;
+        const ratio = Math.min(size / img.width, size / img.height);
+        const dw = img.width * ratio, dh = img.height * ratio;
+        const pad = active ? 12 : 8;
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        // Colour-coded card behind the tile.
+        ctx.fillStyle = tint;
+        ctx.globalAlpha = opacity * (active ? 0.22 : 0.14);
+        roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+        ctx.fill();
+        if (active) {
+            ctx.globalAlpha = opacity;
+            ctx.strokeStyle = tint;
+            ctx.lineWidth = 3;
+            roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = opacity;
+        ctx.drawImage(img, x - dw / 2, cy - dh / 2, dw, dh);
+        ctx.restore();
+    };
+
+    // Next
+    for (let i = cfg.nextCount; i >= 1; i--) {
+        if (activeIndex + i < appState.symbols.length) {
+            drawTile(activeIndex + i, cx + i * spacing, cfg.nextScale * Math.pow(0.9, i - 1), cfg.nextOpacity * Math.pow(0.8, i - 1), false);
+        }
+    }
+    // Prev
+    for (let i = 1; i <= cfg.prevCount; i++) {
+        if (activeIndex - i >= 0) {
+            drawTile(activeIndex - i, cx - i * spacing, cfg.prevScale * Math.pow(0.9, i - 1), cfg.prevOpacity * Math.pow(0.8, i - 1), false);
+        }
+    }
+    // Active
+    drawTile(activeIndex, cx, cfg.activeScale, 1.0, true);
 }
 
 // --- Video Rendering ---

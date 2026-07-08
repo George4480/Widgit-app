@@ -1516,6 +1516,20 @@
         @media (hover: none) {
             .order-sequence-item .seq-controls { opacity: 1; }
         }
+
+        /* ---- Musical round toggle ---- */
+        .round-toggle-row { padding: 10px 0 4px; }
+        .round-toggle {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: var(--text);
+            cursor: pointer;
+            line-height: 1.45;
+        }
+        .round-toggle input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; accent-color: var(--primary); }
+        #round-settings { transition: opacity 0.2s ease; }
     </style>
 </head>
 <body>
@@ -1951,6 +1965,26 @@
                     <div class="setting-item">
                         <label>Opacity <span class="setting-val" data-for="style-prev-opacity"></span></label>
                         <input type="range" id="style-prev-opacity" min="0" max="1" step="0.1" value="0.4">
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h4 class="settings-section-title">🎶 Musical Round (Canon)</h4>
+                <div class="round-toggle-row">
+                    <label class="round-toggle">
+                        <input type="checkbox" id="style-round-enabled">
+                        <span>Show as a round — each group sings the same tiles, entering one after another in its own colour row.</span>
+                    </label>
+                </div>
+                <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
+                    <div class="setting-item">
+                        <label>Voices (groups) <span class="setting-val" data-for="style-round-voices"></span></label>
+                        <input type="range" id="style-round-voices" min="2" max="3" step="1" value="2" disabled>
+                    </div>
+                    <div class="setting-item">
+                        <label>Entry gap (seconds) <span class="setting-val" data-for="style-round-gap"></span></label>
+                        <input type="range" id="style-round-gap" min="0.5" max="12" step="0.5" value="4" disabled>
                     </div>
                 </div>
             </div>
