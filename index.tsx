@@ -1405,31 +1405,99 @@ async function handleSymbolUpload(fileList: FileList | null) {
     if (!page) return;
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
         if (appState.interaction.selectedIndices.size === 1) {
-            // Replace selected
+            // Replace the selected tile's picture, keeping its box (already grid-uniform).
             const idx = appState.interaction.selectedIndices.values().next().value;
             page.symbols[idx].customImage = img;
         } else {
-            // Add new
-            const size = 200;
-            const x = Math.max(0, (page.width / 2) - (size / 2));
-            const y = Math.max(0, (page.height / 2) - (size / 2));
-            
-            page.symbols.push({
-                x, y, width: size, height: size,
-                customImage: img
-            });
-            
+            // Add a new tile that matches the existing tiles' size and drops into
+            // the next slot of the grid, growing the page downward if needed.
+            const slot = computeGridSlot(page);
+            await ensurePageCanvasFits(page, slot.y + slot.height);
+            page.symbols.push({ ...slot, customImage: img });
             appState.interaction.selectedIndices.clear();
             appState.interaction.selectedIndices.add(page.symbols.length - 1);
         }
+        resizeCanvas();
         drawCanvas();
         updateToolbarUI();
-        // Reset input
         dom.define.inputUploadSymbol.value = '';
     };
     img.src = createLocalUrl(file);
+}
+
+// Work out where a newly-added tile should go so it is uniform with the grid:
+// same size as the typical existing tile, and in the next reading-order slot
+// (continue the current row, or start a new one). Falls back to a sensible box
+// when the page has no tiles yet.
+function computeGridSlot(page: ProjectPage): { x: number; y: number; width: number; height: number } {
+    const syms = page.symbols;
+    const med = (arr: number[]) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+
+    if (syms.length === 0) {
+        const w = Math.round(Math.min(220, page.width * 0.28));
+        return { x: Math.round(page.width * 0.05), y: Math.round(page.height * 0.05), width: w, height: w };
+    }
+
+    const w = Math.round(med(syms.map(s => s.width)));
+    const h = Math.round(med(syms.map(s => s.height)));
+    const rowThresh = Math.max(20, h * 0.6);
+
+    // Cluster tiles into rows by vertical centre.
+    const rows: { cy: number; items: typeof syms }[] = [];
+    [...syms].sort((a, b) => (a.y + a.height / 2) - (b.y + b.height / 2)).forEach(s => {
+        const cy = s.y + s.height / 2;
+        let row = rows.find(r => Math.abs(r.cy - cy) <= rowThresh);
+        if (!row) { row = { cy, items: [] }; rows.push(row); }
+        row.items.push(s);
+        row.cy = row.items.reduce((a, it) => a + (it.y + it.height / 2), 0) / row.items.length;
+    });
+    rows.forEach(r => r.items.sort((a, b) => a.x - b.x));
+
+    const gridLeft = Math.min(...syms.map(s => s.x));
+    const gapsX: number[] = [];
+    rows.forEach(r => { for (let i = 1; i < r.items.length; i++) gapsX.push(r.items[i].x - (r.items[i - 1].x + r.items[i - 1].width)); });
+    const gapX = gapsX.length ? Math.max(0, med(gapsX)) : Math.round(w * 0.12);
+    const maxCols = Math.max(...rows.map(r => r.items.length));
+
+    let gapY = Math.round(h * 0.15);
+    if (rows.length >= 2) {
+        const a = rows[rows.length - 2], b = rows[rows.length - 1];
+        const aBot = Math.max(...a.items.map(s => s.y + s.height));
+        const bTop = Math.min(...b.items.map(s => s.y));
+        gapY = Math.max(0, Math.round(bTop - aBot));
+    }
+
+    const lastRow = rows[rows.length - 1];
+    if (lastRow.items.length < maxCols) {
+        // Room in the current row → place to the right of the last tile.
+        const li = lastRow.items[lastRow.items.length - 1];
+        return { x: Math.round(li.x + li.width + gapX), y: Math.round(lastRow.items[0].y), width: w, height: h };
+    }
+    // Row full → start a new row aligned to the grid's left edge.
+    const lastBot = Math.max(...lastRow.items.map(s => s.y + s.height));
+    return { x: Math.round(gridLeft), y: Math.round(lastBot + gapY), width: w, height: h };
+}
+
+// Grow the page's background canvas downward (white) if a tile would fall below
+// it, so newly-added grid tiles stay visible.
+async function ensurePageCanvasFits(page: ProjectPage, neededBottom: number) {
+    if (neededBottom <= page.height) return;
+    const newH = Math.ceil(neededBottom + page.height * 0.02);
+    const c = document.createElement('canvas');
+    c.width = page.width; c.height = newH;
+    const ctx = c.getContext('2d');
+    if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, page.width, newH);
+        ctx.drawImage(page.image, 0, 0);
+    }
+    const img = new Image();
+    await new Promise<void>(r => { img.onload = () => r(); img.src = c.toDataURL(); });
+    page.image = img;
+    page.height = newH;
+    invalidatePageThumbs(appState.currentPageIndex);
 }
 
 // --- Define Symbols Logic ---
