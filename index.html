@@ -1493,6 +1493,27 @@
         .speed-group button:hover { background: var(--surface-3); }
         .speed-group button.active { background: var(--primary); color: #fff; }
 
+        /* ---- Round loop markers on the sync nav strip ---- */
+        .nav-symbol-item .loop-badge {
+            position: absolute;
+            bottom: 2px;
+            left: 2px;
+            background: var(--primary);
+            color: #fff;
+            font-size: 0.58rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 5px;
+            z-index: 6;
+            letter-spacing: 0.02em;
+        }
+        .nav-symbol-item.loop-start, .nav-symbol-item.loop-end {
+            box-shadow: inset 0 0 0 3px var(--primary), 0 2px 4px rgba(0,0,0,0.15);
+        }
+        .nav-symbol-item.loop-mid {
+            background: var(--primary-soft);
+        }
+
         /* ---- Video import frame picker ---- */
         .vframe {
             position: relative;
