@@ -1564,6 +1564,10 @@
             box-shadow: var(--shadow-sm);
         }
         #round-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
+        .seg-group.seg-wide { display: flex; width: 100%; }
+        .seg-group.seg-wide button { flex: 1 1 0; white-space: normal; line-height: 1.25; }
+        /* Conveyor-only settings collapse away in follow-the-sheet mode. */
+        details.sheet-active [data-hide-in-sheet] { display: none; }
 
         /* ---- Musical round toggle ---- */
         .round-toggle-row { padding: 10px 0 4px; }
@@ -1958,6 +1962,18 @@
             <summary>🎨 Visual Settings & Customization</summary>
 
             <div class="settings-section">
+                <h4 class="settings-section-title">Presentation style</h4>
+                <div class="setting-item">
+                    <label>How the symbols are shown</label>
+                    <div class="seg-group seg-wide" data-style="displayMode" aria-label="Presentation style">
+                        <button type="button" data-value="0">Conveyor — tiles slide across</button>
+                        <button type="button" data-value="1">Follow the sheet — highlight &amp; scroll</button>
+                    </div>
+                    <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one. Follow-the-sheet shows the whole songsheet, glows the current tile, and scrolls down as it plays.</p>
+                </div>
+            </div>
+
+            <div class="settings-section">
                 <h4 class="settings-section-title">General</h4>
                 <div class="settings-grid">
                     <div class="setting-item">
@@ -1972,7 +1988,7 @@
                 </div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section" data-hide-in-sheet>
                 <h4 class="settings-section-title">Main tile <span class="section-note">the word being sung now</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
@@ -1983,7 +1999,7 @@
                 </div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section" data-hide-in-sheet>
                 <h4 class="settings-section-title">Next tiles <span class="section-note">the words coming up</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
@@ -2009,7 +2025,7 @@
                 </div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section" data-hide-in-sheet>
                 <h4 class="settings-section-title">Previous tiles <span class="section-note">the words already sung</span></h4>
                 <div class="settings-grid">
                     <div class="setting-item">
@@ -2035,7 +2051,7 @@
                 </div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section" data-hide-in-sheet>
                 <h4 class="settings-section-title">🎶 Musical round (canon)</h4>
                 <div class="round-toggle-row">
                     <label class="round-toggle">

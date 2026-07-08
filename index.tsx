@@ -69,7 +69,8 @@ const appState: AppState = {
         prevOpacity: 0.4,
         roundEnabled: false,
         roundVoices: 2,
-        roundGap: 4
+        roundGap: 4,
+        sheetMode: false
     },
     interaction: {
         isDragging: false,
@@ -574,6 +575,7 @@ function setupEventListeners() {
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
         appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
+        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
         // Enable/disable the round sub-controls to match the toggle.
         const on = appState.styleConfig.roundEnabled;
         (dom.result.styleRoundGap as HTMLInputElement).disabled = !on;
@@ -581,6 +583,8 @@ function setupEventListeners() {
             dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
             dom.result.roundSettings.setAttribute('aria-disabled', on ? 'false' : 'true');
         }
+        // Hide conveyor-only settings when following the sheet.
+        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
 
@@ -1948,6 +1952,7 @@ function invalidatePageThumbs(pageIdx: number) {
     Array.from(_thumbCache.keys())
         .filter(k => k.startsWith(`${pageIdx}:`))
         .forEach(k => _thumbCache.delete(k));
+    _bboxCache.delete(pageIdx);
 }
 
 function moveSequenceStep(from: number, to: number) {
@@ -2686,6 +2691,8 @@ function syncStyleControls() {
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('roundVoices', c.roundVoices || 2);
+    segSet('displayMode', c.sheetMode ? 1 : 0);
+    document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled;
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
@@ -2696,6 +2703,7 @@ function syncStyleControls() {
 
 async function setupResultView() {
     dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    _bboxCache.clear(); // sheet-mode crop boxes recomputed for current tiles
     syncStyleControls();
     appState.preview.loadedImages.clear();
     const promises = appState.symbols.map((sym, idx) => new Promise<void>((resolve) => {
@@ -2741,6 +2749,13 @@ function drawPreviewFrame(rawTime: number) {
 
     // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
+
+    // "Follow the sheet" mode shows the whole songsheet with a glowing
+    // highlight that scrolls down — a full-frame alternative to the conveyor.
+    if (cfg.sheetMode && appState.symbols.length > 0) {
+        drawSheetFrame(ctx, w, h, time, firstStart);
+        return;
+    }
 
     // Musical round mode takes over the whole frame (its own title/waiting
     // states per voice), so branch before the single-conveyor title card.
@@ -2856,6 +2871,136 @@ function activeIndexAt(time: number): number {
         idx = syms.length - 1; // hold on last tile past the end
     }
     return idx;
+}
+
+// Bounding box (in page pixels) of all tiles on a page, padded a little. Used
+// by "follow the sheet" mode to crop away header/footer logos and margins so
+// only the symbol content is shown and scrolled.
+const _bboxCache = new Map<number, { x: number; y: number; w: number; h: number }>();
+function pageContentBox(pageIdx: number) {
+    const cached = _bboxCache.get(pageIdx);
+    if (cached) return cached;
+    const page = appState.pages[pageIdx];
+    if (!page || page.symbols.length === 0) {
+        const full = { x: 0, y: 0, w: page?.width || 1, h: page?.height || 1 };
+        return full;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    page.symbols.forEach(s => {
+        minX = Math.min(minX, s.x); minY = Math.min(minY, s.y);
+        maxX = Math.max(maxX, s.x + s.width); maxY = Math.max(maxY, s.y + s.height);
+    });
+    const padX = page.width * 0.03;
+    const padY = page.height * 0.02;
+    const box = {
+        x: Math.max(0, minX - padX),
+        y: Math.max(0, minY - padY),
+        w: Math.min(page.width, maxX + padX) - Math.max(0, minX - padX),
+        h: Math.min(page.height, maxY + padY) - Math.max(0, minY - padY),
+    };
+    _bboxCache.set(pageIdx, box);
+    return box;
+}
+
+// "Follow the sheet": draw the current page cropped to its content, glow-
+// highlight the active tile, and scroll down smoothly as the sequence advances.
+function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cfg = appState.styleConfig;
+    ctx.fillStyle = cfg.backgroundColor;
+    ctx.fillRect(0, 0, w, h);
+
+    const syms = appState.symbols;
+    let idx = activeIndexAt(time);
+    const preStart = idx === -1;
+    if (idx === -1) idx = 0;
+    const sym = syms[idx];
+    const pageIdx = sym.pageIndex ?? 0;
+    const page = appState.pages[pageIdx];
+    if (!page || !page.image) return;
+
+    const box = pageContentBox(pageIdx);
+    const scale = w / box.w;                 // fit the sheet content to canvas width
+    const sheetPxH = box.h * scale;          // full cropped sheet height in canvas px
+
+    // Target scroll places a tile's centre ~38% down the viewport.
+    const anchor = h * 0.38;
+    const maxScroll = Math.max(0, sheetPxH - h);
+    const scrollForSym = (i: number) => {
+        const s = syms[i];
+        const cyOnSheet = (s.y + s.height / 2 - box.y) * scale;
+        return Math.min(maxScroll, Math.max(0, cyOnSheet - anchor));
+    };
+
+    // Keep the active tile anchored, then glide to the next tile's anchor over
+    // a short window before it takes over — smooth without flinging the current
+    // (highlighted) tile out of view when tiles are far apart.
+    const activeScroll = scrollForSym(idx);
+    let scroll = activeScroll;
+    const next = syms[idx + 1];
+    if (!preStart && next && (next.pageIndex ?? 0) === pageIdx) {
+        const curStart = sym.startTime || 0;
+        const nextStart = next.startTime || 0;
+        const dur = nextStart - curStart;
+        if (dur > 0.001) {
+            const glide = Math.min(0.7, dur * 0.5);
+            const gStart = nextStart - glide;
+            if (time > gStart) {
+                const p = Math.min(1, (time - gStart) / glide);
+                scroll = activeScroll + (scrollForSym(idx + 1) - activeScroll) * p;
+            }
+        }
+    }
+    if (preStart) scroll = 0;
+
+    // Safety net: never let the highlighted tile leave the viewport.
+    if (!preStart) {
+        const tileTop = (sym.y - box.y) * scale;
+        const tileBot = tileTop + sym.height * scale;
+        const margin = 14;
+        const lo = tileBot - h + margin;   // scroll at least this to show its bottom
+        const hi = tileTop - margin;       // scroll at most this to show its top
+        scroll = lo <= hi ? Math.max(lo, Math.min(hi, scroll)) : tileTop - margin;
+    }
+    scroll = Math.max(0, Math.min(maxScroll, scroll));
+
+    // Draw the visible window of the sheet.
+    const srcY = box.y + scroll / scale;
+    const srcH = h / scale;
+    ctx.drawImage(page.image, box.x, srcY, box.w, srcH, 0, 0, w, h);
+
+    // Glow highlight around the active tile (skip before the song starts).
+    if (!preStart) {
+        const hx = (sym.x - box.x) * scale;
+        const hy = (sym.y - box.y) * scale - scroll;
+        const hw = sym.width * scale;
+        const hh = sym.height * scale;
+        // Gentle breathing glow.
+        const pulse = 0.6 + 0.4 * Math.abs(Math.sin(time * 3.0));
+        ctx.save();
+        ctx.strokeStyle = '#ffd21e';
+        ctx.lineWidth = 4;
+        ctx.shadowColor = 'rgba(255, 210, 30, ' + pulse.toFixed(2) + ')';
+        ctx.shadowBlur = 26 * pulse;
+        roundRect(ctx, hx - 4, hy - 4, hw + 8, hh + 8, 10);
+        ctx.stroke();
+        // A second pass thickens the glow without a hard edge.
+        ctx.shadowBlur = 44 * pulse;
+        ctx.globalAlpha = 0.5;
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Musical direction caption for the active tile, if any.
+    if (!preStart && sym.direction) {
+        ctx.save();
+        ctx.font = 'italic 20px Georgia, serif';
+        ctx.fillStyle = '#333';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = 'rgba(255,255,255,0.9)';
+        ctx.shadowBlur = 6;
+        ctx.fillText(sym.direction, w / 2, h - 22);
+        ctx.restore();
+    }
 }
 
 // Colours used to distinguish the voices/groups of a round.
