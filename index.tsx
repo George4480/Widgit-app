@@ -624,15 +624,33 @@ function setupEventListeners() {
             deleteSelectedSymbols();
         }
         if (appState.currentView === 'sync-view') {
+            // Space / Enter still taps to record.
             if (e.key === ' ' || e.key === 'Enter') {
                 e.preventDefault();
                 handleSyncTapAction();
-            } else if (e.key === 'ArrowLeft') {
+                return;
+            }
+            // Don't hijack arrows mid-recording (only tapping matters then).
+            if (appState.isRecordingSync) return;
+
+            const sel = appState.interaction.selectedSyncIndex;
+            // Up / Down: move the selection between tiles.
+            if (e.key === 'ArrowUp') {
                 e.preventDefault();
                 selectTimelineTile(-1);
-            } else if (e.key === 'ArrowRight') {
+            } else if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 selectTimelineTile(1);
+            // Left / Right: nudge the selected tile along the timeline
+            // (earlier / later). Shift = coarse (0.5s), otherwise fine (0.01s).
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                if (sel === -1) selectTimelineTile(0);
+                else nudgeSelectedTile(e.shiftKey ? -0.5 : -0.01);
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                if (sel === -1) selectTimelineTile(0);
+                else nudgeSelectedTile(e.shiftKey ? 0.5 : 0.01);
             }
         }
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -2492,9 +2510,29 @@ function nudgeSelectedTile(dt: number) {
     sym.startTime = newStart;
     // Update prev end
     if (idx > 0) appState.symbols[idx-1].endTime = newStart;
-    
+
+    ensureSyncTileVisible(idx);
     updateTimelineToolsUI();
     drawSyncTimeline();
+}
+
+// Scroll the timeline just enough to keep a tile on screen (used while nudging
+// so keyboard adjustments never push the tile out of view).
+function ensureSyncTileVisible(idx: number) {
+    const sym = appState.symbols[idx];
+    if (!sym) return;
+    const zoom = appState.interaction.timelineZoom;
+    const viewportW = dom.sync.timelineContainer.clientWidth;
+    if (!zoom || !viewportW) return;
+    const widthInSecs = viewportW / zoom;
+    const margin = widthInSecs * 0.12;
+    const left = appState.interaction.syncScrollX;
+    const right = left + widthInSecs;
+    if (sym.startTime < left + margin) {
+        appState.interaction.syncScrollX = Math.max(0, sym.startTime - margin);
+    } else if (sym.startTime > right - margin) {
+        appState.interaction.syncScrollX = Math.max(0, sym.startTime - widthInSecs + margin);
+    }
 }
 
 function updateTimelineToolsUI() {
