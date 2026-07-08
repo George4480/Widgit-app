@@ -41,6 +41,7 @@ const appState: AppState = {
     pages: [] as ProjectPage[],
     currentPageIndex: 0,
     globalSequence: [] as SequenceStep[], // Canonical cross-page reading order
+    round: { start: -1, end: -1 }, // Round loop section, by tile index (set at Sync stage)
     symbols: [] as SymbolTile[], // Flat list for Sync/Result
     isRecordingSync: false,
     currentSyncIndex: 0, // Used during recording
@@ -213,7 +214,12 @@ function init() {
             labelTlSelected: document.getElementById('tl-selected-info'),
             // Direction Input
             containerProp: document.getElementById('sync-symbol-properties'),
-            inputDirection: document.getElementById('input-sync-direction')
+            inputDirection: document.getElementById('input-sync-direction'),
+            // Round loop controls
+            btnRoundStart: document.getElementById('btn-round-set-start'),
+            btnRoundEnd: document.getElementById('btn-round-set-end'),
+            btnRoundClear: document.getElementById('btn-round-clear'),
+            roundRangeLabel: document.getElementById('round-range-label'),
         },
         result: {
             canvas: document.getElementById('preview-canvas') as HTMLCanvasElement,
@@ -516,6 +522,14 @@ function setupEventListeners() {
         if (idx !== -1 && appState.symbols[idx]) {
             appState.symbols[idx].direction = (e.target as HTMLInputElement).value;
         }
+    });
+
+    // Musical Round: mark the looping section using the selected tile.
+    dom.sync.btnRoundStart.addEventListener('click', () => setRoundMarker('start'));
+    dom.sync.btnRoundEnd.addEventListener('click', () => setRoundMarker('end'));
+    dom.sync.btnRoundClear.addEventListener('click', () => {
+        appState.round = { start: -1, end: -1 };
+        updateRoundUI(); drawSyncTimeline();
     });
 
 
@@ -2215,7 +2229,8 @@ function setupSyncView() {
     updateSyncButtonUI();
     renderSymbolNavStrip(); // Prepare, but hidden
     updateTimelineToolsUI();
-    
+    updateRoundUI();
+
     // Draw initial empty timeline (hidden)
     drawSyncTimeline();
     
@@ -2537,6 +2552,52 @@ function selectTimelineTile(delta: number) {
     drawSyncTimeline();
 }
 
+// Mark the currently-selected tile as the round loop's start or end.
+function setRoundMarker(which: 'start' | 'end') {
+    const idx = appState.interaction.selectedSyncIndex;
+    if (idx === -1) { alert('Select a tile on the timeline first, then set it as the loop start or end.'); return; }
+    const r = appState.round;
+    if (which === 'start') {
+        r.start = idx;
+        if (r.end !== -1 && r.end <= r.start) r.end = -1; // end must come after start
+    } else {
+        if (r.start === -1) { alert('Set the loop start first.'); return; }
+        if (idx <= r.start) { alert('The loop end must be a tile after the loop start.'); return; }
+        r.end = idx;
+    }
+    updateRoundUI();
+    drawSyncTimeline();
+}
+
+// Show the current loop range and the round interval it implies.
+function updateRoundUI() {
+    const label = dom.sync.roundRangeLabel;
+    if (!label) return;
+    const r = appState.round;
+    if (r.start === -1) { label.textContent = 'No loop set — tap a tile, then "Set loop start".'; return; }
+    const startTile = `Tile ${r.start + 1}`;
+    if (r.end === -1) { label.textContent = `Loop start: ${startTile} — now set the loop end.`; return; }
+    const gap = roundGapSeconds();
+    label.textContent = `Loop: Tile ${r.start + 1} → ${r.end + 1}  (2nd voice enters ${gap.toFixed(1)}s later)`;
+}
+
+// The round's entry interval in seconds: the length of the marked loop section.
+function roundGapSeconds(): number {
+    const r = appState.round;
+    const syms = appState.symbols;
+    if (r.start >= 0 && r.end > r.start && syms[r.start] && syms[r.end]) {
+        const g = (syms[r.end].startTime || 0) - (syms[r.start].startTime || 0);
+        if (g > 0.05) return g;
+    }
+    return Math.max(0.1, appState.styleConfig.roundGap || 4); // fallback to the seconds slider
+}
+
+// True once a loop section has been fully marked at the Sync stage.
+function hasRoundLoop(): boolean {
+    const r = appState.round;
+    return r.start >= 0 && r.end > r.start && !!appState.symbols[r.start] && !!appState.symbols[r.end];
+}
+
 function nudgeSelectedTile(dt: number) {
     const idx = appState.interaction.selectedSyncIndex;
     if (idx === -1) return;
@@ -2795,11 +2856,22 @@ function drawPreviewFrame(rawTime: number) {
         return;
     }
 
-    // Musical round mode takes over the whole frame (its own title/waiting
-    // states per voice), so branch before the single-conveyor title card.
+    // Musical round: the extra voice rows only appear once the round actually
+    // kicks in (from the marked loop point) — before that it's a single voice.
     if (cfg.roundEnabled && appState.symbols.length > 0) {
-        drawRoundFrame(ctx, w, h, time, firstStart);
-        return;
+        const gap = roundGapSeconds();
+        const loopStartTime = hasRoundLoop() ? (appState.symbols[appState.round.start].startTime || 0) : firstStart;
+        const maxVoices = Math.max(2, Math.min(3, cfg.roundVoices || 2));
+        const PREROLL = 1.2; // let a voice's row slide in just before it enters
+        let active = 1;
+        for (let v = 1; v < maxVoices; v++) {
+            if (time >= loopStartTime + v * gap - PREROLL) active++;
+        }
+        if (active >= 2) {
+            drawRoundFrame(ctx, w, h, time, firstStart, active, gap, loopStartTime);
+            return;
+        }
+        // else: round not active yet → fall through to the single conveyor.
     }
 
     if (appState.songTitle && time < firstStart) {
@@ -3047,10 +3119,7 @@ const VOICE_NAMES = ['Group 1', 'Group 2', 'Group 3'];
 
 // Render the round: each voice is the same sequence shifted later by roundGap,
 // drawn in its own horizontal band, colour-coded, separated by divider lines.
-function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
-    const cfg = appState.styleConfig;
-    const voices = Math.max(2, Math.min(3, cfg.roundVoices || 2));
-    const gap = Math.max(0.1, cfg.roundGap || 4);
+function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, gap: number, loopStartTime: number) {
     const bandH = h / voices;
 
     for (let v = 0; v < voices; v++) {
@@ -3058,6 +3127,8 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         const cy = bandH * v + bandH / 2;
         // Following voices are the same melody entering `gap` seconds later each.
         const effTime = time - v * gap;
+        // The leader sings the whole song; followers sing from the loop start.
+        const voiceStart = v === 0 ? firstStart : loopStartTime;
 
         // Subtle band wash in the voice colour.
         ctx.save();
@@ -3081,14 +3152,14 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         ctx.restore();
 
         // Has this voice started yet?
-        if (effTime < firstStart) {
+        if (effTime < voiceStart) {
             ctx.save();
             ctx.globalAlpha = 0.5;
             ctx.fillStyle = tint;
             ctx.font = 'italic 15px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(v === 0 ? '♪ singing…' : 'waiting to come in…', w / 2, cy);
+            ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
             ctx.restore();
         } else {
             const activeIdx = activeIndexAt(effTime);
@@ -3547,6 +3618,7 @@ async function saveProjectJson() {
         gridConfig: appState.gridConfig,
         latencyOffset: appState.interaction.latencyOffset,
         globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym })),
+        round: { start: appState.round.start, end: appState.round.end },
         pages: savedPages
     };
 
@@ -3647,6 +3719,7 @@ function handleProjectLoadFile(e: Event) {
             // otherwise ensureGlobalSequence() migrates the legacy per-page one.
             _thumbCache.clear();
             appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
+            appState.round = (data.round && typeof data.round.start === 'number') ? { start: data.round.start, end: data.round.end } : { start: -1, end: -1 };
             ensureGlobalSequence();
 
             // Rebuild Flat List
@@ -3758,6 +3831,7 @@ function saveHistoryState() {
         pages: pagesData,
         symbols: symbolsData,
         globalSequence: appState.globalSequence,
+        round: appState.round,
         songTitle: appState.songTitle,
         mode: appState.mode,
         styleConfig: appState.styleConfig,
@@ -3813,6 +3887,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;
         appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
+        appState.round = (data.round && typeof data.round.start === 'number') ? data.round : { start: -1, end: -1 };
         _thumbCache.clear();
 
         // Apply pages

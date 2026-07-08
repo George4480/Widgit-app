@@ -1896,9 +1896,18 @@
             
             <!-- Musical Direction Input -->
             <div id="sync-symbol-properties" style="margin-top: 10px; text-align: center; display: none;">
-                <label style="font-weight: 500; font-size: 0.9rem;">Musical Direction (Active Tile): 
+                <label style="font-weight: 500; font-size: 0.9rem;">Musical Direction (Active Tile):
                     <input type="text" id="input-sync-direction" placeholder="e.g. Loud, Soft, Breath..." class="text-input" style="width: 250px; margin-bottom: 0; padding: 8px;">
                 </label>
+            </div>
+
+            <!-- Musical Round: mark the looping section on the timeline -->
+            <div id="sync-round-panel" style="margin-top: 12px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: center;">
+                <span style="font-weight: 600; font-size: 0.85rem;">🎶 Musical round:</span>
+                <button id="btn-round-set-start" class="button secondary small" title="Mark the selected tile as where the round's loop starts">Set loop start</button>
+                <button id="btn-round-set-end" class="button secondary small" title="Mark the selected tile as where the round's loop ends">Set loop end</button>
+                <span id="round-range-label" style="font-family: monospace; font-size: 0.82rem; color: var(--text-muted);">No loop set</span>
+                <button id="btn-round-clear" class="button secondary small" style="color: #c5221f;" title="Clear the round loop">Clear</button>
             </div>
 
             <!-- Virtual Scrolling Timeline -->
