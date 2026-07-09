@@ -46,11 +46,21 @@ export interface StyleConfig {
     prevCount: number;
     prevScale: number;
     prevOpacity: number;
-    // Musical round (canon): extra voices sing the same sequence, entering
-    // one gap later each, shown as their own colour-coded row.
+    // Musical round / canon: extra voices sing the same sequence, each entering
+    // later than the leader, shown as their own colour-coded row.
     roundEnabled: boolean;
-    roundVoices: number;   // total voices including the leader (2-3)
-    roundGap: number;      // seconds each following voice enters after the previous
+    // false = Round: voices enter at a uniform gap and loop a marked phrase to a
+    // unison finish. true = Canon: each following voice is fired at its own
+    // independently-chosen point (roundEntries) and sings the identical full line.
+    roundCanon: boolean;
+    roundVoices: number;   // total voices including the leader (2-4)
+    roundGap: number;      // Round mode: seconds each following voice enters after the previous
+    /**
+     * Canon mode: entry point of each FOLLOWING voice, as a 0-based leader tile
+     * index — the tile the leader is on when that voice fires its own first tile.
+     * roundEntries[0] is voice 2, [1] is voice 3, [2] is voice 4.
+     */
+    roundEntries: number[];
     roundCountdown: boolean;    // show a beat countdown before each voice enters
     roundCountInBeats: number;  // beats to count (from the song's time signature)
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,

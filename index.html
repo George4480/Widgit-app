@@ -1697,6 +1697,12 @@
         }
         .round-toggle input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; accent-color: var(--primary); }
         #round-settings { transition: opacity 0.2s ease; }
+        /* Mode-gated controls: canon-only rows show only in Canon mode; round-only
+           rows (e.g. the uniform-gap slider) show only in Round mode. */
+        #round-settings:not(.canon-mode) .canon-only { display: none; }
+        #round-settings.canon-mode .round-only { display: none; }
+        .round-entry-tile { font-weight: 600; color: var(--primary-text, var(--primary)); }
+        .round-entry-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
     </style>
 </head>
 <body>
@@ -2161,24 +2167,47 @@
             </div>
 
             <div class="settings-section" data-hide-in-sheet>
-                <h4 class="settings-section-title">🎶 Musical round (canon)</h4>
+                <h4 class="settings-section-title">🎶 Round / canon</h4>
                 <div class="round-toggle-row">
                     <label class="round-toggle">
                         <input type="checkbox" id="style-round-enabled">
-                        <span>Show as a round — each group sings the same tiles, entering one after another in its own colour row.</span>
+                        <span>Show extra voices — each sings the same tiles, coming in one after another in its own colour row.</span>
                     </label>
                 </div>
                 <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
                     <div class="setting-item">
-                        <label>How many groups</label>
-                        <div class="seg-group" data-style="roundVoices" aria-label="Number of groups in the round">
-                            <button type="button" data-value="2">2 groups</button>
-                            <button type="button" data-value="3">3 groups</button>
+                        <label>Style</label>
+                        <div class="seg-group" data-style="roundMode" aria-label="Round or canon style">
+                            <button type="button" data-value="0">Round (loops)</button>
+                            <button type="button" data-value="1">Canon</button>
                         </div>
                     </div>
                     <div class="setting-item">
-                        <label>Each group starts after <span class="setting-val" data-for="style-round-gap" data-format="seconds"></span></label>
+                        <label>How many voices</label>
+                        <div class="seg-group" data-style="roundVoices" aria-label="Number of voices">
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4" class="canon-only">4</button>
+                        </div>
+                    </div>
+                    <div class="setting-item round-only">
+                        <label>Each voice starts after <span class="setting-val" data-for="style-round-gap" data-format="seconds"></span></label>
                         <input type="range" id="style-round-gap" min="0.5" max="12" step="0.5" value="4" disabled>
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                    <div class="setting-item canon-only round-entry-row">
+                        <label>Cannon 2 comes in at <span class="round-entry-tile">tile 3</span> <span class="round-entry-hint">(when the leader reaches it)</span></label>
+                        <input type="range" id="style-round-entry-1" min="2" max="8" step="1" value="3">
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                    <div class="setting-item canon-only round-entry-row" style="display:none">
+                        <label>Cannon 3 comes in at <span class="round-entry-tile">tile 5</span></label>
+                        <input type="range" id="style-round-entry-2" min="2" max="8" step="1" value="5">
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                    <div class="setting-item canon-only round-entry-row" style="display:none">
+                        <label>Cannon 4 comes in at <span class="round-entry-tile">tile 7</span></label>
+                        <input type="range" id="style-round-entry-3" min="2" max="8" step="1" value="7">
                         <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
                     </div>
                 </div>
