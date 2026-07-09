@@ -75,12 +75,15 @@ const appState: AppState = {
         prevScale: 0.7,
         prevOpacity: 0.4,
         roundEnabled: false,
-        roundCanon: false,
         roundVoices: 2,
         roundGap: 4,
-        roundEntries: [2, 4, 6],
         roundCountdown: true,
         roundCountInBeats: 4,
+        canonEnabled: false,
+        canonVoices: 2,
+        canonEntries: [2, 4, 6],
+        canonCountdown: true,
+        canonCountInBeats: 4,
         sheetMode: false
     },
     interaction: {
@@ -255,17 +258,24 @@ function init() {
             stylePrevScale: document.getElementById('style-prev-scale'),
             stylePrevOpacity: document.getElementById('style-prev-opacity'),
             styleSpacing: document.getElementById('style-spacing'),
+            // Round feature (equal spacing, loops to a unison finish).
             styleRoundEnabled: document.getElementById('style-round-enabled'),
             styleRoundGap: document.getElementById('style-round-gap'),
-            styleRoundEntries: [
-                document.getElementById('style-round-entry-1'),
-                document.getElementById('style-round-entry-2'),
-                document.getElementById('style-round-entry-3'),
-            ],
             styleRoundCountdown: document.getElementById('style-round-countdown'),
             styleRoundCountin: document.getElementById('style-round-countin'),
             roundCountinItem: document.getElementById('round-countin-item'),
-            roundSettings: document.getElementById('round-settings')
+            roundSettings: document.getElementById('round-settings'),
+            // Canon feature (same melody fired later, own entry points, no loop).
+            styleCanonEnabled: document.getElementById('style-canon-enabled'),
+            styleCanonEntries: [
+                document.getElementById('style-canon-entry-1'),
+                document.getElementById('style-canon-entry-2'),
+                document.getElementById('style-canon-entry-3'),
+            ],
+            styleCanonCountdown: document.getElementById('style-canon-countdown'),
+            styleCanonCountin: document.getElementById('style-canon-countin'),
+            canonCountinItem: document.getElementById('canon-countin-item'),
+            canonSettings: document.getElementById('canon-settings')
         },
         rendering: {
             overlay: document.getElementById('rendering-overlay'),
@@ -602,30 +612,42 @@ function setupEventListeners() {
         appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
         appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
+        // Round feature.
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
-        appState.styleConfig.roundCanon = segGet('roundMode') === 1;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
         appState.styleConfig.roundGap = parseFloat(dom.result.styleRoundGap.value);
-        // Canon mode: each following voice's entry as a 0-based leader tile index
-        // (sliders show the 1-based tile number).
-        appState.styleConfig.roundEntries = (dom.result.styleRoundEntries as (HTMLInputElement | null)[])
-            .map(el => Math.max(0, (parseInt(el?.value || '2') || 2) - 1));
         appState.styleConfig.roundCountdown = (dom.result.styleRoundCountdown as HTMLInputElement).checked;
         appState.styleConfig.roundCountInBeats = parseInt((dom.result.styleRoundCountin as HTMLSelectElement).value) || 4;
         if (dom.result.roundCountinItem) {
             (dom.result.roundCountinItem as HTMLElement).style.opacity = appState.styleConfig.roundCountdown ? '1' : '0.45';
             (dom.result.styleRoundCountin as HTMLSelectElement).disabled = !appState.styleConfig.roundCountdown;
         }
-        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
-        // Enable/disable the round sub-controls to match the toggle.
-        const on = appState.styleConfig.roundEnabled;
-        (dom.result.styleRoundGap as HTMLInputElement).disabled = !on;
-        if (dom.result.roundSettings) {
-            dom.result.roundSettings.style.opacity = on ? '1' : '0.5';
-            dom.result.roundSettings.setAttribute('aria-disabled', on ? 'false' : 'true');
-            dom.result.roundSettings.classList.toggle('canon-mode', appState.styleConfig.roundCanon);
+        // Canon feature (separate). Each following voice's entry is a 0-based
+        // leader tile index (sliders show the 1-based tile number).
+        appState.styleConfig.canonEnabled = (dom.result.styleCanonEnabled as HTMLInputElement).checked;
+        appState.styleConfig.canonVoices = segGet('canonVoices') || 2;
+        appState.styleConfig.canonEntries = (dom.result.styleCanonEntries as (HTMLInputElement | null)[])
+            .map(el => Math.max(0, (parseInt(el?.value || '2') || 2) - 1));
+        appState.styleConfig.canonCountdown = (dom.result.styleCanonCountdown as HTMLInputElement).checked;
+        appState.styleConfig.canonCountInBeats = parseInt((dom.result.styleCanonCountin as HTMLSelectElement).value) || 4;
+        if (dom.result.canonCountinItem) {
+            (dom.result.canonCountinItem as HTMLElement).style.opacity = appState.styleConfig.canonCountdown ? '1' : '0.45';
+            (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
-        updateRoundEntryUI();
+        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
+        // Enable/disable each feature's sub-controls to match its own toggle.
+        const roundOn = appState.styleConfig.roundEnabled;
+        (dom.result.styleRoundGap as HTMLInputElement).disabled = !roundOn;
+        if (dom.result.roundSettings) {
+            dom.result.roundSettings.style.opacity = roundOn ? '1' : '0.5';
+            dom.result.roundSettings.setAttribute('aria-disabled', roundOn ? 'false' : 'true');
+        }
+        const canonOn = appState.styleConfig.canonEnabled;
+        if (dom.result.canonSettings) {
+            dom.result.canonSettings.style.opacity = canonOn ? '1' : '0.5';
+            dom.result.canonSettings.setAttribute('aria-disabled', canonOn ? 'false' : 'true');
+        }
+        updateCanonEntryUI();
         // Hide conveyor-only settings when following the sheet.
         document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
@@ -649,12 +671,27 @@ function setupEventListeners() {
     dom.result.stylePrevScale.addEventListener('input', updateStyle);
     dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
-    dom.result.styleRoundEnabled.addEventListener('change', updateStyle);
+    // Round and Canon are two different forms; only one can drive the video at a
+    // time, so turning one on turns the other off.
+    dom.result.styleRoundEnabled.addEventListener('change', () => {
+        if ((dom.result.styleRoundEnabled as HTMLInputElement).checked) {
+            (dom.result.styleCanonEnabled as HTMLInputElement).checked = false;
+        }
+        updateStyle();
+    });
+    dom.result.styleCanonEnabled.addEventListener('change', () => {
+        if ((dom.result.styleCanonEnabled as HTMLInputElement).checked) {
+            (dom.result.styleRoundEnabled as HTMLInputElement).checked = false;
+        }
+        updateStyle();
+    });
     dom.result.styleRoundGap.addEventListener('input', updateStyle);
-    (dom.result.styleRoundEntries as (HTMLInputElement | null)[]).forEach(el =>
-        el?.addEventListener('input', updateStyle));
     dom.result.styleRoundCountdown.addEventListener('change', updateStyle);
     dom.result.styleRoundCountin.addEventListener('change', updateStyle);
+    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach(el =>
+        el?.addEventListener('input', updateStyle));
+    dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
+    dom.result.styleCanonCountin.addEventListener('change', updateStyle);
 
     // Reflect the current styleConfig onto every control (sliders + segments +
     // badges), so the panel always shows the real values — including on load.
@@ -2853,13 +2890,13 @@ function updateRoundUI() {
     updateNavStripRoundMarks();
 }
 
-// Canon mode: how many seconds after the leader a following voice fires. Voice v
-// starts its own first tile when the leader reaches tile `roundEntries[v-1]`.
+// Canon: how many seconds after the leader a following voice fires. Voice v
+// starts its own first tile when the leader reaches tile `canonEntries[v-1]`.
 function canonEntryOffset(v: number): number {
     if (v <= 0) return 0;
     const syms = appState.symbols;
     if (!syms.length) return 0;
-    const entries = appState.styleConfig.roundEntries || [];
+    const entries = appState.styleConfig.canonEntries || [];
     const first = syms[0].startTime || 0;
     const idx = Math.max(0, Math.min(syms.length - 1, entries[v - 1] ?? v * 2));
     return Math.max(0, (syms[idx].startTime || 0) - first);
@@ -3105,17 +3142,22 @@ function syncStyleControls() {
     set(dom.result.stylePrevOpacity as HTMLInputElement, c.prevOpacity);
     set(dom.result.styleSpacing as HTMLInputElement, c.spacing);
     set(dom.result.styleRoundGap as HTMLInputElement, c.roundGap);
+    // Round feature controls.
     (dom.result.styleRoundEnabled as HTMLInputElement).checked = !!c.roundEnabled;
     (dom.result.styleRoundCountdown as HTMLInputElement).checked = c.roundCountdown !== false;
     (dom.result.styleRoundCountin as HTMLSelectElement).value = String(c.roundCountInBeats || 4);
+    segSet('roundVoices', c.roundVoices || 2);
+    // Canon feature controls.
+    (dom.result.styleCanonEnabled as HTMLInputElement).checked = !!c.canonEnabled;
+    (dom.result.styleCanonCountdown as HTMLInputElement).checked = c.canonCountdown !== false;
+    (dom.result.styleCanonCountin as HTMLSelectElement).value = String(c.canonCountInBeats || 4);
+    segSet('canonVoices', c.canonVoices || 2);
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
-    segSet('roundMode', c.roundCanon ? 1 : 0);
-    segSet('roundVoices', c.roundVoices || 2);
     segSet('displayMode', c.sheetMode ? 1 : 0);
     // Push each following voice's stored canon entry (0-based) onto its slider (1-based).
-    const entries = c.roundEntries || [];
-    (dom.result.styleRoundEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
+    const entries = c.canonEntries || [];
+    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
         if (el) el.value = String((entries[i] ?? (i + 1) * 2) + 1);
     });
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
@@ -3123,38 +3165,42 @@ function syncStyleControls() {
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
         dom.result.roundSettings.setAttribute('aria-disabled', c.roundEnabled ? 'false' : 'true');
-        dom.result.roundSettings.classList.toggle('canon-mode', !!c.roundCanon);
     }
-    updateRoundEntryUI();
+    if (dom.result.canonSettings) {
+        dom.result.canonSettings.style.opacity = c.canonEnabled ? '1' : '0.5';
+        dom.result.canonSettings.setAttribute('aria-disabled', c.canonEnabled ? 'false' : 'true');
+    }
+    updateCanonEntryUI();
     formatStyleBadges();
 }
 
-// Backfill canon fields for projects/snapshots saved before the round/canon
-// split, so drawing and the controls never hit an undefined array.
+// Backfill the round/canon fields for projects/snapshots saved before the two
+// features were split, so drawing and the controls never hit undefined values.
 function normalizeRoundConfig() {
     const c = appState.styleConfig;
-    if (!Array.isArray(c.roundEntries)) c.roundEntries = [2, 4, 6];
-    if (typeof c.roundCanon !== 'boolean') c.roundCanon = false;
-    c.roundVoices = Math.max(2, Math.min(4, c.roundVoices || 2));
+    if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
+    if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
+    c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
+    c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
 }
 
-// Keep the per-cannon entry sliders in sync with the tile count and the chosen
-// number of voices: bound each slider to the available tiles, show only the rows
-// for the following voices, and label each with its current tile number.
-function updateRoundEntryUI() {
+// Keep the per-voice canon entry sliders in sync with the tile count and the
+// chosen number of voices: bound each slider to the available tiles, show only
+// the rows for the following voices, and label each with its current tile number.
+function updateCanonEntryUI() {
     const c = appState.styleConfig;
     const tileCount = Math.max(2, appState.symbols.length);
-    const followers = Math.max(2, Math.min(4, c.roundVoices || 2)) - 1;
-    (dom.result.styleRoundEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
+    const followers = Math.max(2, Math.min(4, c.canonVoices || 2)) - 1;
+    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
         if (!el) return;
-        const row = el.closest('.round-entry-row') as HTMLElement | null;
-        // Rows for voices beyond the current count are hidden (mode gating is CSS).
+        const row = el.closest('.canon-entry-row') as HTMLElement | null;
+        // Rows for voices beyond the current count are hidden.
         if (row) row.style.display = i < followers ? '' : 'none';
         el.max = String(tileCount);
         el.min = '2';
         let v = Math.max(2, Math.min(tileCount, parseInt(el.value || '2') || 2));
         el.value = String(v);
-        const label = row?.querySelector('.round-entry-tile') as HTMLElement | null;
+        const label = row?.querySelector('.canon-entry-tile') as HTMLElement | null;
         if (label) label.textContent = 'tile ' + v;
     });
 }
@@ -3217,13 +3263,13 @@ function drawPreviewFrame(rawTime: number) {
     }
 
     // Canon: each following voice is fired at its own chosen point and sings the
-    // identical full line — the same melody, just slightly later, like a
+    // identical full line once — the same melody, just slightly later, like a
     // cannonball out of the cannon. Rows appear as each voice comes in.
-    if (cfg.roundEnabled && cfg.roundCanon && appState.symbols.length > 0) {
-        const maxVoices = Math.max(2, Math.min(4, cfg.roundVoices || 2));
-        const beats = Math.max(1, Math.min(8, cfg.roundCountInBeats || 4));
+    if (cfg.canonEnabled && appState.symbols.length > 0) {
+        const maxVoices = Math.max(2, Math.min(4, cfg.canonVoices || 2));
+        const beats = Math.max(1, Math.min(8, cfg.canonCountInBeats || 4));
         // How early a voice's row appears: a count-in run-up, else a short slide-in.
-        const preroll = cfg.roundCountdown ? beats * avgTileDuration() : 1.2;
+        const preroll = cfg.canonCountdown ? beats * avgTileDuration() : 1.2;
         // Reveal bands up to the highest voice that has appeared, so the layout
         // stays contiguous even if entry points are set out of order.
         let maxAppeared = 0;
@@ -3239,7 +3285,7 @@ function drawPreviewFrame(rawTime: number) {
 
     // Musical round: the extra voice rows only appear once the round actually
     // kicks in (from the marked loop point) — before that it's a single voice.
-    if (cfg.roundEnabled && !cfg.roundCanon && appState.symbols.length > 0) {
+    if (cfg.roundEnabled && appState.symbols.length > 0) {
         const gap = roundGapSeconds();
         const loopStartTime = hasRoundLoop() ? (appState.symbols[appState.round.start].startTime || 0) : firstStart;
         const maxVoices = Math.max(2, Math.min(3, cfg.roundVoices || 2));
@@ -3605,7 +3651,7 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 // last tile once done. `preroll` is the count-in run-up length in seconds.
 function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, preroll: number) {
     const bandH = h / voices;
-    const beats = Math.max(1, Math.min(8, appState.styleConfig.roundCountInBeats || 4));
+    const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
@@ -3624,7 +3670,7 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         ctx.save();
         ctx.font = 'bold 13px sans-serif';
         ctx.textBaseline = 'middle';
-        const label = 'Cannon ' + (v + 1);
+        const label = 'Voice ' + (v + 1);
         const lw = ctx.measureText(label).width + 18;
         ctx.fillStyle = tint;
         roundRect(ctx, 12, cy - 13, lw, 26, 13);
@@ -3640,7 +3686,7 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            if (v > 0 && appState.styleConfig.roundCountdown && preroll > 0.2 && secondsUntil <= preroll) {
+            if (v > 0 && appState.styleConfig.canonCountdown && preroll > 0.2 && secondsUntil <= preroll) {
                 // Self-conducting count-in across the run-up: e.g. 4·3·2·1.
                 const beatDur = preroll / beats;
                 const elapsed = preroll - secondsUntil;          // 0 → preroll through the count-in

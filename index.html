@@ -1678,7 +1678,8 @@
             color: #fff;
             box-shadow: var(--shadow-sm);
         }
-        #round-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
+        #round-settings[aria-disabled="true"] .seg-group button,
+        #canon-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
         .seg-group.seg-wide { display: flex; width: 100%; }
         .seg-group.seg-wide button { flex: 1 1 0; white-space: normal; line-height: 1.25; }
         /* Conveyor-only settings collapse away in follow-the-sheet mode. */
@@ -1696,13 +1697,10 @@
             line-height: 1.45;
         }
         .round-toggle input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; accent-color: var(--primary); }
-        #round-settings { transition: opacity 0.2s ease; }
-        /* Mode-gated controls: canon-only rows show only in Canon mode; round-only
-           rows (e.g. the uniform-gap slider) show only in Round mode. */
-        #round-settings:not(.canon-mode) .canon-only { display: none; }
-        #round-settings.canon-mode .round-only { display: none; }
-        .round-entry-tile { font-weight: 600; color: var(--primary-text, var(--primary)); }
-        .round-entry-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
+        #round-settings, #canon-settings { transition: opacity 0.2s ease; }
+        .settings-note { margin: 2px 0 8px; font-size: 0.82rem; line-height: 1.45; color: var(--text-soft, #6b7280); }
+        .canon-entry-tile { font-weight: 600; color: var(--primary-text, var(--primary)); }
+        .canon-entry-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
     </style>
 </head>
 <body>
@@ -2167,58 +2165,88 @@
             </div>
 
             <div class="settings-section" data-hide-in-sheet>
-                <h4 class="settings-section-title">🎶 Round / canon</h4>
+                <h4 class="settings-section-title">🔁 Round</h4>
+                <p class="settings-note">The same melody at <strong>equal spacing</strong> that <strong>loops</strong> a marked phrase so the voices finish together — like “Row, Row, Row Your Boat”. A cycle that resolves in unison.</p>
                 <div class="round-toggle-row">
                     <label class="round-toggle">
                         <input type="checkbox" id="style-round-enabled">
-                        <span>Show extra voices — each sings the same tiles, coming in one after another in its own colour row.</span>
+                        <span>Show as a <strong>round</strong> — voices enter evenly and loop to a unison finish, each in its own colour row.</span>
                     </label>
                 </div>
                 <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
                     <div class="setting-item">
-                        <label>Style</label>
-                        <div class="seg-group" data-style="roundMode" aria-label="Round or canon style">
-                            <button type="button" data-value="0">Round (loops)</button>
-                            <button type="button" data-value="1">Canon</button>
+                        <label>How many voices</label>
+                        <div class="seg-group" data-style="roundVoices" aria-label="Number of voices in the round">
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
                         </div>
                     </div>
                     <div class="setting-item">
-                        <label>How many voices</label>
-                        <div class="seg-group" data-style="roundVoices" aria-label="Number of voices">
-                            <button type="button" data-value="2">2</button>
-                            <button type="button" data-value="3">3</button>
-                            <button type="button" data-value="4" class="canon-only">4</button>
-                        </div>
-                    </div>
-                    <div class="setting-item round-only">
                         <label>Each voice starts after <span class="setting-val" data-for="style-round-gap" data-format="seconds"></span></label>
                         <input type="range" id="style-round-gap" min="0.5" max="12" step="0.5" value="4" disabled>
-                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
-                    </div>
-                    <div class="setting-item canon-only round-entry-row">
-                        <label>Cannon 2 comes in at <span class="round-entry-tile">tile 3</span> <span class="round-entry-hint">(when the leader reaches it)</span></label>
-                        <input type="range" id="style-round-entry-1" min="2" max="8" step="1" value="3">
-                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
-                    </div>
-                    <div class="setting-item canon-only round-entry-row" style="display:none">
-                        <label>Cannon 3 comes in at <span class="round-entry-tile">tile 5</span></label>
-                        <input type="range" id="style-round-entry-2" min="2" max="8" step="1" value="5">
-                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
-                    </div>
-                    <div class="setting-item canon-only round-entry-row" style="display:none">
-                        <label>Cannon 4 comes in at <span class="round-entry-tile">tile 7</span></label>
-                        <input type="range" id="style-round-entry-3" min="2" max="8" step="1" value="7">
                         <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
                     </div>
                 </div>
                 <div class="round-toggle-row" id="round-countdown-row">
                     <label class="round-toggle">
                         <input type="checkbox" id="style-round-countdown" checked>
-                        <span>Show a <strong>count-in</strong> before each group comes in, so they can start themselves (self-conducted).</span>
+                        <span>Show a <strong>count-in</strong> before each voice comes in, so they can start themselves (self-conducted).</span>
                     </label>
                     <div class="setting-item" id="round-countin-item" style="margin-top: 8px;">
                         <label>Count-in (beats per bar / time signature)</label>
                         <select id="style-round-countin" class="text-input" style="margin-bottom:0; max-width: 260px;">
+                            <option value="2">2 — e.g. 2/4</option>
+                            <option value="3">3 — e.g. 3/4 (waltz)</option>
+                            <option value="4" selected>4 — e.g. 4/4</option>
+                            <option value="6">6 — e.g. 6/8</option>
+                            <option value="8">8 — two bars of 4</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section" data-hide-in-sheet>
+                <h4 class="settings-section-title">🎯 Canon</h4>
+                <p class="settings-note">A <strong>different</strong> form: the same melody simply <strong>fired later</strong>. Each following voice comes in at a point <strong>you choose</strong>, sings the line <strong>once</strong>, and it ends. It does <strong>not</strong> loop.</p>
+                <div class="round-toggle-row">
+                    <label class="round-toggle">
+                        <input type="checkbox" id="style-canon-enabled">
+                        <span>Show as a <strong>canon</strong> — each following voice is fired at its own chosen point, in its own colour row.</span>
+                    </label>
+                </div>
+                <div class="settings-grid" id="canon-settings" style="opacity: 0.5;">
+                    <div class="setting-item">
+                        <label>How many voices</label>
+                        <div class="seg-group" data-style="canonVoices" aria-label="Number of voices in the canon">
+                            <button type="button" data-value="2">2</button>
+                            <button type="button" data-value="3">3</button>
+                            <button type="button" data-value="4">4</button>
+                        </div>
+                    </div>
+                    <div class="setting-item canon-entry-row">
+                        <label>Voice 2 comes in at <span class="canon-entry-tile">tile 3</span> <span class="canon-entry-hint">(when the leader reaches it)</span></label>
+                        <input type="range" id="style-canon-entry-1" min="2" max="8" step="1" value="3">
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                    <div class="setting-item canon-entry-row" style="display:none">
+                        <label>Voice 3 comes in at <span class="canon-entry-tile">tile 5</span></label>
+                        <input type="range" id="style-canon-entry-2" min="2" max="8" step="1" value="5">
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                    <div class="setting-item canon-entry-row" style="display:none">
+                        <label>Voice 4 comes in at <span class="canon-entry-tile">tile 7</span></label>
+                        <input type="range" id="style-canon-entry-3" min="2" max="8" step="1" value="7">
+                        <div class="slider-ends"><span>Sooner</span><span>Later</span></div>
+                    </div>
+                </div>
+                <div class="round-toggle-row" id="canon-countdown-row">
+                    <label class="round-toggle">
+                        <input type="checkbox" id="style-canon-countdown" checked>
+                        <span>Show a <strong>count-in</strong> before each voice comes in, so they can start themselves (self-conducted).</span>
+                    </label>
+                    <div class="setting-item" id="canon-countin-item" style="margin-top: 8px;">
+                        <label>Count-in (beats per bar / time signature)</label>
+                        <select id="style-canon-countin" class="text-input" style="margin-bottom:0; max-width: 260px;">
                             <option value="2">2 — e.g. 2/4</option>
                             <option value="3">3 — e.g. 3/4 (waltz)</option>
                             <option value="4" selected>4 — e.g. 4/4</option>
