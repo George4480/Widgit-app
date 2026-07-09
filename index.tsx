@@ -3806,6 +3806,31 @@ async function renderVideo(mode: 'full' | 'backing') {
         dur = Math.max(dur, b.duration);
     }
 
+    // The video must always span the whole synced song and show the tiles — even
+    // for a backing render when there is no separate instrumental track. Vocal and
+    // backing stems are the same length and tiles are timed off the vocal sync, so
+    // when the mode's own audio didn't set a length, fall back to the vocal track's
+    // duration (decoded for length only, not mixed into a backing render).
+    if (dur === 0 && appState.files.audioVocal) {
+        try {
+            const vb = await appState.files.audioVocal.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
+            dur = Math.max(dur, vb.duration);
+        } catch (e) { console.warn('Could not decode vocal track for duration:', e); }
+    }
+    // Always cover the full tile timeline (plus a short tail) so the last tile
+    // isn't cut and the tiles render regardless of the audio situation.
+    const syms = appState.symbols;
+    if (syms.length) {
+        const last = syms[syms.length - 1];
+        dur = Math.max(dur, (last.endTime || last.startTime || 0) + 1.5);
+    }
+    if (dur <= 0) {
+        alert('Nothing to render yet — add an audio track or sync some tiles first.');
+        dom.rendering.overlay.style.display = 'none';
+        audioCtx.close();
+        return;
+    }
+
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     
