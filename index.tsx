@@ -2854,6 +2854,32 @@ function hasRoundLoop(): boolean {
     return r.start >= 0 && r.end > r.start && !!appState.symbols[r.start] && !!appState.symbols[r.end];
 }
 
+// When the leader finishes the whole line — the last tile's end time.
+function roundLineEndTime(): number {
+    const syms = appState.symbols;
+    if (!syms.length) return 0;
+    const last = syms[syms.length - 1];
+    return last.endTime || last.startTime || 0;
+}
+
+// The marked loop phrase as an absolute start time + duration. This is the
+// short "vamp" a voice repeats once it has finished its line, so the round
+// resolves in unison instead of freezing on the last tile. Returns null if no
+// usable loop is marked.
+function roundPhraseSpan(): { startT: number; dur: number } | null {
+    if (!hasRoundLoop()) return null;
+    const r = appState.round;
+    const syms = appState.symbols;
+    const startT = syms[r.start].startTime || 0;
+    const tiles = Math.max(1, r.end - r.start);
+    const avgTile = ((syms[r.end].startTime || 0) - startT) / tiles;
+    const endT = (syms[r.end].endTime && syms[r.end].endTime > (syms[r.end].startTime || 0))
+        ? syms[r.end].endTime
+        : (syms[r.end].startTime || 0) + avgTile; // fall back if the last tile has no end
+    const dur = endT - startT;
+    return dur > 0.05 ? { startT, dur } : null;
+}
+
 function nudgeSelectedTile(dt: number) {
     const idx = appState.interaction.selectedSyncIndex;
     if (idx === -1) return;
@@ -3445,7 +3471,18 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             }
             ctx.restore();
         } else {
-            const activeIdx = activeIndexAt(effTime);
+            // Once a voice finishes its line it doesn't freeze on the last tile
+            // — it loops the marked phrase (a short vamp) in wall-clock unison
+            // with the other finished voices, until the trailing voice catches
+            // up so the round ends together. (Real rounds resolve this way.)
+            let sampleTime = effTime;
+            const phrase = roundPhraseSpan();
+            const lineEnd = roundLineEndTime();
+            if (phrase && effTime >= lineEnd) {
+                const into = time - lineEnd; // wall-clock → shared by all finished voices
+                sampleTime = phrase.startT + (into - Math.floor(into / phrase.dur) * phrase.dur);
+            }
+            const activeIdx = activeIndexAt(sampleTime);
             if (activeIdx !== -1) {
                 drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
             }
@@ -4173,15 +4210,25 @@ async function applyHistorySnapshot(snapshotStr: string) {
         appState.round = (data.round && typeof data.round.start === 'number') ? data.round : { start: -1, end: -1 };
         _thumbCache.clear();
 
+        // Undo/redo never changes the page images or page count — only the
+        // symbols, order and timings on top of them. So keep the images already
+        // loaded (captured before we clear the array). This is the reliable
+        // source; the load-time global and the placeholder are only fallbacks.
+        // Without this, an undo after a normal PDF/image upload wiped the
+        // background to a blank "Placeholder" page (a white screen).
+        const liveImages = appState.pages.map(p => p.image);
+
         // Apply pages
         appState.pages = [];
         for (let pIdx = 0; pIdx < data.pages.length; pIdx++) {
             const p = data.pages[pIdx];
-            
-            // Re-use original background image if present
+
+            // Re-use the live background image, then any load-time original.
             let img = new Image();
             const originalBackgrounds = (window as any)._originalPageBackgrounds;
-            if (originalBackgrounds && originalBackgrounds[pIdx] && originalBackgrounds[pIdx].image) {
+            if (liveImages[pIdx]) {
+                img = liveImages[pIdx];
+            } else if (originalBackgrounds && originalBackgrounds[pIdx] && originalBackgrounds[pIdx].image) {
                 img = originalBackgrounds[pIdx].image;
             } else {
                 const canvas = document.createElement('canvas');
