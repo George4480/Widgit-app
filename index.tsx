@@ -16,6 +16,10 @@ const redoStack: string[] = [];
 // Sync-stage playback speed (slow the song to place taps / the round loop).
 let syncPlaybackRate = 1;
 
+// Order-stage round-loop marking: when on, clicking a tile picks the loop
+// start/end (as sequence positions) rather than jumping/appending.
+let orderLoopMode = false;
+
 // Object URL Memory Cleaner
 const activeObjectUrls = new Set<string>();
 
@@ -190,6 +194,9 @@ function init() {
             btnPanUp: document.getElementById('btn-order-pan-up'),
             btnPanDown: document.getElementById('btn-order-pan-down'),
             sequenceStrip: document.getElementById('order-sequence-strip'),
+            btnLoopToggle: document.getElementById('btn-order-loop-toggle'),
+            btnLoopClear: document.getElementById('btn-order-loop-clear'),
+            loopHint: document.getElementById('order-loop-hint'),
             audio: document.getElementById('order-audio-player') as HTMLAudioElement
         },
         sync: {
@@ -495,6 +502,8 @@ function setupEventListeners() {
     });
     dom.order.btnPanUp.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
     dom.order.btnPanDown.addEventListener('click', () => dom.order.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
+    dom.order.btnLoopToggle.addEventListener('click', toggleOrderLoopMode);
+    dom.order.btnLoopClear.addEventListener('click', clearRoundLoop);
 
 
     // --- Sync View (Waveform) ---
@@ -1903,6 +1912,7 @@ function setupOrderView() {
     dom.order.labelPage.textContent = `Page ${appState.currentPageIndex + 1} / ${appState.pages.length}`;
     drawOrderCanvas();
     renderOrderSequenceStrip();
+    updateOrderLoopUI();
 }
 function drawOrderCanvas() {
     const ctx = dom.order.ctx;
@@ -1980,6 +1990,33 @@ function drawOrderCanvas() {
             ctx.textBaseline = 'alphabetic';
         }
     });
+
+    // Highlight the round-loop start/end tiles on this page (matched by their
+    // exact sequence position, so repeats are unambiguous).
+    const r = appState.round;
+    [{ i: r.start, txt: '⟲ LOOP START' }, { i: r.end, txt: 'LOOP END' }].forEach(({ i, txt }) => {
+        if (i < 0 || !seq[i] || seq[i].page !== pageIdx) return;
+        const sym = page.symbols[seq[i].sym];
+        if (!sym) return;
+        const x = sym.x * scale, y = sym.y * scale, w = sym.width * scale, h = sym.height * scale;
+        ctx.save();
+        ctx.fillStyle = 'rgba(129, 140, 248, 0.28)';
+        ctx.fillRect(x, y, w, h);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#6366f1';
+        ctx.setLineDash([8, 5]);
+        ctx.strokeRect(x, y, w, h);
+        ctx.setLineDash([]);
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        const lw = ctx.measureText(txt).width + 12;
+        ctx.fillStyle = '#6366f1';
+        roundRect(ctx, x + w / 2 - lw / 2, y + h - 20, lw, 17, 8);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.fillText(txt, x + w / 2, y + h - 8);
+        ctx.restore();
+    });
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -2041,9 +2078,23 @@ function moveSequenceStep(from: number, to: number) {
     if (to < 0 || to >= seq.length || from === to) return;
     const [step] = seq.splice(from, 1);
     seq.splice(to, 0, step);
+    // Keep the round-loop bounds pointing at the same tiles after the move.
+    const shift = (idx: number) => {
+        if (idx === -1) return -1;
+        if (idx === from) return to;
+        let n = idx;
+        if (from < idx) n--;
+        if (to <= n) n++;
+        return n;
+    };
+    const r = appState.round;
+    r.start = shift(r.start);
+    r.end = shift(r.end);
+    if (r.end !== -1 && r.end <= r.start) appState.round = { start: -1, end: -1 };
     saveHistoryState();
     drawOrderCanvas();
     renderOrderSequenceStrip();
+    updateOrderLoopUI();
 }
 
 // Renders the ENTIRE cross-page reading order (not just the current page), so
@@ -2069,6 +2120,20 @@ function renderOrderSequenceStrip() {
         item.draggable = true;
         const onCurrentPage = step.page === appState.currentPageIndex;
         if (onCurrentPage) item.classList.add('active');
+
+        // Round-loop shading/badges.
+        const r = appState.round;
+        if (r.start !== -1) {
+            if (seqIdx === r.start) item.classList.add('loop-start');
+            else if (seqIdx === r.end) item.classList.add('loop-end');
+            else if (r.end !== -1 && seqIdx > r.start && seqIdx < r.end) item.classList.add('loop-mid');
+            if (seqIdx === r.start || seqIdx === r.end) {
+                const lb = document.createElement('div');
+                lb.className = 'loop-badge';
+                lb.textContent = seqIdx === r.start ? '⟲ start' : 'end';
+                item.appendChild(lb);
+            }
+        }
 
         const img = document.createElement('img');
         img.src = stepThumb(step.page, step.sym);
@@ -2100,15 +2165,19 @@ function renderOrderSequenceStrip() {
         controls.appendChild(mkBtn('‹', 'Move earlier', () => moveSequenceStep(seqIdx, seqIdx - 1)));
         controls.appendChild(mkBtn('×', 'Remove from order', () => {
             appState.globalSequence.splice(seqIdx, 1);
+            adjustRoundForRemoval(seqIdx);
             saveHistoryState();
             drawOrderCanvas();
             renderOrderSequenceStrip();
+            updateOrderLoopUI();
         }));
         controls.appendChild(mkBtn('›', 'Move later', () => moveSequenceStep(seqIdx, seqIdx + 1)));
         item.appendChild(controls);
 
-        // Click the tile (not its buttons) to jump the canvas to its page.
+        // Click the tile: in loop-marking mode it picks the loop bound;
+        // otherwise it jumps the canvas to that tile's page.
         item.onclick = () => {
+            if (orderLoopMode) { pickLoopStep(seqIdx); return; }
             if (step.page !== appState.currentPageIndex) {
                 appState.currentPageIndex = step.page;
                 setupOrderView();
@@ -2142,14 +2211,111 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const y = pos.y / scale;
 
     const hitIdx = page.symbols.findIndex((s: any) => x >= s.x && x <= s.x + s.width && y >= s.y && y <= s.y + s.height);
-    if (hitIdx !== -1) {
-        // Append to the ONE continuous cross-page reading order. Clicking the
-        // same tile again (here or on a later visit to this page) just repeats
-        // it — exactly what a chorus / repeated word needs.
-        appState.globalSequence.push({ page: appState.currentPageIndex, sym: hitIdx });
-        saveHistoryState();
-        drawOrderCanvas();
-        renderOrderSequenceStrip();
+    if (hitIdx === -1) return;
+
+    if (orderLoopMode) {
+        // In loop-marking mode, a canvas tap picks the loop bound. Map the tile
+        // to its position in the reading order (a repeated tile picks the first
+        // occurrence for the start, and the first occurrence at/after the start
+        // for the end — the strip below lets you fine-tune exact repeats).
+        const seq = appState.globalSequence;
+        const wantStart = appState.round.start === -1 || appState.round.end !== -1;
+        const from = wantStart ? 0 : appState.round.start + 1;
+        let seqIdx = -1;
+        for (let i = from; i < seq.length; i++) {
+            if (seq[i].page === appState.currentPageIndex && seq[i].sym === hitIdx) { seqIdx = i; break; }
+        }
+        if (seqIdx === -1) {
+            // Not found after the start — fall back to its first occurrence.
+            seqIdx = seq.findIndex(st => st.page === appState.currentPageIndex && st.sym === hitIdx);
+        }
+        if (seqIdx !== -1) pickLoopStep(seqIdx);
+        return;
+    }
+
+    // Append to the ONE continuous cross-page reading order. Clicking the
+    // same tile again (here or on a later visit to this page) just repeats
+    // it — exactly what a chorus / repeated word needs.
+    appState.globalSequence.push({ page: appState.currentPageIndex, sym: hitIdx });
+    saveHistoryState();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+}
+
+// --- Round-loop marking at the Order stage ------------------------------
+// The loop is stored in appState.round as sequence positions, which line up
+// 1:1 with the flat tile list built at the Sync stage, so a loop marked here
+// is the same loop the Sync timeline and the round preview use.
+
+function toggleOrderLoopMode() {
+    orderLoopMode = !orderLoopMode;
+    updateOrderLoopUI();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+}
+
+function clearRoundLoop() {
+    appState.round = { start: -1, end: -1 };
+    saveHistoryState();
+    updateOrderLoopUI();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+}
+
+// One click while marking: first sets the start, second sets the end (a later
+// tile), a third starts over from the newly clicked tile.
+function pickLoopStep(seqIdx: number) {
+    const r = appState.round;
+    if (r.start === -1 || r.end !== -1) {
+        r.start = seqIdx;
+        r.end = -1;
+    } else if (seqIdx > r.start) {
+        r.end = seqIdx;
+    } else if (seqIdx < r.start) {
+        // Clicked before the start — treat the earlier tile as the new start
+        // and the previous start as the end, so order never matters.
+        r.end = r.start;
+        r.start = seqIdx;
+    } else {
+        return; // same tile as start — ignore
+    }
+    saveHistoryState();
+    updateOrderLoopUI();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+}
+
+// Keep the loop pointing at the same tiles when the sequence is edited.
+function adjustRoundForRemoval(removedIdx: number) {
+    const r = appState.round;
+    if (r.start === -1) return;
+    if (removedIdx === r.start || removedIdx === r.end) { appState.round = { start: -1, end: -1 }; return; }
+    if (removedIdx < r.start) r.start--;
+    if (r.end !== -1 && removedIdx < r.end) r.end--;
+}
+
+function updateOrderLoopUI() {
+    const btn = dom.order.btnLoopToggle;
+    const clr = dom.order.btnLoopClear;
+    const hint = dom.order.loopHint;
+    const strip = dom.order.sequenceStrip;
+    if (!btn) return;
+    const r = appState.round;
+    const hasFull = r.start >= 0 && r.end > r.start;
+    btn.classList.toggle('active', orderLoopMode);
+    btn.textContent = orderLoopMode ? '🔁 Done marking' : (hasFull ? '🔁 Edit round loop' : '🔁 Mark round loop');
+    if (clr) clr.style.display = (r.start >= 0) ? 'inline-flex' : 'none';
+    if (strip) strip.classList.toggle('loop-picking', orderLoopMode);
+    if (hint) {
+        if (orderLoopMode) {
+            if (r.start === -1) hint.innerHTML = 'Click the tile where the loop <strong>starts</strong> (on the page or in the strip below).';
+            else if (r.end === -1) hint.innerHTML = `Loop starts at tile <strong>${r.start + 1}</strong> — now click the tile where it <strong>ends</strong>.`;
+            else hint.innerHTML = `Round loop: tile <strong>${r.start + 1}</strong> → <strong>${r.end + 1}</strong>. Click another tile to re-set the start.`;
+        } else if (hasFull) {
+            hint.innerHTML = `Round loop set: tile <strong>${r.start + 1}</strong> → <strong>${r.end + 1}</strong>. Following voices enter after this section.`;
+        } else {
+            hint.innerHTML = 'For a musical round: turn this on, then click the tile the loop <strong>starts</strong> on and the tile it <strong>ends</strong> on.';
+        }
     }
 }
 
