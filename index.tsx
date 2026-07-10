@@ -1272,12 +1272,20 @@ function captureAudioRealtime(file: File): Promise<File> {
     });
 }
 
-// Seek through the video and keep a full frame whenever the downscaled picture
-// differs enough from the last kept frame (a scene/tile change).
+// Seek through the video and keep one frame per distinct, settled picture.
+//
+// A karaoke tile changes only a SMALL region of the frame (the active card),
+// and the cards all look alike, so a whole-frame average washes the change out
+// and tiles get missed. Instead we downscale, split into blocks, and use the
+// STRONGEST block change, so a localized tile swap still registers. We capture
+// once the picture has settled (little motion vs the previous probe) — with a
+// fallback after a few probes so a never-quite-still frame is still caught — and
+// only when it differs from the last kept tile, so each distinct tile lands once.
 async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setStatus: (t: string) => void) {
-    const step = Math.max(0.2, duration / 300);   // up to ~300 probes
-    const small = document.createElement('canvas'); small.width = 32; small.height = 18;
-    const sctx = small.getContext('2d')!;
+    const step = Math.max(0.15, Math.min(0.3, duration / 500));   // finer probing
+    const SW = 48, SH = 27;
+    const small = document.createElement('canvas'); small.width = SW; small.height = SH;
+    const sctx = small.getContext('2d', { willReadFrequently: true })!;
     const full = document.createElement('canvas');
     full.width = video.videoWidth || 640; full.height = video.videoHeight || 360;
     const fctx = full.getContext('2d')!;
@@ -1288,26 +1296,55 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
         video.currentTime = Math.min(t, duration - 0.01);
     });
 
+    // Largest per-block mean channel difference between two downscaled frames — a
+    // change confined to one region (a swapped tile) scores high even though the
+    // rest of the frame is unchanged.
+    const GX = 6, GY = 4, BW = SW / GX, BH = SH / GY;
+    const blockMaxDiff = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+        let worst = 0;
+        for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
+            let sum = 0, n = 0;
+            for (let y = Math.floor(gy * BH); y < (gy + 1) * BH; y++) {
+                for (let x = Math.floor(gx * BW); x < (gx + 1) * BW; x++) {
+                    const i = (y * SW + x) * 4;
+                    sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+                    n += 3;
+                }
+            }
+            const m = sum / Math.max(1, n);
+            if (m > worst) worst = m;
+        }
+        return worst;
+    };
+
     const results: { time: number; dataUrl: string }[] = [];
-    let prev: Uint8ClampedArray | null = null;
-    const DIFF = 14; // mean per-channel difference (0-255) that counts as a change
+    let lastKept: Uint8ClampedArray | null = null;
+    let prevProbe: Uint8ClampedArray | null = null;
+    let pending = 0;
+    const NEW_TILE = 12;   // block change vs the last kept tile → a different tile
+    const SETTLED = 9;     // block change vs the previous probe below this → not animating
     for (let t = 0; t < duration; t += step) {
         await seek(t);
-        sctx.drawImage(video, 0, 0, small.width, small.height);
-        const cur = sctx.getImageData(0, 0, small.width, small.height).data;
-        let changed = prev === null;
-        if (prev) {
-            let sum = 0;
-            for (let i = 0; i < cur.length; i += 4) sum += Math.abs(cur[i] - prev[i]) + Math.abs(cur[i+1] - prev[i+1]) + Math.abs(cur[i+2] - prev[i+2]);
-            const mean = sum / (cur.length / 4 * 3);
-            changed = mean > DIFF;
+        sctx.drawImage(video, 0, 0, SW, SH);
+        const cur = sctx.getImageData(0, 0, SW, SH).data;
+        const motion = prevProbe ? blockMaxDiff(cur, prevProbe) : 0;
+        const vsKept = lastKept ? blockMaxDiff(cur, lastKept) : Infinity;
+        if (vsKept > NEW_TILE) {
+            // A new tile is on screen — capture it once it settles, or after a few
+            // probes of sustained change so we never miss a fast/uneasy transition.
+            if (motion <= SETTLED || pending >= 3) {
+                fctx.drawImage(video, 0, 0, full.width, full.height);
+                results.push({ time: t, dataUrl: full.toDataURL('image/png') });
+                lastKept = cur.slice();
+                pending = 0;
+                setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
+            } else {
+                pending++;
+            }
+        } else {
+            pending = 0;
         }
-        if (changed) {
-            fctx.drawImage(video, 0, 0, full.width, full.height);
-            results.push({ time: t, dataUrl: full.toDataURL('image/png') });
-            prev = cur.slice();
-            setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
-        }
+        prevProbe = cur.slice();
     }
     return results;
 }
