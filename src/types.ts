@@ -46,13 +46,26 @@ export interface StyleConfig {
     prevCount: number;
     prevScale: number;
     prevOpacity: number;
-    // Musical round (canon): extra voices sing the same sequence, entering
-    // one gap later each, shown as their own colour-coded row.
+    // Round: identical melody at EQUAL spacing that LOOPS a marked phrase to a
+    // unison finish (e.g. "Row, Row, Row Your Boat"). A cyclic form.
     roundEnabled: boolean;
-    roundVoices: number;   // total voices including the leader (2-3)
-    roundGap: number;      // seconds each following voice enters after the previous
+    roundVoices: number;        // total voices including the leader (2-3)
+    roundGap: number;           // seconds each following voice enters after the previous
     roundCountdown: boolean;    // show a beat countdown before each voice enters
     roundCountInBeats: number;  // beats to count (from the song's time signature)
+    // Canon: a DIFFERENT musical form — the same melody simply fired later. Each
+    // following voice enters at its OWN chosen point, sings the line ONCE, and it
+    // ends. It does not loop and is not a round.
+    canonEnabled: boolean;
+    canonVoices: number;        // total voices including the leader (2-4)
+    /**
+     * Entry point of each FOLLOWING voice, as a 0-based leader tile index — the
+     * tile the leader is on when that voice fires its own first tile.
+     * canonEntries[0] is voice 2, [1] is voice 3, [2] is voice 4.
+     */
+    canonEntries: number[];
+    canonCountdown: boolean;    // show a beat countdown before each voice enters
+    canonCountInBeats: number;  // beats to count (from the song's time signature)
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
     // excluding header/footer logos), glow-highlight the current tile, and
     // scroll down continuously as the song progresses. Alternative to conveyor.
@@ -132,6 +145,12 @@ export interface ProjectSaveData {
     styleConfig: StyleConfig;
     gridConfig: GridConfig;
     latencyOffset: number;
+    /**
+     * The pipeline stage the project was on when saved (e.g. 'sync-view',
+     * 'result-view'), so a reload can resume there instead of the first step.
+     * Absent in files saved before this feature.
+     */
+    currentView?: string;
     /** Cross-page reading order. Absent in files saved before this feature. */
     globalSequence?: SequenceStep[];
     /** Round loop section by tile index. Absent in older files. */
