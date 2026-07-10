@@ -3830,15 +3830,18 @@ async function renderVideo(mode: 'full' | 'backing') {
     const audioCtx = new AudioContext();
     const dest = audioCtx.createMediaStreamDestination();
     
-    // Setup Audio Sources
+    // Setup Audio Sources — play exactly ONE track per export. The Full video is
+    // the complete mix (the 'vocal' / main track); the Backing video is the
+    // instrumental ('backing') track. Mixing both would play any shared audio
+    // twice — e.g. a full mix plus its own instrumental — which comes out as a
+    // doubled, echoing track (the two also start a beat apart after separate
+    // decode delays).
     let dur = 0;
-    if (appState.files.audioVocal && mode === 'full') {
-        const b = await appState.files.audioVocal.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
-        const s = audioCtx.createBufferSource(); s.buffer = b; s.connect(dest); s.start(0);
-        dur = Math.max(dur, b.duration);
-    }
-    if (appState.files.audioBacking) {
-        const b = await appState.files.audioBacking.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
+    const track = mode === 'full'
+        ? (appState.files.audioVocal || appState.files.audioBacking)
+        : appState.files.audioBacking;
+    if (track) {
+        const b = await track.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
         const s = audioCtx.createBufferSource(); s.buffer = b; s.connect(dest); s.start(0);
         dur = Math.max(dur, b.duration);
     }
