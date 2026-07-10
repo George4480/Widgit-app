@@ -145,6 +145,12 @@ export interface ProjectSaveData {
     styleConfig: StyleConfig;
     gridConfig: GridConfig;
     latencyOffset: number;
+    /**
+     * The pipeline stage the project was on when saved (e.g. 'sync-view',
+     * 'result-view'), so a reload can resume there instead of the first step.
+     * Absent in files saved before this feature.
+     */
+    currentView?: string;
     /** Cross-page reading order. Absent in files saved before this feature. */
     globalSequence?: SequenceStep[];
     /** Round loop section by tile index. Absent in older files. */

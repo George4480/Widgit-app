@@ -4230,6 +4230,7 @@ async function saveProjectJson() {
         styleConfig: appState.styleConfig,
         gridConfig: appState.gridConfig,
         latencyOffset: appState.interaction.latencyOffset,
+        currentView: appState.currentView,
         globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym })),
         round: { start: appState.round.start, end: appState.round.end },
         pages: savedPages
@@ -4347,9 +4348,35 @@ function handleProjectLoadFile(e: Event) {
             redoStack.length = 0;
             saveHistoryState();
 
-            // Toggle view
+            // Wire the uploaded audio into the players. The normal Create flow
+            // does this, but a project load skips it — so without this, resuming
+            // at Sync/Result would open with a dead player and no waveform. The
+            // user loads the PDF + audio before the project file, so the files
+            // are already in appState.files.
+            const syncFile = appState.files.audioVocal || appState.files.audioBacking;
+            if (syncFile) {
+                try {
+                    const url = createLocalUrl(syncFile);
+                    dom.sync.audio.src = url;
+                    if (dom.order.audio) dom.order.audio.src = url;
+                    const ctx = new AudioContext();
+                    appState.audioBuffer = await ctx.decodeAudioData(await syncFile.arrayBuffer());
+                    ctx.close();
+                } catch (audioErr) {
+                    console.warn('Could not wire audio on project load:', audioErr);
+                }
+            }
+
+            // Resume on the stage the project was saved at, so a fully-synced
+            // project reopens at Sync/Result instead of always the first step.
+            // Board mode only has the define stage; older files (no saved stage)
+            // fall back to it too.
             appState.currentPageIndex = 0;
-            switchView('define-symbols-view');
+            const RESUMABLE = ['define-symbols-view', 'order-view', 'sync-view', 'result-view'];
+            const targetView = (appState.mode !== 'board' && RESUMABLE.includes(data.currentView))
+                ? data.currentView
+                : 'define-symbols-view';
+            switchView(targetView);
             
             alert(`Project "${appState.songTitle}" loaded successfully! If you'd like to restore the original full-resolution background templates, please drop the corresponding source PDF or image files on the creator area.`);
         } catch (err) {
