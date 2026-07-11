@@ -1166,6 +1166,12 @@ async function startProject() {
             ctx.close();
         }
 
+        // Auto-detect tiles on every page up front, so the Define stage opens
+        // with symbols already identified. The user only tweaks the threshold
+        // (which re-detects) or edits by hand if the automatic pass is off —
+        // faster than starting from a blank page every time.
+        for (let i = 0; i < appState.pages.length; i++) runGridDetection(i, false);
+
         switchView('define-symbols-view');
         setTimeout(() => { resizeCanvas(); drawCanvas(); }, 100);
     } catch (e) {
@@ -1779,13 +1785,13 @@ function drawCanvas() {
          ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
 }
-function runGridDetection() {
-    const page = appState.pages[appState.currentPageIndex];
+function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: boolean = true) {
+    const page = appState.pages[pageIndex];
     if (!page) return;
     page.symbols = []; // Clear previous
     page.sequence = [];
-    pruneGlobalSequence(appState.currentPageIndex, { clearPage: true });
-    invalidatePageThumbs(appState.currentPageIndex);
+    pruneGlobalSequence(pageIndex, { clearPage: true });
+    invalidatePageThumbs(pageIndex);
 
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = page.width; tempCanvas.height = page.height;
@@ -1821,7 +1827,7 @@ function runGridDetection() {
         }
         if(inCol && w-startX>20) page.symbols.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
     });
-    drawCanvas();
+    if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     if (e.type === 'touchstart') {
