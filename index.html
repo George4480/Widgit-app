@@ -1701,6 +1701,47 @@
         .settings-note { margin: 2px 0 8px; font-size: 0.82rem; line-height: 1.45; color: var(--text-soft, #6b7280); }
         .canon-entry-tile { font-weight: 600; color: var(--primary-text, var(--primary)); }
         .canon-entry-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
+
+        /* ---- Define stage: always-visible grid sensitivity bar ---- */
+        .grid-sensitivity-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            margin-top: 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg, 10px);
+        }
+        .grid-sensitivity-bar label { font-size: 0.9rem; font-weight: 600; white-space: nowrap; color: var(--text); }
+        .grid-sensitivity-bar input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); }
+        .grid-sensitivity-bar .gs-val { font-size: 0.8rem; color: var(--text-muted); min-width: 70px; text-align: right; }
+
+        /* ---- Result stage: keep the preview in view while adjusting settings ---- */
+        .result-layout { display: flex; gap: 24px; align-items: flex-start; }
+        .result-preview-pane {
+            position: sticky;
+            top: 12px;
+            align-self: flex-start;
+            flex: 0 0 clamp(300px, 42%, 520px);
+        }
+        .result-controls-pane { flex: 1 1 auto; min-width: 0; }
+        .result-preview-pane #preview-container { margin-bottom: 12px; }
+        @media (max-width: 860px) {
+            .result-layout { flex-direction: column; gap: 12px; }
+            .result-preview-pane {
+                position: sticky;
+                top: 0;
+                z-index: 30;
+                flex-basis: auto;
+                width: 100%;
+                background: var(--surface);
+                padding: 8px 0;
+                box-shadow: 0 6px 10px -6px rgba(0,0,0,0.25);
+            }
+            .result-preview-pane #preview-canvas { max-height: 32vh; width: auto; }
+            .result-preview-pane .button-group { margin: 8px 0 0 0; }
+        }
     </style>
 </head>
 <body>
@@ -1878,11 +1919,6 @@
                     <button id="btn-select-matching-color" class="button secondary small">Select Color Match</button>
                     <button id="btn-clear-page" class="button secondary small" style="color: #c5221f;">Clear Page</button>
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px; padding: 10px;">
-                    <label for="grid-sensitivity" style="font-size: 0.9rem; font-weight: 500;">Grid Sensitivity:</label>
-                    <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2" style="flex-grow: 1;">
-                    <span id="grid-sensitivity-val" style="font-size: 0.8rem; color: var(--text-muted);">Very High</span>
-                </div>
             </div>
 
             <!-- Board Mode Tools -->
@@ -1898,6 +1934,14 @@
 
         <div id="define-canvas-container" class="canvas-container">
             <canvas id="define-canvas"></canvas>
+        </div>
+
+        <!-- Grid sensitivity: always visible along the bottom so it can be
+             adjusted without opening a menu; re-detects tiles live. -->
+        <div id="grid-sensitivity-bar" class="grid-sensitivity-bar">
+            <label for="grid-sensitivity">Grid sensitivity:</label>
+            <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2">
+            <span id="grid-sensitivity-val" class="gs-val">Very High</span>
         </div>
 
         <button id="btn-goto-order" class="button" style="width: 100%; margin-top: 20px;">Next: Set Order ➡</button>
@@ -2048,30 +2092,37 @@
     <!-- 6. Result/Preview View -->
     <div id="result-view" class="view-section">
         <h2 style="text-align: center;">Preview & Export</h2>
-        
-        <div id="preview-container" style="text-align: center; margin-bottom: 20px;">
-            <canvas id="preview-canvas" width="640" height="360" style="border: 1px solid #ddd; max-width: 100%; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></canvas>
-        </div>
 
-        <div style="margin: 0 auto 20px auto; padding: 15px; background: var(--surface-2); border-radius: 8px; max-width: 600px;">
-            <div class="setting-item">
-                <label for="latency-slider" style="font-weight: bold; color: var(--primary-text);">Global Timing Correction (Sync Offset): <span id="latency-val">0.00</span>s</label>
-                <div style="display:flex; justify-content:space-between; font-size: 0.75rem; color:#666;">
-                    <span>Earlier</span><span>Later</span>
-                </div>
-                <input type="range" id="latency-slider" min="-1000" max="1000" value="0" step="10" style="width: 100%;">
-                <p style="font-size: 0.8rem; margin: 5px 0 0 0; color: var(--text-muted);">Use this to nudge the entire video if audio is out of sync.</p>
+        <!-- Two panes: the preview + its playback/timing controls stay pinned
+             (sticky) on the left while the settings scroll on the right, so
+             changes are visible as you make them instead of scrolling back up. -->
+        <div class="result-layout">
+          <div class="result-preview-pane">
+            <div id="preview-container" style="text-align: center; margin-bottom: 12px;">
+                <canvas id="preview-canvas" width="640" height="360" style="border: 1px solid #ddd; max-width: 100%; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></canvas>
             </div>
-        </div>
 
-        <div class="button-group">
-            <button id="btn-rewind-preview" class="button secondary">Rewind</button>
-            <button id="btn-play-preview" class="button">Play</button>
-            <button id="btn-pause-preview" class="button secondary">Pause</button>
-        </div>
+            <div class="button-group" style="margin-top: 0;">
+                <button id="btn-rewind-preview" class="button secondary">Rewind</button>
+                <button id="btn-play-preview" class="button">Play</button>
+                <button id="btn-pause-preview" class="button secondary">Pause</button>
+            </div>
 
+            <div style="margin: 14px 0 0 0; padding: 15px; background: var(--surface-2); border-radius: 8px;">
+                <div class="setting-item">
+                    <label for="latency-slider" style="font-weight: bold; color: var(--primary-text);">Global Timing Correction (Sync Offset): <span id="latency-val">0.00</span>s</label>
+                    <div style="display:flex; justify-content:space-between; font-size: 0.75rem; color:#666;">
+                        <span>Earlier</span><span>Later</span>
+                    </div>
+                    <input type="range" id="latency-slider" min="-1000" max="1000" value="0" step="10" style="width: 100%;">
+                    <p style="font-size: 0.8rem; margin: 5px 0 0 0; color: var(--text-muted);">Use this to nudge the entire video if audio is out of sync.</p>
+                </div>
+            </div>
+          </div>
+
+          <div class="result-controls-pane">
         <!-- Customization Panel -->
-        <details>
+        <details open>
             <summary>🎨 Visual Settings & Customization</summary>
 
             <div class="settings-section">
@@ -2257,6 +2308,8 @@
                 </div>
             </div>
         </details>
+          </div>
+        </div>
 
         <div class="result-actions">
             <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>

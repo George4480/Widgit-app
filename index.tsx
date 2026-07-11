@@ -1501,6 +1501,11 @@ function switchView(viewId: string) {
         if (dom.define.labelPage) {
             dom.define.labelPage.textContent = `Page ${appState.currentPageIndex + 1} / ${appState.pages.length}`;
         }
+        // The grid-sensitivity bar (a karaoke-only control) lives outside the
+        // tools block now, so toggle it with the mode explicitly.
+        const gsBar = document.getElementById('grid-sensitivity-bar');
+        if (gsBar) gsBar.style.display = isBoard ? 'none' : 'flex';
+
         setTimeout(resizeCanvas, 50);
     }
 
