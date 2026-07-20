@@ -5,6 +5,11 @@ import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
 import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep } from "./src/types";
+import { inject as injectVercelAnalytics } from "@vercel/analytics";
+
+// Vercel Web Analytics — collects anonymous page-view/visitor metrics once the
+// app is served from Vercel (no-op in local dev).
+injectVercelAnalytics();
 
 // Set PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
