@@ -3,7 +3,11 @@ export interface SymbolTile {
     y: number;
     width: number;
     height: number;
+    /** Rendered crop of this tile as a data URL. Populated on the flat
+     *  AppState.symbols entries; not stored on the per-page source tiles. */
     imageSrc?: string;
+    /** Runtime-only decoded image for a user-supplied tile. Persisted to
+     *  saves as ProjectSaveData…symbols[].customImageBase64, not this field. */
     customImage?: HTMLImageElement | null;
     startTime?: number;
     endTime?: number;
@@ -16,11 +20,17 @@ export interface ProjectPage {
     image: HTMLImageElement;
     width: number;
     height: number;
+    /**
+     * Source-of-truth tiles for this page (spatially attached to the page).
+     * The flat AppState.symbols list is derived from these plus the reading
+     * order — edit tiles here, then rebuild the flat list.
+     */
     symbols: SymbolTile[];
     /**
-     * Legacy per-page ordering. Retained for backward compatibility with
-     * saved projects and as a fallback, but the canonical reading order is
-     * now AppState.globalSequence, which can span and revisit pages.
+     * @deprecated Legacy per-page ordering. Retained only for backward
+     * compatibility with saved projects and as a migration fallback — the
+     * canonical reading order is AppState.globalSequence, which can span and
+     * revisit pages. Do not use in new logic.
      */
     sequence: number[];
 }
@@ -96,6 +106,14 @@ export interface AppState {
     globalSequence: SequenceStep[];
     /** Round loop section defined at the Sync stage, by flat tile index (-1 = unset). */
     round: { start: number; end: number };
+    /**
+     * Derived, sequence-expanded flat list — NOT a second copy of the page
+     * tiles. Rebuilt from pages[].symbols + the reading order: one entry per
+     * reading-order step (so a repeated tile yields multiple independent
+     * entries, each carrying its own imageSrc crop and startTime/endTime).
+     * This is the timing/playback representation; treat pages[].symbols as the
+     * source of truth and rebuild this, don't hand-edit it.
+     */
     symbols: SymbolTile[];
     isRecordingSync: boolean;
     currentSyncIndex: number;
@@ -126,6 +144,12 @@ export interface AppState {
         isPlaying: boolean;
         animationId: number;
         startTime: number;
+        /**
+         * Decoded per-tile images for rendering the preview/export, keyed by
+         * flat AppState.symbols index (NOT page images — the page backgrounds
+         * live on ProjectPage.image). Each value is a decode of that tile's
+         * imageSrc crop.
+         */
         loadedImages: Map<number, HTMLImageElement>;
     };
 }
@@ -167,8 +191,12 @@ export interface ProjectSaveData {
             direction?: string;
             startTime?: number;
             endTime?: number;
-            customImageBase64?: string; // Serialized base64 of customImage
+            customImageBase64?: string; // Serialized base64 of customImage (runtime: SymbolTile.customImage)
         }[];
+        /**
+         * @deprecated Legacy per-page order, written for backward compatibility.
+         * The canonical saved order is ProjectSaveData.globalSequence.
+         */
         sequence: number[];
     }[];
 }
