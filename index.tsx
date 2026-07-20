@@ -323,7 +323,11 @@ function setupEventListeners() {
             return window.matchMedia('(prefers-color-scheme: dark)').matches;
         };
         const syncThemeButton = () => {
-            dom.global.btnToggleTheme.textContent = isDarkActive() ? "☀️ Light" : "🌙 Dark";
+            // Keep the label in a .ctl-label span so it collapses to icon-only
+            // on mobile like the other control-bar buttons.
+            dom.global.btnToggleTheme.innerHTML = isDarkActive()
+                ? '☀️ <span class="ctl-label">Light</span>'
+                : '🌙 <span class="ctl-label">Dark</span>';
         };
         syncThemeButton();
         dom.global.btnToggleTheme.addEventListener('click', () => {
@@ -3305,6 +3309,14 @@ async function setupResultView() {
     // Duration may not be known until the audio metadata loads; refresh the
     // time readout / scrubber range once it is.
     dom.sync.audio.addEventListener('loadedmetadata', updatePreviewTransport, { once: true });
+    // On phones the long settings panel would bury the video and the action
+    // bar, so start it collapsed there (tap the 🎨 rail button to open); keep
+    // it open on wider screens where it sits comfortably.
+    if (dom.result.settingsPanel) {
+        const wide = window.innerWidth > 760;
+        dom.result.settingsPanel.open = wide;
+        if (dom.result.btnToggleSettings) dom.result.btnToggleSettings.classList.toggle('is-active', wide);
+    }
 }
 function playPreview() {
     if (appState.preview.isPlaying) return;

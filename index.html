@@ -1792,6 +1792,40 @@
             .stage-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; width: 100%; position: static; }
             .stage-bottom { justify-content: center; }
         }
+
+        /* ================================================================
+           Mobile polish (phones): denser, calmer, fewer taps to scroll past.
+           ================================================================ */
+        @media (max-width: 600px) {
+            /* Header a touch tighter */
+            .header { margin-bottom: 14px; }
+            .header h1 { font-size: 1.9rem; }
+            .header p { font-size: 0.9rem; margin-top: 2px; }
+
+            /* Collapse the global control bar to a single centred icon row:
+               the labels hide, the emoji stay, tooltips/aria-labels remain. */
+            .global-control-bar { padding: 8px 10px !important; gap: 6px !important; justify-content: center; }
+            .global-control-bar > div { gap: 6px !important; justify-content: center; width: auto; }
+            .ctl-btn { padding: 9px 11px !important; min-height: 42px; font-size: 1.1rem; width: auto !important; }
+            .ctl-btn .ctl-label { display: none; }
+            .ctl-divider { display: none; }
+
+            /* Transport: play/pause/rewind on one row, scrubber full-width below */
+            .stage-transport { justify-content: center; gap: 8px; }
+            .transport-scrub { flex-basis: 100%; order: 3; }
+
+            /* Roomier rail tap targets when folded to a horizontal strip */
+            .stage-rail { gap: 6px; }
+            .rail-btn { width: 62px; min-width: 62px; height: 50px; }
+
+            /* Bottom action bar: full-width stacked groups */
+            .stage-bottom { flex-direction: column; align-items: stretch; gap: 8px; }
+            .stage-bottom .bottom-group { width: 100%; }
+            .stage-bottom .bottom-group .button { width: 100%; }
+
+            /* Trim the empty spacer group so it adds no gap */
+            .stage-bottom .bottom-group:empty { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -1806,23 +1840,23 @@
     <div class="global-control-bar" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; align-items: center; background: var(--surface); padding: 12px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px;">
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <!-- Undo/Redo -->
-            <button id="btn-global-undo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Undo last change (Ctrl+Z)" aria-label="Undo last action">↩️ Undo</button>
-            <button id="btn-global-redo" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Redo change (Ctrl+Y)" aria-label="Redo last undone action">🔁 Redo</button>
-            
-            <div style="width: 1px; height: 24px; background: var(--border-strong); margin: 0 5px;"></div>
-            
+            <button id="btn-global-undo" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Undo last change (Ctrl+Z)" aria-label="Undo last action">↩️ <span class="ctl-label">Undo</span></button>
+            <button id="btn-global-redo" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Redo change (Ctrl+Y)" aria-label="Redo last undone action">🔁 <span class="ctl-label">Redo</span></button>
+
+            <div class="ctl-divider" style="width: 1px; height: 24px; background: var(--border-strong); margin: 0 5px;"></div>
+
             <!-- Save/Load -->
-            <button id="btn-global-save" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Save current project to file" aria-label="Save current project to a JSON file">💾 Save Project</button>
-            <button id="btn-global-load" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Load project from JSON file" aria-label="Load project from a JSON file">📂 Load Project</button>
+            <button id="btn-global-save" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" disabled title="Save current project to file" aria-label="Save current project to a JSON file">💾 <span class="ctl-label">Save Project</span></button>
+            <button id="btn-global-load" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Load project from JSON file" aria-label="Load project from a JSON file">📂 <span class="ctl-label">Load Project</span></button>
             <input type="file" id="input-global-load" style="display: none;" accept=".json">
         </div>
-        
+
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <!-- Accessibility Toggles -->
-            <button id="btn-toggle-theme" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Switch between light and dark theme" aria-label="Toggle dark mode">🌙 Dark</button>
-            <button id="btn-toggle-high-contrast" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle high contrast colors" aria-label="Toggle High Contrast Mode">👁️ Contrast</button>
-            <button id="btn-toggle-reduced-motion" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle animations on/off" aria-label="Toggle Reduced Motion Mode">🏃‍♂️ Motion</button>
-            <button id="btn-global-help" class="button secondary small" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: var(--primary-soft); color: var(--primary-text); width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ Help Guide</button>
+            <button id="btn-toggle-theme" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Switch between light and dark theme" aria-label="Toggle dark mode">🌙 <span class="ctl-label">Dark</span></button>
+            <button id="btn-toggle-high-contrast" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle high contrast colors" aria-label="Toggle High Contrast Mode">👁️ <span class="ctl-label">Contrast</span></button>
+            <button id="btn-toggle-reduced-motion" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; width: auto;" title="Toggle animations on/off" aria-label="Toggle Reduced Motion Mode">🏃‍♂️ <span class="ctl-label">Motion</span></button>
+            <button id="btn-global-help" class="button secondary small ctl-btn" style="margin: 0; padding: 8px 12px; min-height: 40px; background-color: var(--primary-soft); color: var(--primary-text); width: auto;" title="View Help Guide" aria-label="View Help Guide for this page">❓ <span class="ctl-label">Help Guide</span></button>
         </div>
     </div>
 
