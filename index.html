@@ -1934,22 +1934,7 @@
         <h2 style="text-align: center; margin-top: 0;">Refine Grid</h2>
         <p class="helper-text" style="text-align: center;">Add, remove, or resize boxes to detect all symbols correctly.</p>
         
-        <div class="toolbar">
-            <div class="toolbar-group">
-                <button id="btn-prev-page" class="button secondary small">Previous</button>
-                <span id="page-indicator" style="font-weight: bold; min-width: 100px; text-align: center;">Page 1 / 1</span>
-                <button id="btn-next-page" class="button secondary small">Next</button>
-            </div>
-            <div class="toolbar-group">
-                <button id="btn-pan-up" class="button secondary small">↑</button>
-                <button id="btn-pan-down" class="button secondary small">↓</button>
-                <button id="btn-zoom-out" class="button secondary small">Zoom -</button>
-                <button id="btn-zoom-in" class="button secondary small">Zoom +</button>
-                <button id="btn-delete-symbol" class="button secondary small" style="color: #c5221f;">Delete</button>
-            </div>
-        </div>
-
-        <!-- AI Creator -->
+        <!-- Optional: add your own image as a tile -->
         <details id="custom-image-details">
             <summary style="font-weight: bold; cursor: pointer; padding: 5px; color: var(--primary-text);">🖼️ Add your own image as a tile</summary>
             <div style="padding: 15px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); margin-top: 5px;">
@@ -1961,40 +1946,53 @@
             </div>
         </details>
 
-        <details>
-            <summary>Tools</summary>
-            <div id="karaoke-tools">
-                <div class="toolbar" style="background: var(--surface); border: none; padding-left: 0; padding-right: 0;">
-                    <button id="btn-autocomplete-grid" class="button small">Auto-Complete</button>
-                    <button id="btn-select-matching-color" class="button secondary small">Select Color Match</button>
-                    <button id="btn-clear-page" class="button secondary small" style="color: #c5221f;">Clear Page</button>
+        <div class="stage-frame">
+          <div class="stage-body">
+            <!-- Left tool-rail -->
+            <div class="stage-rail">
+                <button id="btn-prev-page" class="rail-btn" title="Previous page"><span class="rail-ico">◀</span><span class="rail-lbl">Prev pg</span></button>
+                <button id="btn-next-page" class="rail-btn" title="Next page"><span class="rail-ico">▶</span><span class="rail-lbl">Next pg</span></button>
+                <button id="btn-pan-up" class="rail-btn" title="Pan up"><span class="rail-ico">↑</span><span class="rail-lbl">Pan</span></button>
+                <button id="btn-pan-down" class="rail-btn" title="Pan down"><span class="rail-ico">↓</span><span class="rail-lbl">Pan</span></button>
+                <button id="btn-zoom-out" class="rail-btn" title="Zoom out"><span class="rail-ico">🔍−</span><span class="rail-lbl">Zoom</span></button>
+                <button id="btn-zoom-in" class="rail-btn" title="Zoom in"><span class="rail-ico">🔍+</span><span class="rail-lbl">Zoom</span></button>
+                <button id="btn-delete-symbol" class="rail-btn danger" title="Delete selected tile"><span class="rail-ico">🗑</span><span class="rail-lbl">Delete</span></button>
+                <!-- Karaoke-mode tools (hidden in board mode) -->
+                <div id="karaoke-tools" style="display:flex; flex-direction:column; gap:8px;">
+                    <button id="btn-autocomplete-grid" class="rail-btn" title="Auto-complete the grid"><span class="rail-ico">✚</span><span class="rail-lbl">Fill</span></button>
+                    <button id="btn-select-matching-color" class="rail-btn" title="Select tiles of a matching colour"><span class="rail-ico">🎯</span><span class="rail-lbl">Match</span></button>
+                    <button id="btn-clear-page" class="rail-btn danger" title="Clear this page"><span class="rail-ico">✕</span><span class="rail-lbl">Clear</span></button>
+                </div>
+                <!-- Board-mode tools (hidden in karaoke mode) -->
+                <div id="board-tools" style="display:none; flex-direction:column; gap:8px;">
+                    <button id="btn-add-tile" class="rail-btn" title="Add an empty tile"><span class="rail-ico">＋</span><span class="rail-lbl">Add</span></button>
+                    <button id="btn-download-pdf" class="rail-btn" title="Download PDF"><span class="rail-ico">📄</span><span class="rail-lbl">PDF</span></button>
+                    <button id="btn-download-zip" class="rail-btn" title="Download images (ZIP)"><span class="rail-ico">🗜</span><span class="rail-lbl">ZIP</span></button>
                 </div>
             </div>
 
-            <!-- Board Mode Tools -->
-            <div id="board-tools" style="display:none; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;">
-                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 10px;">Board Creator Mode</p>
-                <div class="toolbar" style="background: var(--surface); border: none; padding-left: 0; padding-right: 0;">
-                     <button id="btn-add-tile" class="button small" style="background-color: #34a853;">+ Add Empty Tile</button>
-                     <button id="btn-download-pdf" class="button secondary small">Download PDF</button>
-                     <button id="btn-download-zip" class="button secondary small">Download Images (ZIP)</button>
+            <div class="stage-main">
+                <div style="text-align:center; font-weight:bold; margin-bottom:8px;"><span id="page-indicator">Page 1 / 1</span></div>
+
+                <div id="define-canvas-container" class="canvas-container">
+                    <canvas id="define-canvas"></canvas>
+                </div>
+
+                <!-- Grid sensitivity: always visible along the bottom so it can be
+                     adjusted without opening a menu; re-detects tiles live. -->
+                <div id="grid-sensitivity-bar" class="grid-sensitivity-bar">
+                    <label for="grid-sensitivity">Grid sensitivity:</label>
+                    <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2">
+                    <span id="grid-sensitivity-val" class="gs-val">Very High</span>
                 </div>
             </div>
-        </details>
+          </div>
 
-        <div id="define-canvas-container" class="canvas-container">
-            <canvas id="define-canvas"></canvas>
-        </div>
-
-        <!-- Grid sensitivity: always visible along the bottom so it can be
-             adjusted without opening a menu; re-detects tiles live. -->
-        <div id="grid-sensitivity-bar" class="grid-sensitivity-bar">
-            <label for="grid-sensitivity">Grid sensitivity:</label>
-            <input type="range" id="grid-sensitivity" min="150" max="254" value="245" step="2">
-            <span id="grid-sensitivity-val" class="gs-val">Very High</span>
-        </div>
-
-        <button id="btn-goto-order" class="button" style="width: 100%; margin-top: 20px;">Next: Set Order ➡</button>
+          <div class="stage-bottom">
+            <div class="bottom-group"></div>
+            <div class="bottom-group"><button id="btn-goto-order" class="button">Next: Set Order ➡</button></div>
+          </div>
+        </div><!-- /stage-frame -->
     </div>
 
     <!-- 4. Order View -->
@@ -2002,45 +2000,49 @@
         <h2 style="text-align: center; margin-top: 0;">Set Reading Order</h2>
         <p class="helper-text" style="text-align: center;">Tap tiles in the order they're sung (1, 2, 3…). The order flows across pages — switch pages any time and revisit a page to <strong>repeat</strong> tiles for choruses. Tap the same tile again to repeat it.</p>
         
-        <div class="toolbar">
-            <div class="toolbar-group">
-                <button id="btn-order-prev-page" class="button secondary small">Prev Page</button>
-                <span id="order-page-indicator" style="font-weight: bold;">Page 1 / 1</span>
-                <button id="btn-order-next-page" class="button secondary small">Next Page</button>
+        <div class="stage-frame">
+          <div class="stage-body">
+            <!-- Left tool-rail -->
+            <div class="stage-rail">
+                <button id="btn-order-prev-page" class="rail-btn" title="Previous page"><span class="rail-ico">◀</span><span class="rail-lbl">Prev pg</span></button>
+                <button id="btn-order-next-page" class="rail-btn" title="Next page"><span class="rail-ico">▶</span><span class="rail-lbl">Next pg</span></button>
+                <button id="btn-order-pan-up" class="rail-btn" title="Pan up"><span class="rail-ico">↑</span><span class="rail-lbl">Pan</span></button>
+                <button id="btn-order-pan-down" class="rail-btn" title="Pan down"><span class="rail-ico">↓</span><span class="rail-lbl">Pan</span></button>
+                <button id="btn-auto-order" class="rail-btn" title="Auto-order this page's tiles (reading order) and add them to the sequence"><span class="rail-ico">⚡</span><span class="rail-lbl">Auto</span></button>
+                <button id="btn-reset-order" class="rail-btn danger" title="Remove this page's tiles from the reading order"><span class="rail-ico">🗑</span><span class="rail-lbl">Clear</span></button>
             </div>
-            <div class="toolbar-group">
-                 <button id="btn-order-pan-up" class="button secondary small">↑</button>
-                 <button id="btn-order-pan-down" class="button secondary small">↓</button>
-                <button id="btn-auto-order" class="button secondary small" title="Auto-order this page's tiles (reading order) and add them to the sequence">Auto Order Page</button>
-                <button id="btn-reset-order" class="button secondary small" style="color: #c5221f;" title="Remove this page's tiles from the reading order">Clear Page</button>
+
+            <div class="stage-main">
+                <div style="text-align:center; font-weight:bold; margin-bottom:8px;"><span id="order-page-indicator">Page 1 / 1</span></div>
+
+                <div id="order-canvas-container" class="canvas-container">
+                    <canvas id="order-canvas"></canvas>
+                </div>
+
+                <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, or tap a tile to jump to its page:</p>
+
+                <div id="order-loop-panel" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin: 4px 0 8px;">
+                    <button id="btn-order-loop-toggle" type="button" class="button secondary small" title="Mark the section a musical round loops over">🔁 Mark Round Loop</button>
+                    <button id="btn-order-loop-clear" type="button" class="button secondary small" style="display:none; color:#c5221f;">Clear Loop</button>
+                    <span id="order-loop-hint" class="helper-text" style="margin:0; flex:1; min-width:180px;">For a musical round: turn this on, then click the tile the loop <strong>starts</strong> on and the tile it <strong>ends</strong> on.</span>
+                </div>
+
+                <div id="order-sequence-strip" class="order-sequence-strip">
+                    <!-- Items injected by JS -->
+                </div>
+
+                <div style="margin-top: 15px; padding: 10px; background: var(--surface-2); border-radius: 8px;">
+                    <p style="margin: 0 0 5px 0; font-size: 0.8rem; font-weight: bold; color: var(--text-muted);">Preview Audio:</p>
+                    <audio id="order-audio-player" style="width: 100%;" controls></audio>
+                </div>
             </div>
-        </div>
+          </div>
 
-        <div id="order-canvas-container" class="canvas-container">
-            <canvas id="order-canvas"></canvas>
-        </div>
-
-        <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, or tap a tile to jump to its page:</p>
-
-        <div id="order-loop-panel" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin: 4px 0 8px;">
-            <button id="btn-order-loop-toggle" type="button" class="button secondary small" title="Mark the section a musical round loops over">🔁 Mark Round Loop</button>
-            <button id="btn-order-loop-clear" type="button" class="button secondary small" style="display:none; color:#c5221f;">Clear Loop</button>
-            <span id="order-loop-hint" class="helper-text" style="margin:0; flex:1; min-width:180px;">For a musical round: turn this on, then click the tile the loop <strong>starts</strong> on and the tile it <strong>ends</strong> on.</span>
-        </div>
-
-        <div id="order-sequence-strip" class="order-sequence-strip">
-            <!-- Items injected by JS -->
-        </div>
-
-        <div style="margin-top: 15px; padding: 10px; background: var(--surface-2); border-radius: 8px;">
-            <p style="margin: 0 0 5px 0; font-size: 0.8rem; font-weight: bold; color: var(--text-muted);">Preview Audio:</p>
-            <audio id="order-audio-player" style="width: 100%;" controls></audio>
-        </div>
-
-        <div class="button-group">
-            <button id="btn-back-to-define" class="button secondary">⬅ Back</button>
-            <button id="btn-finish-order" class="button">Next: Sync Timing ➡</button>
-        </div>
+          <div class="stage-bottom">
+            <div class="bottom-group"><button id="btn-back-to-define" class="button secondary">⬅ Back</button></div>
+            <div class="bottom-group"><button id="btn-finish-order" class="button">Next: Sync Timing ➡</button></div>
+          </div>
+        </div><!-- /stage-frame -->
     </div>
 
     <!-- 5. Sync View (Record then Fine Tune) -->
@@ -2048,13 +2050,16 @@
         <h2 style="text-align: center;">Synchronize</h2>
         <p class="helper-text" style="text-align: center;">First, tap to record timing. Then fine-tune on the timeline — click a tile or use <strong>↑ ↓</strong> to select it, and <strong>← →</strong> to nudge its timing (hold <strong>Shift</strong> for bigger steps).</p>
         
-        <div class="toolbar">
-             <div class="toolbar-group">
-                 <button id="btn-sync-zoom-out" class="button secondary small">Zoom -</button>
-                 <button id="btn-sync-zoom-in" class="button secondary small">Zoom +</button>
-             </div>
-             <p id="sync-progress-text" style="font-weight: bold; margin: 0;">Symbol 0 / 0</p>
-        </div>
+        <div class="stage-frame">
+          <div class="stage-body">
+            <!-- Left tool-rail -->
+            <div class="stage-rail">
+                <button id="btn-sync-zoom-out" class="rail-btn" title="Zoom the timeline out"><span class="rail-ico">🔍−</span><span class="rail-lbl">Zoom</span></button>
+                <button id="btn-sync-zoom-in" class="rail-btn" title="Zoom the timeline in"><span class="rail-ico">🔍+</span><span class="rail-lbl">Zoom</span></button>
+            </div>
+
+            <div class="stage-main">
+              <p id="sync-progress-text" style="font-weight: bold; margin: 0 0 8px; text-align:center;">Symbol 0 / 0</p>
 
         <!-- 5a. Recording Phase Visuals -->
         <div id="sync-visual-cue">
@@ -2131,12 +2136,15 @@
         </div>
 
         <audio id="sync-audio-player" style="width: 100%; margin: 12px 0 20px 0;" controls></audio>
-        
-        <div class="button-group">
-            <button id="reset-sync-button" class="button secondary">Reset Recording</button>
-            <button id="back-to-order-from-sync" class="button secondary">⬅ Back</button>
-            <button id="btn-finish-sync" class="button">Next: Preview ➡</button>
-        </div>
+            </div><!-- /stage-main -->
+          </div><!-- /stage-body -->
+
+          <div class="stage-bottom">
+            <div class="bottom-group"><button id="back-to-order-from-sync" class="button secondary">⬅ Back</button></div>
+            <div class="bottom-group"><button id="reset-sync-button" class="button secondary">↺ Reset Recording</button></div>
+            <div class="bottom-group"><button id="btn-finish-sync" class="button">Next: Preview ➡</button></div>
+          </div>
+        </div><!-- /stage-frame -->
     </div>
 
     <!-- 6. Result/Preview View -->

@@ -1523,8 +1523,8 @@ function switchView(viewId: string) {
     // Toggle Mode-Specific UI elements
     if (viewId === 'define-symbols-view') {
         const isBoard = appState.mode === 'board';
-        if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'block';
-        if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'block' : 'none';
+        if (dom.define.karaokeTools) dom.define.karaokeTools.style.display = isBoard ? 'none' : 'flex';
+        if (dom.define.boardTools) dom.define.boardTools.style.display = isBoard ? 'flex' : 'none';
         dom.define.btnGoOrder.style.display = isBoard ? 'none' : 'block';
 
         // Initialise the page indicator (changePage isn't called on first entry).
