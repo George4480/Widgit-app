@@ -1534,6 +1534,17 @@
             font-size: 0.7rem; padding: 1px 6px; border-radius: 6px;
         }
 
+        /* ---- Video-import crop editor ---- */
+        .crop-handle {
+            position: absolute; width: 16px; height: 16px;
+            background: #fff; border: 2px solid var(--primary);
+            border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+        }
+        .crop-handle[data-h="nw"] { left: -9px; top: -9px; cursor: nwse-resize; }
+        .crop-handle[data-h="ne"] { right: -9px; top: -9px; cursor: nesw-resize; }
+        .crop-handle[data-h="sw"] { left: -9px; bottom: -9px; cursor: nesw-resize; }
+        .crop-handle[data-h="se"] { right: -9px; bottom: -9px; cursor: nwse-resize; }
+
         /* ---- Cross-page sequence strip ---- */
         .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
         .order-sequence-item {
@@ -2451,8 +2462,31 @@
         <div class="warning-modal-content" style="max-width: 860px; border-top-color: var(--primary);">
             <h3 class="warning-modal-title" style="color: var(--primary-text);">🎬 Choose tiles from the video</h3>
             <div class="warning-modal-body">
-                <p style="margin-top:0;">We captured a frame each time the picture changed. Untick any you don't want, then create the project. The audio has been extracted as the song.</p>
-                <div id="video-frame-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; max-height: 52vh; overflow-y: auto; padding: 4px;"></div>
+                <p style="margin-top:0;">We captured a frame each time the picture changed. The audio has been extracted as the song.</p>
+
+                <!-- Optional: define the tile area on the first frame, then crop
+                     every captured frame to that same region so tiles are uniform. -->
+                <div id="video-crop-editor" style="margin: 6px 0 14px;">
+                    <p style="margin:.2em 0; font-weight:600;">1 · Set the tile area <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">(optional)</span></p>
+                    <p style="margin:.2em 0 8px; font-size:.85rem; color:var(--text-muted);">Drag the box over <strong>one tile</strong> on the first frame, then “Apply to all frames”. Every captured frame is cropped to that same area, so the tiles come out the same size. Skip this to keep whole frames.</p>
+                    <div id="video-crop-stage" style="position:relative; display:inline-block; max-width:100%; touch-action:none; user-select:none; line-height:0;">
+                        <img id="video-crop-img" style="max-width:100%; max-height:40vh; display:block; border-radius:8px;" alt="First captured frame">
+                        <div id="video-crop-box" style="position:absolute; border:2px solid var(--primary); box-shadow:0 0 0 9999px rgba(0,0,0,.4); box-sizing:border-box; cursor:move; display:none;">
+                            <div class="crop-handle" data-h="nw"></div>
+                            <div class="crop-handle" data-h="ne"></div>
+                            <div class="crop-handle" data-h="sw"></div>
+                            <div class="crop-handle" data-h="se"></div>
+                        </div>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <button id="btn-crop-apply" class="button small" style="margin:0;">✂ Apply to all frames</button>
+                        <button id="btn-crop-reset" class="button secondary small" style="margin:0;">Use whole frames</button>
+                        <span id="crop-status" style="font-size:.82rem; color:var(--text-muted);"></span>
+                    </div>
+                </div>
+
+                <p style="margin:.2em 0; font-weight:600;">2 · Pick the tiles <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">— untick any you don’t want</span></p>
+                <div id="video-frame-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; max-height: 42vh; overflow-y: auto; padding: 4px;"></div>
             </div>
             <div class="warning-modal-buttons">
                 <button id="btn-video-cancel" class="button secondary" style="margin:0;">Cancel</button>

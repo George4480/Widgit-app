@@ -419,6 +419,10 @@ function setupEventListeners() {
         document.getElementById('video-picker-overlay')!.style.display = 'none';
     });
     document.getElementById('btn-video-create')?.addEventListener('click', createProjectFromVideoFrames);
+    // Tile-crop editor in the video picker.
+    setupVideoCropEditor();
+    document.getElementById('btn-crop-apply')?.addEventListener('click', applyVideoCrop);
+    document.getElementById('btn-crop-reset')?.addEventListener('click', resetVideoCrop);
     dom.upload.btnClearUploads.addEventListener('click', () => {
         const f = appState.files;
         const hasFiles = !!f.pdf || f.images.length > 0 || !!f.audioVocal || !!f.audioBacking;
@@ -1241,6 +1245,10 @@ async function processImageFile(file: File) {
 
 let _videoCandidates: { time: number; dataUrl: string }[] = [];
 let _videoAudioFile: File | null = null;
+// Tile crop defined on the first captured frame (normalized 0..1), applied to
+// every frame so the imported tiles come out uniform. Null = use whole frames.
+let _videoCrop: { x: number; y: number; w: number; h: number } | null = null;
+let _videoCroppedUrls: string[] | null = null;
 
 async function handleVideoImport(file: File) {
     const overlay = document.getElementById('video-processing-overlay')!;
@@ -1394,41 +1402,172 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
     return results;
 }
 
-function openVideoPicker() {
+// Render the candidate grid, showing cropped thumbnails when a crop is applied.
+function renderVideoGrid() {
     const grid = document.getElementById('video-frame-grid')!;
     grid.innerHTML = '';
     if (_videoCandidates.length === 0) {
         grid.innerHTML = '<p style="color: var(--text-muted);">No distinct frames were found. The video may be too static.</p>';
+        return;
     }
+    const urls = _videoCroppedUrls ?? _videoCandidates.map(c => c.dataUrl);
     _videoCandidates.forEach((c, i) => {
         const cell = document.createElement('label');
         cell.className = 'vframe';
         cell.innerHTML =
             `<input type="checkbox" data-idx="${i}" checked>` +
-            `<img src="${c.dataUrl}" alt="frame at ${c.time.toFixed(1)}s">` +
+            `<img src="${urls[i]}" alt="frame at ${c.time.toFixed(1)}s">` +
             `<span class="vframe-time">${c.time.toFixed(1)}s</span>`;
         grid.appendChild(cell);
     });
+}
+
+function openVideoPicker() {
+    // Fresh crop each import.
+    _videoCrop = null;
+    _videoCroppedUrls = null;
+    const status = document.getElementById('crop-status');
+    if (status) status.textContent = '';
+
+    // Load the first captured frame into the crop editor and drop a default box.
+    const cropEditor = document.getElementById('video-crop-editor');
+    const cropImg = document.getElementById('video-crop-img') as HTMLImageElement | null;
+    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
+    if (cropEditor && cropImg && cropBox) {
+        if (_videoCandidates.length > 0) {
+            cropEditor.style.display = '';
+            cropImg.onload = () => {
+                const iw = cropImg.clientWidth, ih = cropImg.clientHeight;
+                const bw = iw * 0.5, bh = ih * 0.55;
+                cropBox.style.display = 'block';
+                cropBox.style.left = `${Math.round((iw - bw) / 2)}px`;
+                cropBox.style.top = `${Math.round((ih - bh) / 2)}px`;
+                cropBox.style.width = `${Math.round(bw)}px`;
+                cropBox.style.height = `${Math.round(bh)}px`;
+            };
+            cropImg.src = _videoCandidates[0].dataUrl;
+        } else {
+            cropEditor.style.display = 'none';
+        }
+    }
+
+    renderVideoGrid();
     document.getElementById('video-picker-overlay')!.style.display = 'flex';
+}
+
+// Crop a data URL to a normalized region, returning a new data URL.
+function cropDataUrl(dataUrl: string, crop: { x: number; y: number; w: number; h: number }): Promise<string> {
+    return new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => {
+            const sw = Math.max(1, crop.w * im.width), sh = Math.max(1, crop.h * im.height);
+            const c = document.createElement('canvas');
+            c.width = Math.round(sw); c.height = Math.round(sh);
+            c.getContext('2d')!.drawImage(im, crop.x * im.width, crop.y * im.height, sw, sh, 0, 0, c.width, c.height);
+            resolve(c.toDataURL('image/png'));
+        };
+        im.onerror = () => resolve(dataUrl);
+        im.src = dataUrl;
+    });
+}
+
+// Apply the crop box (as drawn on the first frame) to every captured frame.
+async function applyVideoCrop() {
+    const box = document.getElementById('video-crop-box') as HTMLElement | null;
+    const img = document.getElementById('video-crop-img') as HTMLImageElement | null;
+    const status = document.getElementById('crop-status');
+    if (!box || !img || box.style.display === 'none') return;
+    const iw = img.clientWidth, ih = img.clientHeight;
+    if (!iw || !ih) return;
+    const crop = {
+        x: Math.max(0, box.offsetLeft / iw),
+        y: Math.max(0, box.offsetTop / ih),
+        w: Math.min(1, box.offsetWidth / iw),
+        h: Math.min(1, box.offsetHeight / ih),
+    };
+    _videoCrop = crop;
+    if (status) status.textContent = 'Cropping…';
+    _videoCroppedUrls = await Promise.all(_videoCandidates.map(c => cropDataUrl(c.dataUrl, crop)));
+    renderVideoGrid();
+    if (status) status.textContent = `Cropped ${_videoCroppedUrls.length} frame${_videoCroppedUrls.length === 1 ? '' : 's'} to the tile area.`;
+}
+
+function resetVideoCrop() {
+    _videoCrop = null;
+    _videoCroppedUrls = null;
+    const status = document.getElementById('crop-status');
+    if (status) status.textContent = 'Using whole frames.';
+    renderVideoGrid();
+}
+
+// Drag to move the crop box, or drag a corner handle to resize it. Bound once.
+function setupVideoCropEditor() {
+    const stage = document.getElementById('video-crop-stage') as HTMLElement | null;
+    const box = document.getElementById('video-crop-box') as HTMLElement | null;
+    const img = document.getElementById('video-crop-img') as HTMLImageElement | null;
+    if (!stage || !box || !img) return;
+    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+    let mode: string | null = null;
+    let startX = 0, startY = 0, orig = { l: 0, t: 0, w: 0, h: 0 };
+
+    const onMove = (e: PointerEvent) => {
+        if (!mode) return;
+        const dx = e.clientX - startX, dy = e.clientY - startY;
+        const iw = img.clientWidth, ih = img.clientHeight, MIN = 20;
+        let { l, t, w, h } = orig;
+        if (mode === 'move') {
+            l = clamp(orig.l + dx, 0, iw - w);
+            t = clamp(orig.t + dy, 0, ih - h);
+        } else {
+            if (mode.includes('e')) w = clamp(orig.w + dx, MIN, iw - orig.l);
+            if (mode.includes('s')) h = clamp(orig.h + dy, MIN, ih - orig.t);
+            if (mode.includes('w')) { w = clamp(orig.w - dx, MIN, orig.l + orig.w); l = orig.l + orig.w - w; }
+            if (mode.includes('n')) { h = clamp(orig.h - dy, MIN, orig.t + orig.h); t = orig.t + orig.h - h; }
+        }
+        box.style.left = `${l}px`; box.style.top = `${t}px`;
+        box.style.width = `${w}px`; box.style.height = `${h}px`;
+    };
+    const onUp = () => {
+        mode = null;
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+    };
+    stage.addEventListener('pointerdown', (e: PointerEvent) => {
+        const handle = (e.target as HTMLElement).closest('.crop-handle') as HTMLElement | null;
+        if (handle) mode = handle.dataset.h!;
+        else if (box.contains(e.target as Node)) mode = 'move';
+        else return;
+        e.preventDefault();
+        startX = e.clientX; startY = e.clientY;
+        orig = { l: box.offsetLeft, t: box.offsetTop, w: box.offsetWidth, h: box.offsetHeight };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    });
 }
 
 async function createProjectFromVideoFrames() {
     const checks = Array.from(document.querySelectorAll('#video-frame-grid input[type="checkbox"]')) as HTMLInputElement[];
-    const chosen = checks.filter(c => c.checked).map(c => _videoCandidates[parseInt(c.dataset.idx!)]);
-    if (chosen.length === 0) { alert('Pick at least one tile.'); return; }
+    // Use the cropped tile images if a crop was applied, else the whole frames.
+    const urls = _videoCroppedUrls ?? _videoCandidates.map(c => c.dataUrl);
+    const chosenUrls = checks.filter(c => c.checked).map(c => urls[parseInt(c.dataset.idx!)]);
+    if (chosenUrls.length === 0) { alert('Pick at least one tile.'); return; }
     document.getElementById('video-picker-overlay')!.style.display = 'none';
 
-    // Load the chosen frames as images.
-    const imgs = await Promise.all(chosen.map(c => new Promise<HTMLImageElement>((res) => {
-        const im = new Image(); im.onload = () => res(im); im.src = c.dataUrl;
+    // Load the chosen (optionally cropped) frames as images.
+    const imgs = await Promise.all(chosenUrls.map(u => new Promise<HTMLImageElement>((res) => {
+        const im = new Image(); im.onload = () => res(im); im.src = u;
     })));
 
     // Lay them out on a synthetic page as customImage tiles (grid, 4 per row).
+    // Tile height follows the captured tile's aspect ratio (uniform across all
+    // frames when a crop was applied) so cropped tiles aren't squashed square.
     const cols = Math.min(4, imgs.length);
-    const cell = 220, gap = 20, pad = 20;
+    const tileW = 220, gap = 20, pad = 20;
+    const aspect = imgs[0] && imgs[0].width ? imgs[0].height / imgs[0].width : 1;
+    const tileH = Math.round(tileW * Math.min(2.2, Math.max(0.35, aspect)));
     const rows = Math.ceil(imgs.length / cols);
-    const width = pad * 2 + cols * cell + (cols - 1) * gap;
-    const height = pad * 2 + rows * cell + (rows - 1) * gap;
+    const width = pad * 2 + cols * tileW + (cols - 1) * gap;
+    const height = pad * 2 + rows * tileH + (rows - 1) * gap;
     const bg = document.createElement('canvas'); bg.width = width; bg.height = height;
     const bctx = bg.getContext('2d')!; bctx.fillStyle = '#ffffff'; bctx.fillRect(0, 0, width, height);
     const bgImg = new Image();
@@ -1437,9 +1576,9 @@ async function createProjectFromVideoFrames() {
     const symbols = imgs.map((im, i) => {
         const r = Math.floor(i / cols), c = i % cols;
         return {
-            x: pad + c * (cell + gap),
-            y: pad + r * (cell + gap),
-            width: cell, height: cell,
+            x: pad + c * (tileW + gap),
+            y: pad + r * (tileH + gap),
+            width: tileW, height: tileH,
             customImage: im,
         };
     });
