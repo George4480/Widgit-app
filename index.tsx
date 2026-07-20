@@ -243,6 +243,10 @@ function init() {
             btnPlay: document.getElementById('btn-play-preview'),
             btnPause: document.getElementById('btn-pause-preview'),
             btnRewind: document.getElementById('btn-rewind-preview'),
+            scrubber: document.getElementById('preview-scrubber') as HTMLInputElement,
+            timeLabel: document.getElementById('preview-time'),
+            btnToggleSettings: document.getElementById('btn-toggle-settings'),
+            settingsPanel: document.getElementById('visual-settings-details') as HTMLDetailsElement,
             btnDownloadFull: document.getElementById('download-full-mix'),
             btnDownloadBacking: document.getElementById('download-backing'),
             btnBack: document.getElementById('back-to-sync-from-result'),
@@ -590,6 +594,32 @@ function setupEventListeners() {
     dom.result.btnPlay.addEventListener('click', playPreview);
     dom.result.btnPause.addEventListener('click', pausePreview);
     dom.result.btnRewind.addEventListener('click', rewindPreview);
+
+    // Scrubber: drag to seek anywhere in the song (0..1000 maps to 0..duration).
+    if (dom.result.scrubber) {
+        dom.result.scrubber.addEventListener('input', (e: Event) => {
+            const dur = dom.sync.audio.duration || 0;
+            if (!dur) return;
+            const frac = parseInt((e.target as HTMLInputElement).value) / 1000;
+            pausePreview();
+            dom.sync.audio.currentTime = frac * dur;
+            drawPreviewFrame(dom.sync.audio.currentTime);
+            updatePreviewTransport();
+        });
+    }
+
+    // 🎨 rail button toggles the visual settings panel open/closed.
+    if (dom.result.btnToggleSettings && dom.result.settingsPanel) {
+        dom.result.btnToggleSettings.addEventListener('click', () => {
+            const open = !dom.result.settingsPanel.open;
+            dom.result.settingsPanel.open = open;
+            dom.result.btnToggleSettings.classList.toggle('is-active', open);
+        });
+        // Keep the rail button's state in sync if the panel is toggled via its summary.
+        dom.result.settingsPanel.addEventListener('toggle', () => {
+            dom.result.btnToggleSettings.classList.toggle('is-active', dom.result.settingsPanel.open);
+        });
+    }
     dom.result.btnDownloadFull.addEventListener('click', () => confirmExport(() => renderVideo('full')));
     dom.result.btnDownloadBacking.addEventListener('click', () => confirmExport(() => renderVideo('backing')));
     // Latency Slider (Global Correction)
@@ -3266,6 +3296,10 @@ async function setupResultView() {
     }));
     await Promise.all(promises);
     drawPreviewFrame(0);
+    updatePreviewTransport();
+    // Duration may not be known until the audio metadata loads; refresh the
+    // time readout / scrubber range once it is.
+    dom.sync.audio.addEventListener('loadedmetadata', updatePreviewTransport, { once: true });
 }
 function playPreview() {
     if (appState.preview.isPlaying) return;
@@ -3280,12 +3314,32 @@ function pausePreview() {
 }
 function rewindPreview() {
     pausePreview(); dom.sync.audio.currentTime = 0; drawPreviewFrame(0);
+    updatePreviewTransport();
 }
 function animatePreviewFrame() {
     if (!appState.preview.isPlaying) return;
     const t = dom.sync.audio.currentTime;
     drawPreviewFrame(t);
+    updatePreviewTransport();
     appState.preview.animationId = requestAnimationFrame(animatePreviewFrame);
+}
+function fmtClock(s: number): string {
+    if (!isFinite(s) || s < 0) s = 0;
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+// Keep the transport scrubber position and the time readout in step with the
+// preview's current position.
+function updatePreviewTransport() {
+    const cur = dom.sync.audio.currentTime || 0;
+    const dur = dom.sync.audio.duration || 0;
+    if (dom.result.scrubber) {
+        dom.result.scrubber.value = String(dur > 0 ? Math.round((cur / dur) * 1000) : 0);
+    }
+    if (dom.result.timeLabel) {
+        dom.result.timeLabel.textContent = `${fmtClock(cur)} / ${fmtClock(dur)}`;
+    }
 }
 function drawPreviewFrame(rawTime: number) {
     const ctx = dom.result.canvas.getContext('2d');

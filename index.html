@@ -1742,6 +1742,56 @@
             .result-preview-pane #preview-canvas { max-height: 32vh; width: auto; }
             .result-preview-pane .button-group { margin: 8px 0 0 0; }
         }
+
+        /* ================================================================
+           Radical stage frame — one consistent shell for every creator
+           stage: an optional transport bar on top, a vertical icon TOOL-RAIL
+           down the left edge, and a bottom action bar for Back / Next /
+           downloads. The main panel (canvas or video) fills the rest.
+           ================================================================ */
+        .stage-frame { display: flex; flex-direction: column; gap: 14px; }
+
+        .stage-transport {
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            background: var(--surface-2); border: 1px solid var(--border);
+            border-radius: 12px; padding: 8px 14px;
+        }
+        .transport-scrub { flex: 1 1 200px; display: flex; align-items: center; gap: 10px; min-width: 150px; }
+        .transport-scrub input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); }
+        .transport-time { font-family: monospace; font-size: 0.8rem; color: var(--text-muted); min-width: 96px; text-align: right; white-space: nowrap; }
+
+        .stage-body { display: flex; gap: 14px; align-items: flex-start; }
+        .stage-rail { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; position: sticky; top: 12px; }
+        .stage-main { flex: 1 1 auto; min-width: 0; }
+
+        .rail-btn {
+            width: 54px; min-width: 54px; height: 54px; padding: 4px 2px; margin: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+            background: var(--surface); color: var(--text);
+            border: 1px solid var(--border); border-radius: 12px;
+            cursor: pointer; line-height: 1; transition: background 0.15s, border-color 0.15s, transform 0.05s;
+        }
+        .rail-btn:hover { background: var(--surface-2); border-color: var(--primary); }
+        .rail-btn:active { transform: translateY(1px); }
+        .rail-btn.is-active { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .rail-btn .rail-ico { font-size: 1.2rem; }
+        .rail-btn .rail-lbl { font-size: 0.56rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+        .rail-btn.danger { color: #c5221f; }
+        .rail-btn.danger:hover { border-color: #c5221f; background: rgba(197,34,31,0.08); }
+
+        .stage-bottom {
+            display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+            border-top: 1px solid var(--border); padding-top: 16px; margin-top: 2px;
+        }
+        .stage-bottom .bottom-group { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+        /* Narrow screens: the rail becomes a horizontal strip above the panel
+           so it never squeezes the canvas. */
+        @media (max-width: 760px) {
+            .stage-body { flex-direction: column; }
+            .stage-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; width: 100%; position: static; }
+            .stage-bottom { justify-content: center; }
+        }
     </style>
 </head>
 <body>
@@ -2093,22 +2143,34 @@
     <div id="result-view" class="view-section">
         <h2 style="text-align: center;">Preview & Export</h2>
 
-        <!-- Two panes: the preview + its playback/timing controls stay pinned
-             (sticky) on the left while the settings scroll on the right, so
-             changes are visible as you make them instead of scrolling back up. -->
-        <div class="result-layout">
-          <div class="result-preview-pane">
-            <div id="preview-container" style="text-align: center; margin-bottom: 12px;">
+        <div class="stage-frame">
+
+          <!-- Transport sits above the video: play / pause / rewind, plus a
+               scrubber you can drag to any point in the song. -->
+          <div class="stage-transport">
+            <button id="btn-play-preview" class="button small" style="margin:0; width:auto;" title="Play">▶ Play</button>
+            <button id="btn-pause-preview" class="button secondary small" style="margin:0; width:auto;" title="Pause">⏸ Pause</button>
+            <button id="btn-rewind-preview" class="button secondary small" style="margin:0; width:auto;" title="Rewind to the start">⏮ Rewind</button>
+            <div class="transport-scrub">
+              <input type="range" id="preview-scrubber" min="0" max="1000" value="0" step="1" aria-label="Seek through the preview" title="Drag to seek">
+              <span class="transport-time" id="preview-time">0:00 / 0:00</span>
+            </div>
+          </div>
+
+          <div class="stage-body">
+            <!-- Left tool-rail: non-transport tools -->
+            <div class="stage-rail">
+              <button id="btn-toggle-settings" class="rail-btn is-active" title="Show / hide the visual settings" aria-label="Toggle visual settings">
+                <span class="rail-ico">🎨</span><span class="rail-lbl">Style</span>
+              </button>
+            </div>
+
+            <div class="stage-main">
+              <div id="preview-container" style="text-align: center;">
                 <canvas id="preview-canvas" width="640" height="360" style="border: 1px solid #ddd; max-width: 100%; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"></canvas>
-            </div>
+              </div>
 
-            <div class="button-group" style="margin-top: 0;">
-                <button id="btn-rewind-preview" class="button secondary">Rewind</button>
-                <button id="btn-play-preview" class="button">Play</button>
-                <button id="btn-pause-preview" class="button secondary">Pause</button>
-            </div>
-
-            <div style="margin: 14px 0 0 0; padding: 15px; background: var(--surface-2); border-radius: 8px;">
+              <div style="margin: 14px auto 0; padding: 15px; background: var(--surface-2); border-radius: 8px; max-width: 640px;">
                 <div class="setting-item">
                     <label for="latency-slider" style="font-weight: bold; color: var(--primary-text);">Global Timing Correction (Sync Offset): <span id="latency-val">0.00</span>s</label>
                     <div style="display:flex; justify-content:space-between; font-size: 0.75rem; color:#666;">
@@ -2117,12 +2179,12 @@
                     <input type="range" id="latency-slider" min="-1000" max="1000" value="0" step="10" style="width: 100%;">
                     <p style="font-size: 0.8rem; margin: 5px 0 0 0; color: var(--text-muted);">Use this to nudge the entire video if audio is out of sync.</p>
                 </div>
+              </div>
             </div>
           </div>
 
-          <div class="result-controls-pane">
-        <!-- Customization Panel -->
-        <details open>
+        <!-- Customization Panel (toggled by the 🎨 rail button) -->
+        <details id="visual-settings-details" open>
             <summary>🎨 Visual Settings & Customization</summary>
 
             <div class="settings-section">
@@ -2308,18 +2370,24 @@
                 </div>
             </div>
         </details>
-          </div>
-        </div>
 
-        <div class="result-actions">
-            <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
-            <div class="result-actions-exports">
-                <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">Download Video (Full)</button>
-                <button id="download-backing" class="button" style="background-color: #fbbc04; color: var(--text);" title="Download instrumental backing video with synchronized symbols">Download Video (Backing)</button>
+          <!-- Bottom action bar: navigation on the left, exports in the middle,
+               reset on the right. -->
+          <div class="stage-bottom">
+            <div class="bottom-group">
+                <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
+            </div>
+            <div class="bottom-group">
+                <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">⬇ Full Video</button>
+                <button id="download-backing" class="button" style="background-color: #fbbc04; color: var(--text);" title="Download instrumental backing video with synchronized symbols">⬇ Backing Video</button>
                 <button id="btn-export-manifest" class="button" style="background-color: var(--primary-text); color: white;" title="Export song project manifest data">Export Manifest</button>
             </div>
-            <button id="reset-button" class="button secondary" style="color: #c5221f;" title="Start a completely new project">Start Over</button>
-        </div>
+            <div class="bottom-group">
+                <button id="reset-button" class="button secondary" style="color: #c5221f;" title="Start a completely new project">↺ Start Over</button>
+            </div>
+          </div>
+
+        </div><!-- /stage-frame -->
     </div>
     
     <!-- Rendering Overlay -->
