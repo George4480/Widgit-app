@@ -1982,7 +1982,8 @@
             <input type="file" id="unified-file-input" multiple style="display: none;" accept="image/*,audio/*,.pdf,.docx">
         </div>
 
-        <input type="text" id="input-song-title" placeholder="Enter Song Title / Artist (Optional)" class="text-input">
+        <label for="input-song-title" style="display:block; font-weight:600; margin: 4px 0 4px;">Project name <span style="font-weight:400; color: var(--text-muted); font-size: 0.85rem;">— names your saved project file and exported videos</span></label>
+        <input type="text" id="input-song-title" placeholder="e.g. Mama Don't Allow" class="text-input">
 
         <div class="assignment-grid">
             <div id="card-songboard" class="assignment-card">
@@ -2333,14 +2334,22 @@
 
             <div class="settings-section" id="scaffold-result-section">
                 <h4 class="settings-section-title">🫥 Staged scaffold removal</h4>
-                <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on at the <strong>Synchronize</strong> step, then choose which tiles disappear at each practice level. It stays off until you do.</p>
-                <div class="setting-item">
-                    <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
-                    <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
-                </div>
-                <div class="setting-item">
-                    <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
-                    <p class="section-note" style="margin-left:0; margin-top:6px;">One continuous video that plays the song at full support, then repeats it at each level in turn — a short title card announces each level before the song restarts.</p>
+                <label class="round-toggle" style="align-items:center;">
+                    <input type="checkbox" id="scaffold-result-enabled">
+                    <span>Enable staged scaffold removal
+                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles disappear at each level back on the <strong>Synchronize</strong> step; set the level and export from here.</span>
+                    </span>
+                </label>
+                <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on to preview each practice level and export a progressive practice video.</p>
+                <div id="scaffold-result-controls">
+                    <div class="setting-item">
+                        <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
+                        <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                    </div>
+                    <div class="setting-item">
+                        <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
+                        <p class="section-note" style="margin-left:0; margin-top:6px;">One continuous video that plays the song at full support, then repeats it at each level in turn — a short title card announces each level before the song restarts.</p>
+                    </div>
                 </div>
             </div>
 

@@ -291,6 +291,8 @@ function init() {
             status: document.getElementById('scaffold-status'),
             // Result-stage preview control (Preview & Export)
             resultSection: document.getElementById('scaffold-result-section'),
+            resultEnabled: document.getElementById('scaffold-result-enabled') as HTMLInputElement,
+            resultControls: document.getElementById('scaffold-result-controls'),
             resultDisabledNote: document.getElementById('scaffold-result-disabled'),
             resultPreviewButtons: document.getElementById('scaffold-result-preview-buttons'),
             btnProgressive: document.getElementById('btn-export-progressive'),
@@ -647,6 +649,7 @@ function setupEventListeners() {
 
     // Staged scaffold removal controls.
     if (dom.scaffold.enabled) dom.scaffold.enabled.addEventListener('change', (e: Event) => setScaffoldEnabled((e.target as HTMLInputElement).checked));
+    if (dom.scaffold.resultEnabled) dom.scaffold.resultEnabled.addEventListener('change', (e: Event) => setScaffoldEnabled((e.target as HTMLInputElement).checked));
     if (dom.scaffold.addLevel) dom.scaffold.addLevel.addEventListener('click', addScaffoldLevel);
     if (dom.scaffold.applyMatching) dom.scaffold.applyMatching.addEventListener('click', applyScaffoldToMatching);
     if (dom.scaffold.clearLevel) dom.scaffold.clearLevel.addEventListener('click', clearScaffoldSelectedLevel);
@@ -3117,10 +3120,11 @@ function renderScaffoldControls() {
     // Preview level buttons — Result stage (same previewLevel).
     if (dom.scaffold.resultPreviewButtons) buildScaffoldPreviewButtons(dom.scaffold.resultPreviewButtons);
 
-    // Result-stage section shows a hint when the feature is off (it's switched
-    // on at the Sync stage).
+    // Result-stage section: the feature can be switched on right here as well as
+    // at the Sync stage, so the export screen is self-sufficient.
+    if (dom.scaffold.resultEnabled) dom.scaffold.resultEnabled.checked = sc.enabled;
     if (dom.scaffold.resultDisabledNote) dom.scaffold.resultDisabledNote.style.display = sc.enabled ? 'none' : 'block';
-    if (dom.scaffold.resultPreviewButtons) (dom.scaffold.resultPreviewButtons as HTMLElement).style.display = sc.enabled ? '' : 'none';
+    if (dom.scaffold.resultControls) (dom.scaffold.resultControls as HTMLElement).style.display = sc.enabled ? '' : 'none';
     if (dom.scaffold.btnProgressive) (dom.scaffold.btnProgressive as HTMLButtonElement).disabled = !sc.enabled;
 
     updateNavStripScaffold();
@@ -4507,7 +4511,7 @@ async function renderVideo(mode: 'full' | 'backing') {
         const blob = new Blob(chunks, { type: type });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = mode === 'backing' ? `karaoke_backing.${ext}` : `karaoke_full.${ext}`;
+        a.href = url; a.download = `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
         audioCtx.close();
@@ -4524,6 +4528,15 @@ async function renderVideo(mode: 'full' | 'backing') {
         requestAnimationFrame(renderLoop);
     }
     renderLoop();
+}
+
+// A filesystem-safe base for download names, derived from the project/song name
+// so exports and saves match what the teacher called the project.
+function projectFileBase(): string {
+    return (appState.songTitle || '')
+        .replace(/[^a-zA-Z0-9-_]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        || 'see-song';
 }
 
 // Pick a supported MediaRecorder mime + a bitrate for this content.
@@ -4622,7 +4635,7 @@ async function renderProgressiveVideo() {
         const blob = new Blob(chunks, { type });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `karaoke_progressive.${ext}`;
+        a.href = url; a.download = `${projectFileBase()}_progressive.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
         audioCtx.close();
@@ -4974,7 +4987,7 @@ async function saveProjectJson() {
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
-    const fileName = `${appState.songTitle.replace(/[^a-zA-Z0-9-_]/g, '_') || 'widget'}_project.json`;
+    const fileName = `${projectFileBase()}_project.json`;
     saveAs(blob, fileName);
 }
 
@@ -5166,7 +5179,7 @@ function exportProjectManifest() {
     };
 
     const blob = new Blob([JSON.stringify(manifestData, null, 2)], { type: 'application/json' });
-    const fileName = `${songName.replace(/[^a-zA-Z0-9-_]/g, '_') || 'widget'}_manifest.json`;
+    const fileName = `${projectFileBase()}_manifest.json`;
     saveAs(blob, fileName);
 }
 
