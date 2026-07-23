@@ -14,6 +14,12 @@ export interface SymbolTile {
     direction?: string;
     globalIndex?: number;
     pageIndex?: number;
+    /**
+     * Staged-scaffold removal level for THIS sequence occurrence, mirrored from
+     * the backing SequenceStep.removalLevel when the flat list is rebuilt. Used
+     * by the renderer. undefined/0 = always visible. See ScaffoldConfig.
+     */
+    removalLevel?: number;
 }
 
 export interface ProjectPage {
@@ -39,6 +45,15 @@ export interface ProjectPage {
 export interface SequenceStep {
     page: number;   // page index
     sym: number;    // symbol index within that page
+    /**
+     * Staged-scaffold removal level for THIS occurrence — "the first scaffold
+     * level at which this specific occurrence becomes hidden". Stored against the
+     * occurrence, NOT the source tile, so repeated tiles can be removed at
+     * different stages. undefined or 0 = always visible; 1 = hidden from Level 1
+     * onwards; 2 = from Level 2 onwards; etc. (cumulative). Absent in projects
+     * saved before staged scaffold removal existed.
+     */
+    removalLevel?: number;
 }
 
 export interface SyncTiming {
@@ -80,6 +95,31 @@ export interface StyleConfig {
     // excluding header/footer logos), glow-highlight the current tile, and
     // scroll down continuously as the song progresses. Alternative to conveyor.
     sheetMode: boolean;
+}
+
+/**
+ * Staged scaffold removal: progressively hide visual prompts across numbered,
+ * cumulative practice levels to support recall and independent singing. The
+ * per-occurrence assignments live on SequenceStep.removalLevel; this holds the
+ * feature's configuration and transient preview/assignment UI state.
+ */
+export interface ScaffoldConfig {
+    enabled: boolean;
+    /** Number of configured levels (>=1). Levels are numbered 1..levelCount. */
+    levelCount: number;
+    /**
+     * The level currently "armed" for assignment at the Sync stage. 0 = no level
+     * armed, so nav-strip taps keep their ordinary timeline-selection behaviour.
+     * Transient UI state (not meaningful once you leave the Sync stage).
+     */
+    selectedAssignmentLevel: number;
+    /**
+     * Level shown in the preview / used by a normal single export. 0 = full
+     * support (everything visible); N = show masking cumulative up to level N.
+     */
+    previewLevel: number;
+    /** Whether the last export chose a single level or the progressive video. */
+    exportMode: "single" | "progressive";
 }
 
 export interface GridConfig {
@@ -124,6 +164,8 @@ export interface AppState {
     };
     gridConfig: GridConfig;
     styleConfig: StyleConfig;
+    /** Staged scaffold removal configuration + transient preview/assignment state. */
+    scaffold: ScaffoldConfig;
     interaction: {
         isDragging: boolean;
         dragStart: { x: number; y: number };
@@ -168,6 +210,11 @@ export interface ProjectSaveData {
     };
     styleConfig: StyleConfig;
     gridConfig: GridConfig;
+    /**
+     * Staged scaffold removal configuration. Absent in files saved before the
+     * feature existed — such files load with scaffold removal disabled.
+     */
+    scaffold?: ScaffoldConfig;
     latencyOffset: number;
     /**
      * The pipeline stage the project was on when saved (e.g. 'sync-view',
