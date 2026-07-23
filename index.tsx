@@ -4,8 +4,9 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep } from "./src/types";
+import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
+import { isMasked, tileMaskColor, drawContentMask, clearMaskColorCache } from "./src/scaffold";
 
 // Vercel Web Analytics — collects anonymous page-view/visitor metrics once the
 // app is served from Vercel (no-op in local dev).
@@ -17,6 +18,40 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Undo/Redo Stacks
 const undoStack: string[] = [];
 const redoStack: string[] = [];
+
+// Staged scaffold removal: fresh defaults (feature off). Used for a new app
+// session and as the backward-compatible fallback when loading a project or
+// history snapshot saved before the feature existed.
+const SCAFFOLD_MAX_LEVELS = 6;
+function defaultScaffold(): ScaffoldConfig {
+    return {
+        enabled: false,
+        levelCount: 3,
+        selectedAssignmentLevel: 0,
+        previewLevel: 0,
+        exportMode: 'single',
+    };
+}
+// Merge a persisted scaffold config over the defaults so older files (missing
+// the field, or missing newer keys) keep sane values, and reset the transient
+// UI bits that should never carry across a load.
+function normalizeScaffold(saved: any): ScaffoldConfig {
+    const s = { ...defaultScaffold(), ...(saved && typeof saved === 'object' ? saved : {}) };
+    s.levelCount = Math.max(1, Math.min(SCAFFOLD_MAX_LEVELS, Math.round(s.levelCount) || 3));
+    s.previewLevel = Math.max(0, Math.min(s.levelCount, Math.round(s.previewLevel) || 0));
+    s.selectedAssignmentLevel = 0; // never resume in an armed assignment mode
+    if (s.exportMode !== 'progressive') s.exportMode = 'single';
+    return s;
+}
+
+// The scaffold level currently being rendered. A normal preview/export uses the
+// chosen previewLevel; the progressive export overrides it per section.
+let scaffoldRenderLevelOverride: number | null = null;
+function currentScaffoldLevel(): number {
+    if (!appState.scaffold.enabled) return 0;
+    if (scaffoldRenderLevelOverride !== null) return scaffoldRenderLevelOverride;
+    return appState.scaffold.previewLevel || 0;
+}
 
 // Sync-stage playback speed (slow the song to place taps / the round loop).
 let syncPlaybackRate = 1;
@@ -91,6 +126,7 @@ const appState: AppState = {
         canonCountInBeats: 4,
         sheetMode: false
     },
+    scaffold: defaultScaffold(),
     interaction: {
         isDragging: false,
         dragStart: { x: 0, y: 0 },
@@ -242,6 +278,22 @@ function init() {
             btnRoundEnd: document.getElementById('btn-round-set-end'),
             btnRoundClear: document.getElementById('btn-round-clear'),
             roundRangeLabel: document.getElementById('round-range-label'),
+        },
+        scaffold: {
+            enabled: document.getElementById('scaffold-enabled') as HTMLInputElement,
+            body: document.getElementById('scaffold-body'),
+            levelButtons: document.getElementById('scaffold-level-buttons'),
+            previewButtons: document.getElementById('scaffold-preview-buttons'),
+            addLevel: document.getElementById('scaffold-add-level') as HTMLButtonElement,
+            applyMatching: document.getElementById('scaffold-apply-matching'),
+            clearLevel: document.getElementById('scaffold-clear-level'),
+            clearAll: document.getElementById('scaffold-clear-all'),
+            status: document.getElementById('scaffold-status'),
+            // Result-stage preview control (Preview & Export)
+            resultSection: document.getElementById('scaffold-result-section'),
+            resultDisabledNote: document.getElementById('scaffold-result-disabled'),
+            resultPreviewButtons: document.getElementById('scaffold-result-preview-buttons'),
+            btnProgressive: document.getElementById('btn-export-progressive'),
         },
         result: {
             canvas: document.getElementById('preview-canvas') as HTMLCanvasElement,
@@ -592,6 +644,14 @@ function setupEventListeners() {
         appState.round = { start: -1, end: -1 };
         updateRoundUI(); drawSyncTimeline();
     });
+
+    // Staged scaffold removal controls.
+    if (dom.scaffold.enabled) dom.scaffold.enabled.addEventListener('change', (e: Event) => setScaffoldEnabled((e.target as HTMLInputElement).checked));
+    if (dom.scaffold.addLevel) dom.scaffold.addLevel.addEventListener('click', addScaffoldLevel);
+    if (dom.scaffold.applyMatching) dom.scaffold.applyMatching.addEventListener('click', applyScaffoldToMatching);
+    if (dom.scaffold.clearLevel) dom.scaffold.clearLevel.addEventListener('click', clearScaffoldSelectedLevel);
+    if (dom.scaffold.clearAll) dom.scaffold.clearAll.addEventListener('click', clearAllScaffold);
+    if (dom.scaffold.btnProgressive) dom.scaffold.btnProgressive.addEventListener('click', () => confirmExport(() => renderProgressiveVideo()));
 
 
     // --- Result View ---
@@ -2167,7 +2227,8 @@ function pruneGlobalSequence(pageIdx: number, opts: { removedSym?: number; clear
         return true;
     }).map(step => {
         if (step.page === pageIdx && opts.removedSym !== undefined && step.sym > opts.removedSym) {
-            return { page: step.page, sym: step.sym - 1 };
+            // Preserve the occurrence's scaffold assignment across the reindex.
+            return { page: step.page, sym: step.sym - 1, removalLevel: step.removalLevel };
         }
         return step;
     });
@@ -2673,8 +2734,38 @@ function buildFlatSymbols() {
             endTime: 0,
             direction: '',
             ...sym,
+            // Mirror the occurrence's scaffold assignment onto the flat entry
+            // (after the spread — the source tile carries no removalLevel).
+            removalLevel: step.removalLevel,
         });
     });
+}
+
+// A stable key for a source tile, so repeated occurrences share one detected
+// mask colour. Location + size identifies the physical tile on its page.
+function tileSourceKey(sym: SymbolTile): string {
+    return `${sym.pageIndex ?? 0}:${sym.x}:${sym.y}:${sym.width}x${sym.height}`;
+}
+
+// Re-stamp each flat symbol's removalLevel from the backing sequence. Used after
+// undo/redo, which restores the flat list directly rather than rebuilding it.
+function syncFlatRemovalLevels() {
+    const seq = effectiveSequence();
+    appState.symbols.forEach((s, i) => { s.removalLevel = seq[i]?.removalLevel; });
+}
+
+// Cover the just-drawn tile image with a background-coloured inset mask when the
+// occurrence is hidden at the active scaffold level. `img` is the tile crop
+// (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
+function maskTileIfHidden(
+    ctx: CanvasRenderingContext2D,
+    sym: SymbolTile | undefined,
+    img: HTMLImageElement | null | undefined,
+    dx: number, dy: number, dw: number, dh: number,
+    level: number,
+) {
+    if (!sym || !isMasked(sym.removalLevel, level)) return;
+    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh);
 }
 
 function finishOrderingSymbols() {
@@ -2705,6 +2796,7 @@ function setupSyncView() {
     renderSymbolNavStrip(); // Prepare, but hidden
     updateTimelineToolsUI();
     updateRoundUI();
+    renderScaffoldControls();
 
     // Draw initial empty timeline (hidden)
     drawSyncTimeline();
@@ -2753,19 +2845,35 @@ function renderSymbolNavStrip() {
         
         div.appendChild(img);
         div.appendChild(badge);
-        
-        div.addEventListener('click', () => {
-             // Jump to this symbol
-             appState.interaction.selectedSyncIndex = idx;
-             selectTimelineTile(0); // This helper centers the view on the selection
+
+        // Keyboard-reachable so both timeline selection and scaffold assignment
+        // work without a mouse.
+        div.tabIndex = 0;
+        div.setAttribute('role', 'button');
+        div.addEventListener('click', () => handleNavStripTileClick(idx));
+        div.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleNavStripTileClick(idx); }
         });
-        
+
         container.appendChild(div);
     });
 
     // Dynamically apply warnings and badges
     updateNavStripWarnings();
     updateNavStripRoundMarks();
+    updateNavStripScaffold();
+}
+
+// A nav-strip tap either assigns a scaffold level (when a level is armed) or
+// does the ordinary "jump to / select this tile" for timing editing.
+function handleNavStripTileClick(idx: number) {
+    const sc = appState.scaffold;
+    if (sc.enabled && sc.selectedAssignmentLevel > 0) {
+        assignScaffoldLevel(idx, sc.selectedAssignmentLevel);
+        return;
+    }
+    appState.interaction.selectedSyncIndex = idx;
+    selectTimelineTile(0); // centres the view on the selection
 }
 
 // Badge the loop start/end tiles (and tint the tiles in between) in the strip.
@@ -2802,6 +2910,237 @@ function updateNavStripHighlight() {
              item.classList.remove('active');
         }
     });
+}
+
+// ---- Staged scaffold removal: assignment + UI ----------------------------
+
+// The last nav tile touched for assignment — the reference for "Apply to
+// matching occurrences" (not persisted; a transient editing convenience).
+let scaffoldLastTile = -1;
+
+// Ensure there's a real backing SequenceStep for every occurrence, so scaffold
+// assignments have somewhere to live and persist. In board mode / when no order
+// was drawn, globalSequence is empty and the flat list comes from the synthesized
+// fallback; materialize it once before assigning.
+function materializeSequenceForScaffold() {
+    if (appState.globalSequence.length === 0 && appState.symbols.length > 0) {
+        appState.globalSequence = effectiveSequence().map(s => ({ page: s.page, sym: s.sym, removalLevel: s.removalLevel }));
+    }
+}
+
+// The backing sequence step for a flat symbol index (a live reference into
+// globalSequence, so mutating removalLevel on it sticks).
+function scaffoldStepFor(flatIdx: number): SequenceStep | undefined {
+    return effectiveSequence()[flatIdx];
+}
+
+function announceScaffold(msg: string) {
+    if (dom.scaffold.status) dom.scaffold.status.textContent = msg;
+}
+
+// Toggle-assign a single occurrence to a removal level. Re-tapping the same
+// level clears it; tapping a different level replaces the former assignment.
+function assignScaffoldLevel(flatIdx: number, level: number) {
+    materializeSequenceForScaffold();
+    const step = scaffoldStepFor(flatIdx);
+    const sym = appState.symbols[flatIdx];
+    if (!step) return;
+    const cur = step.removalLevel || 0;
+    if (cur === level) {
+        step.removalLevel = undefined;
+        if (sym) sym.removalLevel = undefined;
+        announceScaffold(`Tile ${flatIdx + 1} is visible again.`);
+    } else {
+        step.removalLevel = level;
+        if (sym) sym.removalLevel = level;
+        announceScaffold(`Tile ${flatIdx + 1} will hide from level ${level} onwards.`);
+    }
+    scaffoldLastTile = flatIdx;
+    saveHistoryState();
+    updateNavStripScaffold();
+    redrawScaffoldPreview();
+}
+
+// Apply the reference tile's current level to every occurrence of the same
+// source symbol. Opt-in only — the default stays occurrence-specific.
+function applyScaffoldToMatching() {
+    const target = scaffoldLastTile >= 0 ? scaffoldLastTile : appState.interaction.selectedSyncIndex;
+    if (target < 0 || !appState.symbols[target]) {
+        announceScaffold('Tap a tile first, then use “Apply to matching occurrences”.');
+        return;
+    }
+    materializeSequenceForScaffold();
+    const step = scaffoldStepFor(target);
+    if (!step) return;
+    const level = step.removalLevel; // may be undefined → clears the matches too
+    let n = 0;
+    appState.globalSequence.forEach(st => {
+        if (st.page === step.page && st.sym === step.sym) { st.removalLevel = level; n++; }
+    });
+    syncFlatRemovalLevels();
+    saveHistoryState();
+    updateNavStripScaffold();
+    redrawScaffoldPreview();
+    announceScaffold(level
+        ? `Level ${level} applied to ${n} matching occurrence(s) of this symbol.`
+        : `Cleared ${n} matching occurrence(s) of this symbol.`);
+}
+
+function clearScaffoldSelectedLevel() {
+    const lvl = appState.scaffold.selectedAssignmentLevel;
+    if (!lvl) { announceScaffold('Choose a level first, then use “Clear selected level”.'); return; }
+    let n = 0;
+    appState.globalSequence.forEach(st => { if (st.removalLevel === lvl) { st.removalLevel = undefined; n++; } });
+    syncFlatRemovalLevels();
+    saveHistoryState();
+    updateNavStripScaffold();
+    redrawScaffoldPreview();
+    announceScaffold(`Cleared ${n} tile(s) from level ${lvl}.`);
+}
+
+function clearAllScaffold() {
+    let n = 0;
+    appState.globalSequence.forEach(st => { if (st.removalLevel) { st.removalLevel = undefined; n++; } });
+    syncFlatRemovalLevels();
+    saveHistoryState();
+    updateNavStripScaffold();
+    redrawScaffoldPreview();
+    announceScaffold(`Cleared all ${n} scaffold assignment(s).`);
+}
+
+function setScaffoldEnabled(on: boolean) {
+    appState.scaffold.enabled = on;
+    if (on) materializeSequenceForScaffold();
+    else appState.scaffold.selectedAssignmentLevel = 0;
+    saveHistoryState();
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+}
+
+function armScaffoldLevel(level: number) {
+    const sc = appState.scaffold;
+    sc.selectedAssignmentLevel = sc.selectedAssignmentLevel === level ? 0 : level;
+    renderScaffoldControls();
+}
+
+function addScaffoldLevel() {
+    const sc = appState.scaffold;
+    if (sc.levelCount >= SCAFFOLD_MAX_LEVELS) return;
+    sc.levelCount++;
+    saveHistoryState();
+    renderScaffoldControls();
+    announceScaffold(`Added level ${sc.levelCount}.`);
+}
+
+// Set which level the preview/single-export shows. Shared by the Sync-stage
+// preview buttons and the Preview & Export scaffold-level control.
+function setScaffoldPreviewLevel(level: number) {
+    appState.scaffold.previewLevel = Math.max(0, Math.min(appState.scaffold.levelCount, level));
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+}
+
+// Redraw whatever preview is currently on screen after a scaffold change.
+function redrawScaffoldPreview() {
+    if (appState.currentView === 'result-view' && appState.symbols.length) {
+        drawPreviewFrame(dom.sync.audio.currentTime || 0);
+    }
+}
+
+// Badge assigned tiles and dim/hatch the ones hidden at the current preview
+// level, in the Sync nav strip.
+function updateNavStripScaffold() {
+    const strip = dom.sync.navStrip;
+    if (!strip) return;
+    const sc = appState.scaffold;
+    const previewLevel = sc.enabled ? sc.previewLevel : 0;
+    const assigning = sc.enabled && sc.selectedAssignmentLevel > 0;
+    strip.classList.toggle('scaffold-assigning', assigning);
+    const items = strip.querySelectorAll('.nav-symbol-item');
+    items.forEach((item: HTMLElement, i: number) => {
+        item.querySelectorAll('.scaffold-badge').forEach(b => b.remove());
+        item.classList.remove('scaffold-masked');
+        const lvl = appState.symbols[i]?.removalLevel || 0;
+        if (sc.enabled && lvl > 0) {
+            const b = document.createElement('div');
+            b.className = 'scaffold-badge';
+            b.textContent = 'L' + lvl;
+            b.title = `Hidden from level ${lvl} onwards`;
+            b.setAttribute('aria-label', `Removal level ${lvl}`);
+            item.appendChild(b);
+        }
+        if (sc.enabled && isMasked(lvl, previewLevel)) item.classList.add('scaffold-masked');
+    });
+    updateScaffoldStatus();
+}
+
+function updateScaffoldStatus() {
+    const sc = appState.scaffold;
+    if (!dom.scaffold.status) return;
+    if (!sc.enabled) { dom.scaffold.status.textContent = ''; return; }
+    const assigned = appState.symbols.filter(s => s.removalLevel).length;
+    if (sc.selectedAssignmentLevel > 0) {
+        dom.scaffold.status.textContent = `Assigning level ${sc.selectedAssignmentLevel}: tap tiles to hide them from level ${sc.selectedAssignmentLevel} onwards. ${assigned} tile(s) assigned so far.`;
+    } else {
+        const p = sc.previewLevel === 0 ? 'full support' : `level ${sc.previewLevel}`;
+        dom.scaffold.status.textContent = `${assigned} tile(s) assigned. Previewing ${p}. Choose a level above to start assigning.`;
+    }
+}
+
+// Build the enable/level/preview controls to match current config. Called on
+// entering Sync/Result and after any scaffold state change.
+function renderScaffoldControls() {
+    const sc = appState.scaffold;
+    if (dom.scaffold.enabled) dom.scaffold.enabled.checked = sc.enabled;
+    if (dom.scaffold.body) dom.scaffold.body.style.display = sc.enabled ? 'block' : 'none';
+
+    // Assignment level buttons (1..levelCount).
+    const lb = dom.scaffold.levelButtons;
+    if (lb) {
+        lb.innerHTML = '';
+        for (let n = 1; n <= sc.levelCount; n++) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = String(n);
+            b.setAttribute('aria-label', `Assign level ${n}`);
+            const on = sc.selectedAssignmentLevel === n;
+            b.classList.toggle('active', on);
+            b.setAttribute('aria-pressed', String(on));
+            b.addEventListener('click', () => armScaffoldLevel(n));
+            lb.appendChild(b);
+        }
+    }
+    if (dom.scaffold.addLevel) dom.scaffold.addLevel.disabled = sc.levelCount >= SCAFFOLD_MAX_LEVELS;
+
+    // Preview level buttons (Full + 1..levelCount) — Sync stage.
+    if (dom.scaffold.previewButtons) buildScaffoldPreviewButtons(dom.scaffold.previewButtons);
+    // Preview level buttons — Result stage (same previewLevel).
+    if (dom.scaffold.resultPreviewButtons) buildScaffoldPreviewButtons(dom.scaffold.resultPreviewButtons);
+
+    // Result-stage section shows a hint when the feature is off (it's switched
+    // on at the Sync stage).
+    if (dom.scaffold.resultDisabledNote) dom.scaffold.resultDisabledNote.style.display = sc.enabled ? 'none' : 'block';
+    if (dom.scaffold.resultPreviewButtons) (dom.scaffold.resultPreviewButtons as HTMLElement).style.display = sc.enabled ? '' : 'none';
+    if (dom.scaffold.btnProgressive) (dom.scaffold.btnProgressive as HTMLButtonElement).disabled = !sc.enabled;
+
+    updateNavStripScaffold();
+}
+
+function buildScaffoldPreviewButtons(container: HTMLElement) {
+    const sc = appState.scaffold;
+    container.innerHTML = '';
+    const mk = (n: number, label: string) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        const on = sc.previewLevel === n;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.addEventListener('click', () => setScaffoldPreviewLevel(n));
+        container.appendChild(b);
+    };
+    mk(0, 'Full support');
+    for (let n = 1; n <= sc.levelCount; n++) mk(n, 'Level ' + n);
 }
 
 function drawSyncTimeline() {
@@ -3443,6 +3782,7 @@ async function setupResultView() {
         img.onerror = () => resolve(); img.src = sym.imageSrc;
     }));
     await Promise.all(promises);
+    renderScaffoldControls();
     drawPreviewFrame(0);
     updatePreviewTransport();
     // Duration may not be known until the audio metadata loads; refresh the
@@ -3589,6 +3929,7 @@ function drawPreviewFrame(rawTime: number) {
     // Logic to determine active index based on start/end times
     let activeIndex = activeIndexAt(time);
 
+    const scaffoldLevel = currentScaffoldLevel();
     const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
         if (!appState.preview.loadedImages.has(idx)) return;
         const img = appState.preview.loadedImages.get(idx);
@@ -3597,10 +3938,13 @@ function drawPreviewFrame(rawTime: number) {
         ctx.save();
         ctx.globalAlpha = opacity;
         ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 5;
-        
+
         const ratio = Math.min(size/img.width, size/img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
-        ctx.drawImage(img, cx - dw/2, (h/2) - dh/2, dw, dh);
+        const dx = cx - dw/2, dy = (h/2) - dh/2;
+        ctx.drawImage(img, dx, dy, dw, dh);
+        // Staged scaffold removal: cover the content, keep the footprint/opacity.
+        maskTileIfHidden(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
         ctx.restore();
     };
 
@@ -3764,6 +4108,33 @@ function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     const srcY = box.y + scroll / scale;
     const srcH = h / scale;
     ctx.drawImage(page.image, box.x, srcY, box.w, srcH, 0, 0, w, h);
+
+    // Staged scaffold removal in sheet mode. A physical tile appears once on the
+    // sheet, so a repeated phrase can't be shown and hidden at the same instant;
+    // we resolve each physical tile to the occurrence NEAREST the playhead (the
+    // one the scrolling sheet is actually around) and mask by that occurrence's
+    // level. This keeps "first occurrence visible, later hidden" working as the
+    // song scrolls past each copy.
+    const sheetLevel = currentScaffoldLevel();
+    if (sheetLevel > 0) {
+        const winner = new Map<string, { s: SymbolTile; idx: number; dist: number }>();
+        syms.forEach((s, i) => {
+            if ((s.pageIndex ?? 0) !== pageIdx) return;
+            const key = tileSourceKey(s);
+            const dist = Math.abs(time - (s.startTime || 0));
+            const cur = winner.get(key);
+            if (!cur || dist < cur.dist) winner.set(key, { s, idx: i, dist });
+        });
+        winner.forEach(({ s, idx: i }) => {
+            if (!isMasked(s.removalLevel, sheetLevel)) return;
+            const mx = (s.x - box.x) * scale;
+            const my = (s.y - box.y) * scale - scroll;
+            const mw = s.width * scale;
+            const mh = s.height * scale;
+            if (my + mh < 0 || my > h) return; // outside the visible window
+            drawContentMask(ctx, tileMaskColor(appState.preview.loadedImages.get(i), tileSourceKey(s)), mx, my, mw, mh);
+        });
+    }
 
     // Glow highlight around the active tile (skip before the song starts).
     if (!preStart) {
@@ -3993,6 +4364,7 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 // tiles sat on colour-coded cards so each group can follow its own colour.
 function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
     const cfg = appState.styleConfig;
+    const scaffoldLevel = currentScaffoldLevel();
     const rowScale = Math.min(1, bandH / 240);
     const baseSize = 200 * rowScale;
     const spacing = cfg.spacing * rowScale;
@@ -4020,7 +4392,10 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
             ctx.stroke();
         }
         ctx.globalAlpha = opacity;
-        ctx.drawImage(img, x - dw / 2, cy - dh / 2, dw, dh);
+        const dx = x - dw / 2, dy = cy - dh / 2;
+        ctx.drawImage(img, dx, dy, dw, dh);
+        // Staged scaffold removal (rounds/canons share the assignment per voice).
+        maskTileIfHidden(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
         ctx.restore();
     };
 
@@ -4043,6 +4418,10 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
 // --- Video Rendering ---
 async function renderVideo(mode: 'full' | 'backing') {
     if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
+    // A normal export renders the single scaffold level currently previewed
+    // (currentScaffoldLevel() reads scaffold.previewLevel; full support when off).
+    appState.scaffold.exportMode = 'single';
+    scaffoldRenderLevelOverride = null;
     dom.rendering.overlay.style.display = 'flex';
     dom.rendering.progressText.textContent = "Initializing...";
     pausePreview();
@@ -4142,6 +4521,142 @@ async function renderVideo(mode: 'full' | 'backing') {
         // Use t directly (latency offset handles inside drawPreviewFrame logic)
         drawPreviewFrame(t);
         dom.rendering.progressText.textContent = Math.round((t/dur)*100) + "%";
+        requestAnimationFrame(renderLoop);
+    }
+    renderLoop();
+}
+
+// Pick a supported MediaRecorder mime + a bitrate for this content.
+function pickRecorderMime(): { mime: string; bitrate: number } {
+    const preferredTypes = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+    let mime = "video/webm";
+    for (const t of preferredTypes) { if (MediaRecorder.isTypeSupported(t)) { mime = t; break; } }
+    return { mime, bitrate: mime.includes("mp4") ? 2500000 : 1600000 };
+}
+
+// A between-sections title card for the progressive practice video.
+function drawScaffoldTitleCard(ctx: CanvasRenderingContext2D, w: number, h: number, level: number, progress: number) {
+    const cfg = appState.styleConfig;
+    ctx.save();
+    ctx.fillStyle = cfg.backgroundColor;
+    ctx.fillRect(0, 0, w, h);
+    // Ease in, hold, ease out across the card's lifetime.
+    const fade = Math.min(1, Math.min(progress, 1 - progress) * 6 + 0.15);
+    ctx.globalAlpha = Math.max(0, Math.min(1, fade));
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 40px sans-serif';
+    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18);
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#666';
+    ctx.fillText(level === 0 ? 'All symbols visible' : 'Some symbols will now be hidden', w / 2, h / 2 + 26);
+    ctx.restore();
+}
+
+// Progressive practice export: one continuous video that plays the song at full
+// support, then repeats it once per configured level with masking cumulative to
+// that level. Each performance is preceded by a short title card and restarts
+// the audio from the beginning. Reuses drawPreviewFrame per section (so rounds,
+// canons, count-ins and the sheet mode all keep working) by overriding the
+// scaffold render level for that section only — no app state is duplicated.
+async function renderProgressiveVideo() {
+    if (!appState.scaffold.enabled) { renderVideo('full'); return; }
+    if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
+    appState.scaffold.exportMode = 'progressive';
+
+    dom.rendering.overlay.style.display = 'flex';
+    dom.rendering.progressText.textContent = "Initializing…";
+    pausePreview();
+    dom.sync.audio.currentTime = 0;
+
+    const levels: number[] = [];
+    for (let n = 0; n <= appState.scaffold.levelCount; n++) levels.push(n);
+
+    const audioCtx = new AudioContext();
+    const dest = audioCtx.createMediaStreamDestination();
+
+    // Decode the main track once (reused for every section). Same track choice as
+    // a normal Full export.
+    const track = appState.files.audioVocal || appState.files.audioBacking;
+    let buffer: AudioBuffer | null = null;
+    if (track) {
+        try { buffer = await track.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab)); }
+        catch (e) { console.warn('Could not decode audio for progressive export:', e); }
+    }
+
+    // One performance's length: the audio, but always at least the full tile
+    // timeline plus a short tail so the last tile isn't clipped.
+    let perfDur = buffer ? buffer.duration : 0;
+    const syms = appState.symbols;
+    if (syms.length) {
+        const last = syms[syms.length - 1];
+        perfDur = Math.max(perfDur, (last.endTime || last.startTime || 0) + 1.5);
+    }
+    if (perfDur <= 0) {
+        alert('Nothing to render yet — add an audio track or sync some tiles first.');
+        dom.rendering.overlay.style.display = 'none';
+        audioCtx.close();
+        return;
+    }
+
+    const TITLE_DUR = 2.5;               // seconds per title card
+    const sectionDur = TITLE_DUR + perfDur;
+    const total = sectionDur * levels.length;
+
+    const canvasStream = dom.result.canvas.captureStream(30);
+    const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+
+    let recorder: MediaRecorder;
+    try {
+        const { mime, bitrate } = pickRecorderMime();
+        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
+    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; audioCtx.close(); return; }
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+        scaffoldRenderLevelOverride = null; // release the per-section override
+        const type = recorder.mimeType || "video/webm";
+        const ext = type.includes("mp4") ? "mp4" : "webm";
+        const blob = new Blob(chunks, { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `karaoke_progressive.${ext}`;
+        a.click();
+        dom.rendering.overlay.style.display = 'none';
+        audioCtx.close();
+    };
+
+    recorder.start();
+    const startT = audioCtx.currentTime;
+
+    // Schedule one audio playback per section, each starting when its title card
+    // ends, and stopped before the next card so tracks don't bleed across.
+    if (buffer) {
+        for (let i = 0; i < levels.length; i++) {
+            const when = startT + i * sectionDur + TITLE_DUR;
+            const src = audioCtx.createBufferSource();
+            src.buffer = buffer; src.connect(dest);
+            try { src.start(when); src.stop(when + perfDur + 0.05); } catch { /* ignore */ }
+        }
+    }
+
+    function renderLoop() {
+        const t = audioCtx.currentTime - startT;
+        if (t >= total) { recorder.stop(); return; }
+        const si = Math.min(levels.length - 1, Math.floor(t / sectionDur));
+        const localT = t - si * sectionDur;
+        const lvl = levels[si];
+        if (localT < TITLE_DUR) {
+            scaffoldRenderLevelOverride = null;
+            drawScaffoldTitleCard(dom.result.canvas.getContext('2d')!, dom.result.canvas.width, dom.result.canvas.height, lvl, localT / TITLE_DUR);
+        } else {
+            scaffoldRenderLevelOverride = lvl;      // mask cumulative to this level
+            drawPreviewFrame(localT - TITLE_DUR);   // audio for this section also starts at 0
+        }
+        const label = lvl === 0 ? 'Full support' : `Level ${lvl}`;
+        dom.rendering.progressText.textContent = `${label} · ${Math.round((t / total) * 100)}%`;
         requestAnimationFrame(renderLoop);
     }
     renderLoop();
@@ -4450,9 +4965,10 @@ async function saveProjectJson() {
         },
         styleConfig: appState.styleConfig,
         gridConfig: appState.gridConfig,
+        scaffold: appState.scaffold,
         latencyOffset: appState.interaction.latencyOffset,
         currentView: appState.currentView,
-        globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym })),
+        globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym, removalLevel: s.removalLevel })),
         round: { start: appState.round.start, end: appState.round.end },
         pages: savedPages
     };
@@ -4490,6 +5006,10 @@ function handleProjectLoadFile(e: Event) {
             if (data.styleConfig) appState.styleConfig = { ...appState.styleConfig, ...data.styleConfig };
             normalizeRoundConfig();
             if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
+            // Staged scaffold removal: merge over defaults so pre-feature files
+            // load with it disabled. Fresh board → drop stale detected colours.
+            appState.scaffold = normalizeScaffold(data.scaffold);
+            clearMaskColorCache();
             if (data.latencyOffset !== undefined) {
                 appState.interaction.latencyOffset = data.latencyOffset;
                 if (dom.result.latencySlider) {
@@ -4698,6 +5218,7 @@ function saveHistoryState() {
         mode: appState.mode,
         styleConfig: appState.styleConfig,
         gridConfig: appState.gridConfig,
+        scaffold: appState.scaffold,
         latencyOffset: appState.interaction.latencyOffset
     });
 
@@ -4751,6 +5272,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         appState.interaction.latencyOffset = data.latencyOffset || 0;
         appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
         appState.round = (data.round && typeof data.round.start === 'number') ? data.round : { start: -1, end: -1 };
+        appState.scaffold = normalizeScaffold(data.scaffold);
         _thumbCache.clear();
 
         // Undo/redo never changes the page images or page count — only the
@@ -4839,6 +5361,10 @@ async function applyHistorySnapshot(snapshotStr: string) {
                 customImage: customImageObj
             });
         }
+
+        // The flat list is restored directly (not rebuilt), so re-mirror each
+        // occurrence's scaffold assignment from the restored globalSequence.
+        syncFlatRemovalLevels();
 
         // Refresh currently active view
         if (appState.currentView === 'define-symbols-view') {

@@ -1716,6 +1716,53 @@
         .canon-entry-tile { font-weight: 600; color: var(--primary-text, var(--primary)); }
         .canon-entry-hint { opacity: 0.6; font-weight: 400; font-size: 0.85em; }
 
+        /* ---- Staged scaffold removal ---- */
+        .scaffold-panel {
+            margin: 0 auto 8px auto;
+            max-width: 680px;
+            padding: 12px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+        .scaffold-instr { font-size: 0.85rem; color: var(--text-muted); margin: 8px 0 10px; }
+        .scaffold-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin: 8px 0;
+        }
+        .scaffold-lbl { font-weight: 600; font-size: 0.82rem; }
+        .scaffold-status { font-size: 0.8rem; color: var(--text-muted); margin: 8px 0 0; min-height: 1.1em; }
+        /* When arming a level, hint that nav-strip taps now assign. */
+        .symbol-nav-strip.scaffold-assigning { outline: 2px dashed var(--primary); outline-offset: 2px; }
+        .symbol-nav-strip.scaffold-assigning .nav-symbol-item { cursor: cell; }
+        /* Removal-level badge (top-right) — text label, not colour-only. */
+        .nav-symbol-item .scaffold-badge {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: var(--primary);
+            color: #fff;
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 4px;
+            z-index: 4;
+        }
+        /* A tile hidden at the current preview level: dim + hatch so it reads as removed. */
+        .nav-symbol-item.scaffold-masked img { opacity: 0.18; }
+        .nav-symbol-item.scaffold-masked::after {
+            content: "";
+            position: absolute;
+            inset: 6px;
+            border-radius: 4px;
+            background: repeating-linear-gradient(45deg, rgba(120,120,140,0.28) 0 6px, rgba(120,120,140,0.12) 6px 12px);
+            pointer-events: none;
+        }
+        #scaffold-level-section .seg-group { margin-top: 4px; }
+
         /* ---- Define stage: always-visible grid sensitivity bar ---- */
         .grid-sensitivity-bar {
             display: flex;
@@ -2183,6 +2230,35 @@
             <button id="btn-round-clear" class="button secondary small" style="color: #c5221f;" title="Clear the round loop">Clear</button>
         </div>
 
+        <!-- Staged scaffold removal: progressively hide selected cues across
+             numbered practice levels to support recall and independent singing. -->
+        <div id="scaffold-panel" class="scaffold-panel">
+            <label class="round-toggle" style="align-items:center;">
+                <input type="checkbox" id="scaffold-enabled">
+                <span><strong>🫥 Staged scaffold removal</strong>
+                    <span class="section-note" style="display:block; font-weight:400;">Gradually hide selected cues across practice levels to support recall and independent singing.</span>
+                </span>
+            </label>
+            <div id="scaffold-body" style="display:none;">
+                <p class="scaffold-instr">Choose a level, then tap the tiles that should disappear from that level onwards.</p>
+                <div class="scaffold-row" id="scaffold-level-section">
+                    <span class="scaffold-lbl">Assign level:</span>
+                    <span id="scaffold-level-buttons" class="seg-group" role="group" aria-label="Scaffold assignment level"></span>
+                    <button id="scaffold-add-level" type="button" class="button secondary small" style="margin:0;" title="Add another practice level">+ Add level</button>
+                </div>
+                <div class="scaffold-row">
+                    <span class="scaffold-lbl">Preview:</span>
+                    <span id="scaffold-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                </div>
+                <div class="scaffold-row">
+                    <button id="scaffold-apply-matching" type="button" class="button secondary small" style="margin:0;" title="Apply the last-tapped tile's level to every other occurrence of the same symbol">Apply to matching occurrences</button>
+                    <button id="scaffold-clear-level" type="button" class="button secondary small" style="margin:0;" title="Remove all assignments at the chosen level">Clear selected level</button>
+                    <button id="scaffold-clear-all" type="button" class="button secondary small" style="margin:0; color:#c5221f;" title="Remove every scaffold assignment">Clear all</button>
+                </div>
+                <p id="scaffold-status" class="scaffold-status" role="status" aria-live="polite"></p>
+            </div>
+        </div>
+
         <audio id="sync-audio-player" style="width: 100%; margin: 12px 0 20px 0;" controls></audio>
             </div><!-- /stage-main -->
           </div><!-- /stage-body -->
@@ -2252,6 +2328,19 @@
                         <button type="button" data-value="1">Follow the sheet — highlight &amp; scroll</button>
                     </div>
                     <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one. Follow-the-sheet shows the whole songsheet, glows the current tile, and scrolls down as it plays.</p>
+                </div>
+            </div>
+
+            <div class="settings-section" id="scaffold-result-section">
+                <h4 class="settings-section-title">🫥 Staged scaffold removal</h4>
+                <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on at the <strong>Synchronize</strong> step, then choose which tiles disappear at each practice level. It stays off until you do.</p>
+                <div class="setting-item">
+                    <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
+                    <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                </div>
+                <div class="setting-item">
+                    <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
+                    <p class="section-note" style="margin-left:0; margin-top:6px;">One continuous video that plays the song at full support, then repeats it at each level in turn — a short title card announces each level before the song restarts.</p>
                 </div>
             </div>
 
