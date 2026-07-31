@@ -154,6 +154,10 @@ const appState: AppState = {
 // DOM Elements
 let dom = {} as any;
 
+// Expose the live state for debugging/automated tests (read-only use). The
+// codebase already parks _originalPageBackgrounds on window; same pattern.
+(window as any).__seesong = appState;
+
 function init() {
     // Map DOM elements
     dom = {
@@ -330,15 +334,15 @@ function init() {
             roundSettings: document.getElementById('round-settings'),
             roundStatus: document.getElementById('round-status'),
             roundActions: document.getElementById('round-actions'),
+            roundPicker: document.getElementById('round-picker'),
+            roundPickStrip: document.getElementById('round-pick-strip'),
             btnRoundPreviewEntry: document.getElementById('btn-round-preview-entry'),
-            btnRoundGotoSync: document.getElementById('btn-round-goto-sync'),
+            btnRoundPickClear: document.getElementById('btn-round-pick-clear'),
             // Canon feature (same melody fired later, own entry points, no loop).
             styleCanonEnabled: document.getElementById('style-canon-enabled'),
-            styleCanonEntries: [
-                document.getElementById('style-canon-entry-1'),
-                document.getElementById('style-canon-entry-2'),
-                document.getElementById('style-canon-entry-3'),
-            ],
+            canonPicker: document.getElementById('canon-picker'),
+            canonVoiceButtons: document.getElementById('canon-voice-buttons'),
+            canonPickStrip: document.getElementById('canon-pick-strip'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
@@ -735,22 +739,12 @@ function setupEventListeners() {
             (dom.result.roundCountinItem as HTMLElement).style.opacity = appState.styleConfig.roundCountdown ? '1' : '0.45';
             (dom.result.styleRoundCountin as HTMLSelectElement).disabled = !appState.styleConfig.roundCountdown;
         }
-        // Canon feature (separate). Each following voice's entry is a 0-based
-        // leader tile index (sliders show the 1-based tile number).
+        // Canon feature (separate). Entry points are picked by tapping tiles in
+        // the canon picker strip (stored 0-based in canonEntries); here we only
+        // read the toggle/voices and re-normalize the stored entries.
         appState.styleConfig.canonEnabled = (dom.result.styleCanonEnabled as HTMLInputElement).checked;
         appState.styleConfig.canonVoices = segGet('canonVoices') || 2;
-        // Keep follower entries in singing order — a later voice can't fire
-        // before an earlier one, so dragging one slider nudges the next along.
-        const entryEls = dom.result.styleCanonEntries as (HTMLInputElement | null)[];
-        for (let i = 1; i < entryEls.length; i++) {
-            const prevEl = entryEls[i - 1], curEl = entryEls[i];
-            if (!prevEl || !curEl) continue;
-            const prevV = parseInt(prevEl.value || '2') || 2;
-            const curV = parseInt(curEl.value || '2') || 2;
-            if (curV <= prevV) curEl.value = String(Math.min(parseInt(curEl.max || '99') || 99, prevV + 1));
-        }
-        appState.styleConfig.canonEntries = entryEls
-            .map(el => Math.max(0, (parseInt(el?.value || '2') || 2) - 1));
+        normalizeCanonEntries();
         appState.styleConfig.canonCountdown = (dom.result.styleCanonCountdown as HTMLInputElement).checked;
         appState.styleConfig.canonCountInBeats = parseInt((dom.result.styleCanonCountin as HTMLSelectElement).value) || 4;
         if (dom.result.canonCountinItem) {
@@ -816,12 +810,13 @@ function setupEventListeners() {
     dom.result.styleRoundCountdown.addEventListener('change', updateStyle);
     dom.result.styleRoundCountin.addEventListener('change', updateStyle);
     // Quick actions: hear a following voice's entry without playing the whole
-    // song, and jump straight to the Synchronize step to mark/change the loop.
+    // song, and clear the loop phrase picked in the round strip.
     if (dom.result.btnRoundPreviewEntry) dom.result.btnRoundPreviewEntry.addEventListener('click', () => previewVoiceEntry('round'));
     if (dom.result.btnCanonPreviewEntry) dom.result.btnCanonPreviewEntry.addEventListener('click', () => previewVoiceEntry('canon'));
-    if (dom.result.btnRoundGotoSync) dom.result.btnRoundGotoSync.addEventListener('click', () => switchView('sync-view'));
-    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach(el =>
-        el?.addEventListener('input', updateStyle));
+    if (dom.result.btnRoundPickClear) dom.result.btnRoundPickClear.addEventListener('click', () => {
+        appState.round = { start: -1, end: -1 };
+        afterTriggerPointChange();
+    });
     dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
     dom.result.styleCanonCountin.addEventListener('change', updateStyle);
 
@@ -3750,11 +3745,6 @@ function syncStyleControls() {
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('displayMode', c.sheetMode ? 1 : 0);
-    // Push each following voice's stored canon entry (0-based) onto its slider (1-based).
-    const entries = c.canonEntries || [];
-    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
-        if (el) el.value = String((entries[i] ?? (i + 1) * 2) + 1);
-    });
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
@@ -3780,25 +3770,165 @@ function normalizeRoundConfig() {
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
 }
 
-// Keep the per-voice canon entry sliders in sync with the tile count and the
-// chosen number of voices: bound each slider to the available tiles, show only
-// the rows for the following voices, and label each with its current tile number.
-function updateCanonEntryUI() {
+// Clamp the stored canon entries to the available tiles and keep them in
+// singing order (each following voice strictly after the previous one).
+function normalizeCanonEntries() {
     const c = appState.styleConfig;
-    const tileCount = Math.max(2, appState.symbols.length);
-    const followers = Math.max(2, Math.min(4, c.canonVoices || 2)) - 1;
-    (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach((el, i) => {
-        if (!el) return;
-        const row = el.closest('.canon-entry-row') as HTMLElement | null;
-        // Rows for voices beyond the current count are hidden.
-        if (row) row.style.display = i < followers ? '' : 'none';
-        el.max = String(tileCount);
-        el.min = '2';
-        let v = Math.max(2, Math.min(tileCount, parseInt(el.value || '2') || 2));
-        el.value = String(v);
-        const label = row?.querySelector('.canon-entry-tile') as HTMLElement | null;
-        if (label) label.textContent = 'tile ' + v;
-    });
+    const maxIdx = Math.max(1, appState.symbols.length - 1); // 0-based tile index cap
+    if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
+    for (let i = 0; i < c.canonEntries.length; i++) {
+        let v = Math.round(c.canonEntries[i] ?? (i + 1) * 2);
+        v = Math.max(1, Math.min(maxIdx, v));               // never tile 1 (the leader's start)
+        if (i > 0 && v <= c.canonEntries[i - 1]) v = Math.min(maxIdx, c.canonEntries[i - 1] + 1);
+        c.canonEntries[i] = v;
+    }
+}
+
+// Which following voice the canon picker strip currently sets (1 = Voice 2).
+let canonPickVoice = 1;
+
+// Keep the canon picker in step with the tile count / voice count.
+function updateCanonEntryUI() {
+    normalizeCanonEntries();
+    const followers = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2)) - 1;
+    if (canonPickVoice > followers) canonPickVoice = followers;
+    renderCanonVoiceButtons();
+    refreshTriggerBadges();
+}
+
+// Voice chooser for the canon picker — one button per following voice, tinted
+// with that voice's row colour so the badge on the strip matches.
+function renderCanonVoiceButtons() {
+    const holder = dom.result.canonVoiceButtons as HTMLElement | null;
+    if (!holder) return;
+    holder.innerHTML = '';
+    const followers = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2)) - 1;
+    for (let v = 1; v <= followers; v++) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = `Voice ${v + 1}`;
+        const on = canonPickVoice === v;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+        if (on) b.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
+        b.addEventListener('click', () => { canonPickVoice = v; renderCanonVoiceButtons(); });
+        holder.appendChild(b);
+    }
+}
+
+// Build the tap-a-tile strips for the Round loop phrase and the Canon entry
+// points. Rebuilt when the Result view opens (the tile list may have changed).
+function renderTriggerStrips() {
+    const build = (holder: HTMLElement | null, onPick: (i: number) => void, label: (i: number) => string) => {
+        if (!holder) return;
+        holder.innerHTML = '';
+        appState.symbols.forEach((sym, i) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'trigger-tile';
+            b.title = label(i);
+            b.setAttribute('aria-label', label(i));
+            const img = document.createElement('img');
+            img.src = sym.imageSrc;
+            img.alt = '';
+            b.appendChild(img);
+            const num = document.createElement('span');
+            num.className = 'trigger-num';
+            num.textContent = String(i + 1);
+            b.appendChild(num);
+            b.addEventListener('click', () => onPick(i));
+            holder.appendChild(b);
+        });
+    };
+    build(dom.result.roundPickStrip, pickRoundLoopTile, i => `Tile ${i + 1} — tap to mark the loop phrase`);
+    build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set the chosen voice's entry`);
+    refreshTriggerBadges();
+}
+
+// Tap logic for the round strip: first tap = phrase start, second (later) tap =
+// phrase end; tapping again once complete starts a fresh phrase.
+function pickRoundLoopTile(i: number) {
+    const r = appState.round;
+    if (r.start === -1 || (r.start !== -1 && r.end !== -1)) {
+        appState.round = { start: i, end: -1 };
+    } else if (i > r.start) {
+        appState.round = { start: r.start, end: i };
+    } else {
+        appState.round = { start: i, end: -1 };   // earlier tile → restart from there
+    }
+    afterTriggerPointChange();
+}
+
+// Tap logic for the canon strip: the tapped tile is authoritative for the armed
+// voice; earlier voices are pulled strictly earlier and later voices pushed
+// strictly later so the singing order always holds.
+function pickCanonEntryTile(i: number) {
+    const c = appState.styleConfig;
+    const maxIdx = Math.max(1, appState.symbols.length - 1);
+    // Each voice needs one tile per earlier voice, so the earliest slot voice
+    // N+1 can take is tile index N (and never the leader's first tile).
+    const idx = Math.max(canonPickVoice, Math.min(maxIdx, i));
+    c.canonEntries[canonPickVoice - 1] = idx;
+    for (let v = canonPickVoice - 2; v >= 0; v--) {
+        if (c.canonEntries[v] >= c.canonEntries[v + 1]) c.canonEntries[v] = c.canonEntries[v + 1] - 1;
+    }
+    for (let v = canonPickVoice; v < c.canonEntries.length; v++) {
+        if (c.canonEntries[v] <= c.canonEntries[v - 1]) c.canonEntries[v] = Math.min(maxIdx, c.canonEntries[v - 1] + 1);
+    }
+    afterTriggerPointChange();
+}
+
+// Refresh everything that reflects the trigger points, after a pick/clear.
+function afterTriggerPointChange() {
+    refreshTriggerBadges();
+    updateRoundCanonStatus();
+    (dom.result.styleRoundGap as HTMLInputElement).disabled = !appState.styleConfig.roundEnabled || hasRoundLoop();
+    updateRoundUI();            // Sync-stage label + nav-strip marks stay in step
+    if (!appState.preview.isPlaying && appState.currentView === 'result-view') {
+        drawPreviewFrame(dom.sync.audio.currentTime || 0);
+    }
+}
+
+// Badge the picked tiles in both strips: loop start/end (+ tinted phrase) on
+// the round strip, colour-coded voice entries on the canon strip.
+function refreshTriggerBadges() {
+    const r = appState.round;
+    const roundStrip = dom.result.roundPickStrip as HTMLElement | null;
+    if (roundStrip) {
+        roundStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+            el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
+            el.classList.remove('loop-in', 'picked');
+            const isStart = i === r.start, isEnd = r.end !== -1 && i === r.end;
+            if (isStart || isEnd) {
+                el.classList.add('picked');
+                const b = document.createElement('span');
+                b.className = 'trigger-badge';
+                b.textContent = isStart ? '⟲ start' : 'end';
+                el.appendChild(b);
+            } else if (r.start !== -1 && r.end !== -1 && i > r.start && i < r.end) {
+                el.classList.add('loop-in');
+            }
+        });
+    }
+    const canonStrip = dom.result.canonPickStrip as HTMLElement | null;
+    if (canonStrip) {
+        const c = appState.styleConfig;
+        const followers = Math.max(2, Math.min(4, c.canonVoices || 2)) - 1;
+        canonStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+            el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
+            el.classList.remove('picked');
+            for (let v = 1; v <= followers; v++) {
+                if (c.canonEntries[v - 1] === i) {
+                    el.classList.add('picked');
+                    const b = document.createElement('span');
+                    b.className = 'trigger-badge';
+                    b.textContent = 'V' + (v + 1);
+                    b.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
+                    el.appendChild(b);
+                }
+            }
+        });
+    }
 }
 
 // Plain-language status for the Round and Canon sections, so a teacher can see
@@ -3811,6 +3941,8 @@ function updateRoundCanonStatus() {
 
     const rs = dom.result.roundStatus as HTMLElement | null;
     const ra = dom.result.roundActions as HTMLElement | null;
+    if (dom.result.roundPicker) (dom.result.roundPicker as HTMLElement).style.display = cfg.roundEnabled ? 'block' : 'none';
+    if (dom.result.canonPicker) (dom.result.canonPicker as HTMLElement).style.display = cfg.canonEnabled ? 'block' : 'none';
     if (rs && ra) {
         rs.style.display = cfg.roundEnabled ? 'block' : 'none';
         ra.style.display = cfg.roundEnabled ? 'flex' : 'none';
@@ -3882,6 +4014,7 @@ async function setupResultView() {
     }));
     await Promise.all(promises);
     renderScaffoldControls();
+    renderTriggerStrips();
     drawPreviewFrame(0);
     updatePreviewTransport();
     // Duration may not be known until the audio metadata loads; refresh the
