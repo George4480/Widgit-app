@@ -122,6 +122,7 @@ const appState: AppState = {
         canonEnabled: false,
         canonVoices: 2,
         canonEntries: [2, 4, 6],
+        canonSingStarts: [0, 0, 0],
         canonCountdown: true,
         canonCountInBeats: 4,
         sheetMode: false
@@ -343,6 +344,7 @@ function init() {
             canonPicker: document.getElementById('canon-picker'),
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
+            canonSingStrip: document.getElementById('canon-sing-strip'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
@@ -3765,6 +3767,7 @@ function syncStyleControls() {
 function normalizeRoundConfig() {
     const c = appState.styleConfig;
     if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
+    if (!Array.isArray(c.canonSingStarts)) c.canonSingStarts = [0, 0, 0];
     if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
     c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
@@ -3776,11 +3779,16 @@ function normalizeCanonEntries() {
     const c = appState.styleConfig;
     const maxIdx = Math.max(1, appState.symbols.length - 1); // 0-based tile index cap
     if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
+    if (!Array.isArray(c.canonSingStarts)) c.canonSingStarts = [0, 0, 0];
     for (let i = 0; i < c.canonEntries.length; i++) {
         let v = Math.round(c.canonEntries[i] ?? (i + 1) * 2);
         v = Math.max(1, Math.min(maxIdx, v));               // never tile 1 (the leader's start)
         if (i > 0 && v <= c.canonEntries[i - 1]) v = Math.min(maxIdx, c.canonEntries[i - 1] + 1);
         c.canonEntries[i] = v;
+    }
+    // Sing-from starts are independent per voice — any tile is musically valid.
+    for (let i = 0; i < c.canonSingStarts.length; i++) {
+        c.canonSingStarts[i] = Math.max(0, Math.min(maxIdx, Math.round(c.canonSingStarts[i] ?? 0)));
     }
 }
 
@@ -3841,7 +3849,8 @@ function renderTriggerStrips() {
         });
     };
     build(dom.result.roundPickStrip, pickRoundLoopTile, i => `Tile ${i + 1} — tap to mark the loop phrase`);
-    build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set the chosen voice's entry`);
+    build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set when the chosen voice comes in`);
+    build(dom.result.canonSingStrip, pickCanonSingTile, i => `Tile ${i + 1} — tap to set where the chosen voice's line begins`);
     refreshTriggerBadges();
 }
 
@@ -3878,6 +3887,17 @@ function pickCanonEntryTile(i: number) {
     afterTriggerPointChange();
 }
 
+// Tap logic for the canon sing-from strip: the armed voice's own line begins at
+// this tile. Independent per voice — any tile is musically valid (tile 1 is the
+// classic strict canon; mid-line starts model parts whose phrase differs from
+// the entry point).
+function pickCanonSingTile(i: number) {
+    const c = appState.styleConfig;
+    if (!Array.isArray(c.canonSingStarts)) c.canonSingStarts = [0, 0, 0];
+    c.canonSingStarts[canonPickVoice - 1] = Math.max(0, Math.min(Math.max(0, appState.symbols.length - 1), i));
+    afterTriggerPointChange();
+}
+
 // Refresh everything that reflects the trigger points, after a pick/clear.
 function afterTriggerPointChange() {
     refreshTriggerBadges();
@@ -3910,25 +3930,27 @@ function refreshTriggerBadges() {
             }
         });
     }
-    const canonStrip = dom.result.canonPickStrip as HTMLElement | null;
-    if (canonStrip) {
-        const c = appState.styleConfig;
-        const followers = Math.max(2, Math.min(4, c.canonVoices || 2)) - 1;
-        canonStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+    const c = appState.styleConfig;
+    const followers = Math.max(2, Math.min(4, c.canonVoices || 2)) - 1;
+    const badgeStrip = (strip: HTMLElement | null, values: number[], prefix: string) => {
+        if (!strip) return;
+        strip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
             el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
             el.classList.remove('picked');
             for (let v = 1; v <= followers; v++) {
-                if (c.canonEntries[v - 1] === i) {
+                if (values[v - 1] === i) {
                     el.classList.add('picked');
                     const b = document.createElement('span');
                     b.className = 'trigger-badge';
-                    b.textContent = 'V' + (v + 1);
+                    b.textContent = prefix + (v + 1);
                     b.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
                     el.appendChild(b);
                 }
             }
         });
-    }
+    };
+    badgeStrip(dom.result.canonPickStrip, c.canonEntries || [], 'V');
+    badgeStrip(dom.result.canonSingStrip, c.canonSingStarts || [], '♪V');
 }
 
 // Plain-language status for the Round and Canon sections, so a teacher can see
@@ -3967,7 +3989,9 @@ function updateRoundCanonStatus() {
             for (let v = 1; v < voices; v++) {
                 const tile = (cfg.canonEntries[v - 1] ?? 1) + 1;
                 const at = firstStart + canonEntryOffset(v);
-                parts.push(`Voice ${v + 1} fires at tile <strong>${tile}</strong> (~${at.toFixed(1)}s)`);
+                const sing = (cfg.canonSingStarts?.[v - 1] ?? 0) + 1;
+                const singNote = sing > 1 ? `, singing from tile <strong>${sing}</strong>` : '';
+                parts.push(`Voice ${v + 1} fires at tile <strong>${tile}</strong> (~${at.toFixed(1)}s)${singNote}`);
             }
             cs.innerHTML = `🎯 ${parts.join(' · ')}. Entries are kept in singing order automatically.`;
         }
@@ -4571,9 +4595,17 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             }
             ctx.restore();
         } else {
-            const activeIdx = activeIndexAt(effTime);
+            // A following voice's entry moment and its sung phrase are separate
+            // things: it fires when the leader reaches its entry tile, but its
+            // own line begins at its sing-from tile (default: the top of the
+            // song). Map wall time onto the voice's own line accordingly.
+            const singStartIdx = v === 0 ? 0 : Math.max(0, Math.min(appState.symbols.length - 1, appState.styleConfig.canonSingStarts?.[v - 1] ?? 0));
+            const singStartT = appState.symbols[singStartIdx]?.startTime ?? firstStart;
+            const entryT = firstStart + canonEntryOffset(v);
+            const sample = time - entryT + singStartT;
+            const activeIdx = activeIndexAt(sample);
             if (activeIdx !== -1) {
-                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
+                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint, singStartIdx);
             }
         }
 
@@ -4594,7 +4626,9 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
 // One voice's conveyor (prev / active / next) in a band centred at cy, with the
 // tiles sat on colour-coded cards so each group can follow its own colour.
-function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
+// `minIndex` hides already-played tiles before a voice's own first sung tile —
+// a canon part that starts mid-line never sang the tiles before it.
+function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string, minIndex: number = 0) {
     const cfg = appState.styleConfig;
     const scaffoldLevel = currentScaffoldLevel();
     const rowScale = Math.min(1, bandH / 240);
@@ -4639,7 +4673,7 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
     }
     // Prev
     for (let i = 1; i <= cfg.prevCount; i++) {
-        if (activeIndex - i >= 0) {
+        if (activeIndex - i >= minIndex) {
             drawTile(activeIndex - i, cx - i * spacing, cfg.prevScale * Math.pow(0.9, i - 1), cfg.prevOpacity * Math.pow(0.8, i - 1), false);
         }
     }

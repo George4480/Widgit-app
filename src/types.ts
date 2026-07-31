@@ -89,6 +89,15 @@ export interface StyleConfig {
      * canonEntries[0] is voice 2, [1] is voice 3, [2] is voice 4.
      */
     canonEntries: number[];
+    /**
+     * Which tile each FOLLOWING voice starts singing from (0-based flat tile
+     * index). A canon part's entry moment and its sung phrase are two different
+     * things: the voice fires when the leader reaches canonEntries[v], and its
+     * own line begins at canonSingStarts[v] (0 = the top of the song, the
+     * classic strict canon and the default). Same [voice2, voice3, voice4]
+     * layout as canonEntries. Absent in older saves — treated as all zeros.
+     */
+    canonSingStarts: number[];
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
