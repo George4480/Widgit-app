@@ -328,6 +328,10 @@ function init() {
             styleRoundCountin: document.getElementById('style-round-countin'),
             roundCountinItem: document.getElementById('round-countin-item'),
             roundSettings: document.getElementById('round-settings'),
+            roundStatus: document.getElementById('round-status'),
+            roundActions: document.getElementById('round-actions'),
+            btnRoundPreviewEntry: document.getElementById('btn-round-preview-entry'),
+            btnRoundGotoSync: document.getElementById('btn-round-goto-sync'),
             // Canon feature (same melody fired later, own entry points, no loop).
             styleCanonEnabled: document.getElementById('style-canon-enabled'),
             styleCanonEntries: [
@@ -338,7 +342,10 @@ function init() {
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
-            canonSettings: document.getElementById('canon-settings')
+            canonSettings: document.getElementById('canon-settings'),
+            canonStatus: document.getElementById('canon-status'),
+            canonActions: document.getElementById('canon-actions'),
+            btnCanonPreviewEntry: document.getElementById('btn-canon-preview-entry')
         },
         rendering: {
             overlay: document.getElementById('rendering-overlay'),
@@ -732,7 +739,17 @@ function setupEventListeners() {
         // leader tile index (sliders show the 1-based tile number).
         appState.styleConfig.canonEnabled = (dom.result.styleCanonEnabled as HTMLInputElement).checked;
         appState.styleConfig.canonVoices = segGet('canonVoices') || 2;
-        appState.styleConfig.canonEntries = (dom.result.styleCanonEntries as (HTMLInputElement | null)[])
+        // Keep follower entries in singing order — a later voice can't fire
+        // before an earlier one, so dragging one slider nudges the next along.
+        const entryEls = dom.result.styleCanonEntries as (HTMLInputElement | null)[];
+        for (let i = 1; i < entryEls.length; i++) {
+            const prevEl = entryEls[i - 1], curEl = entryEls[i];
+            if (!prevEl || !curEl) continue;
+            const prevV = parseInt(prevEl.value || '2') || 2;
+            const curV = parseInt(curEl.value || '2') || 2;
+            if (curV <= prevV) curEl.value = String(Math.min(parseInt(curEl.max || '99') || 99, prevV + 1));
+        }
+        appState.styleConfig.canonEntries = entryEls
             .map(el => Math.max(0, (parseInt(el?.value || '2') || 2) - 1));
         appState.styleConfig.canonCountdown = (dom.result.styleCanonCountdown as HTMLInputElement).checked;
         appState.styleConfig.canonCountInBeats = parseInt((dom.result.styleCanonCountin as HTMLSelectElement).value) || 4;
@@ -742,8 +759,11 @@ function setupEventListeners() {
         }
         appState.styleConfig.sheetMode = segGet('displayMode') === 1;
         // Enable/disable each feature's sub-controls to match its own toggle.
+        // The round-gap slider is also disabled while a loop phrase is marked,
+        // because the marked phrase's length drives the entry gap then — a live
+        // slider that does nothing would be misleading.
         const roundOn = appState.styleConfig.roundEnabled;
-        (dom.result.styleRoundGap as HTMLInputElement).disabled = !roundOn;
+        (dom.result.styleRoundGap as HTMLInputElement).disabled = !roundOn || hasRoundLoop();
         if (dom.result.roundSettings) {
             dom.result.roundSettings.style.opacity = roundOn ? '1' : '0.5';
             dom.result.roundSettings.setAttribute('aria-disabled', roundOn ? 'false' : 'true');
@@ -754,6 +774,7 @@ function setupEventListeners() {
             dom.result.canonSettings.setAttribute('aria-disabled', canonOn ? 'false' : 'true');
         }
         updateCanonEntryUI();
+        updateRoundCanonStatus();
         // Hide conveyor-only settings when following the sheet.
         document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
@@ -794,6 +815,11 @@ function setupEventListeners() {
     dom.result.styleRoundGap.addEventListener('input', updateStyle);
     dom.result.styleRoundCountdown.addEventListener('change', updateStyle);
     dom.result.styleRoundCountin.addEventListener('change', updateStyle);
+    // Quick actions: hear a following voice's entry without playing the whole
+    // song, and jump straight to the Synchronize step to mark/change the loop.
+    if (dom.result.btnRoundPreviewEntry) dom.result.btnRoundPreviewEntry.addEventListener('click', () => previewVoiceEntry('round'));
+    if (dom.result.btnCanonPreviewEntry) dom.result.btnCanonPreviewEntry.addEventListener('click', () => previewVoiceEntry('canon'));
+    if (dom.result.btnRoundGotoSync) dom.result.btnRoundGotoSync.addEventListener('click', () => switchView('sync-view'));
     (dom.result.styleCanonEntries as (HTMLInputElement | null)[]).forEach(el =>
         el?.addEventListener('input', updateStyle));
     dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
@@ -3455,7 +3481,7 @@ function updateRoundUI() {
     const startTile = `Tile ${r.start + 1}`;
     if (r.end === -1) { label.textContent = `Loop start: ${startTile} — now set the loop end.`; return; }
     const gap = roundGapSeconds();
-    label.textContent = `Loop: Tile ${r.start + 1} → ${r.end + 1}  (2nd voice enters ${gap.toFixed(1)}s later)`;
+    label.textContent = `Loop: Tile ${r.start + 1} → ${r.end + 1} (2nd voice enters ${gap.toFixed(1)}s later) — turn on “Round” at the Preview step to use it.`;
     updateNavStripRoundMarks();
 }
 
@@ -3730,7 +3756,7 @@ function syncStyleControls() {
         if (el) el.value = String((entries[i] ?? (i + 1) * 2) + 1);
     });
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
-    (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled;
+    (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
         dom.result.roundSettings.setAttribute('aria-disabled', c.roundEnabled ? 'false' : 'true');
@@ -3740,6 +3766,7 @@ function syncStyleControls() {
         dom.result.canonSettings.setAttribute('aria-disabled', c.canonEnabled ? 'false' : 'true');
     }
     updateCanonEntryUI();
+    updateRoundCanonStatus();
     formatStyleBadges();
 }
 
@@ -3772,6 +3799,74 @@ function updateCanonEntryUI() {
         const label = row?.querySelector('.canon-entry-tile') as HTMLElement | null;
         if (label) label.textContent = 'tile ' + v;
     });
+}
+
+// Plain-language status for the Round and Canon sections, so a teacher can see
+// what the current setup will actually do — and, for a round, whether the loop
+// phrase marked at the Synchronize step is driving it or the fallback slider is.
+function updateRoundCanonStatus() {
+    const cfg = appState.styleConfig;
+    const syms = appState.symbols;
+    const firstStart = syms.length ? (syms[0].startTime || 0) : 0;
+
+    const rs = dom.result.roundStatus as HTMLElement | null;
+    const ra = dom.result.roundActions as HTMLElement | null;
+    if (rs && ra) {
+        rs.style.display = cfg.roundEnabled ? 'block' : 'none';
+        ra.style.display = cfg.roundEnabled ? 'flex' : 'none';
+        if (cfg.roundEnabled) {
+            if (hasRoundLoop()) {
+                const r = appState.round;
+                rs.innerHTML = `✅ Using your marked loop — tiles <strong>${r.start + 1} → ${r.end + 1}</strong>. Each voice enters <strong>${roundGapSeconds().toFixed(1)}s</strong> after the previous one, and finished voices repeat that phrase so the round ends together. (The timing slider below is ignored while a loop is marked.)`;
+            } else {
+                rs.innerHTML = `⚠️ <strong>No loop phrase marked yet.</strong> Voices will enter every ${roundGapSeconds().toFixed(1)}s (slider below) and simply hold their last note — they won't loop to a unison finish. Use “Mark / change the loop” to set the looping phrase on the Synchronize step.`;
+            }
+        }
+    }
+
+    const cs = dom.result.canonStatus as HTMLElement | null;
+    const ca = dom.result.canonActions as HTMLElement | null;
+    if (cs && ca) {
+        cs.style.display = cfg.canonEnabled ? 'block' : 'none';
+        ca.style.display = cfg.canonEnabled ? 'flex' : 'none';
+        if (cfg.canonEnabled && syms.length) {
+            const voices = Math.max(2, Math.min(4, cfg.canonVoices || 2));
+            const parts: string[] = [];
+            for (let v = 1; v < voices; v++) {
+                const tile = (cfg.canonEntries[v - 1] ?? 1) + 1;
+                const at = firstStart + canonEntryOffset(v);
+                parts.push(`Voice ${v + 1} fires at tile <strong>${tile}</strong> (~${at.toFixed(1)}s)`);
+            }
+            cs.innerHTML = `🎯 ${parts.join(' · ')}. Entries are kept in singing order automatically.`;
+        }
+    }
+}
+
+// Jump the preview to just before the first following voice comes in — with the
+// count-in run-up included — so its entry can be checked without playing the
+// whole song. Shared by the Round and Canon "preview entry" buttons.
+function previewVoiceEntry(kind: 'round' | 'canon') {
+    const cfg = appState.styleConfig;
+    const syms = appState.symbols;
+    if (!syms.length) return;
+    const firstStart = syms[0].startTime || 0;
+    let entry: number, preroll: number;
+    if (kind === 'round') {
+        const gap = roundGapSeconds();
+        const loopStartTime = hasRoundLoop() ? (syms[appState.round.start].startTime || 0) : firstStart;
+        entry = loopStartTime + gap;                       // when voice 2 starts singing
+        preroll = cfg.roundCountdown ? gap : 1.2;          // when its band + count-in appear
+    } else {
+        entry = firstStart + canonEntryOffset(1);
+        const beats = Math.max(1, Math.min(8, cfg.canonCountInBeats || 4));
+        preroll = cfg.canonCountdown ? beats * avgTileDuration() : 1.2;
+    }
+    const t = Math.max(0, entry - preroll - 0.75);
+    pausePreview();
+    dom.sync.audio.currentTime = t;
+    drawPreviewFrame(t);
+    updatePreviewTransport();
+    playPreview();
 }
 
 async function setupResultView() {

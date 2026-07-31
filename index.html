@@ -2440,6 +2440,11 @@
                         <span>Show as a <strong>round</strong> — voices enter evenly and loop to a unison finish, each in its own colour row.</span>
                     </label>
                 </div>
+                <p id="round-status" class="settings-note" role="status" style="display:none;"></p>
+                <div id="round-actions" class="scaffold-row" style="display:none;">
+                    <button id="btn-round-preview-entry" type="button" class="button secondary small" style="margin:0;" title="Jump the preview to just before the second voice comes in">▶ Preview the 2nd voice coming in</button>
+                    <button id="btn-round-goto-sync" type="button" class="button secondary small" style="margin:0;" title="Go back to the Synchronize step to mark or change the loop phrase">✎ Mark / change the loop</button>
+                </div>
                 <div class="settings-grid" id="round-settings" style="opacity: 0.5;">
                     <div class="setting-item">
                         <label>How many voices</label>
@@ -2480,6 +2485,10 @@
                         <input type="checkbox" id="style-canon-enabled">
                         <span>Show as a <strong>canon</strong> — each following voice is fired at its own chosen point, in its own colour row.</span>
                     </label>
+                </div>
+                <p id="canon-status" class="settings-note" role="status" style="display:none;"></p>
+                <div id="canon-actions" class="scaffold-row" style="display:none;">
+                    <button id="btn-canon-preview-entry" type="button" class="button secondary small" style="margin:0;" title="Jump the preview to just before voice 2 comes in">▶ Preview voice 2 coming in</button>
                 </div>
                 <div class="settings-grid" id="canon-settings" style="opacity: 0.5;">
                     <div class="setting-item">
