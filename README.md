@@ -13,24 +13,3 @@ helps you:
 
 You can also **import a finished video** to pull its audio and frames back into an
 editable project. Everything runs client-side; your files never leave your device.
-
-## Run locally
-
-**Prerequisites:** Node.js
-
-```bash
-npm install
-npm run dev
-```
-
-Then open http://localhost:3000.
-
-## Build
-
-```bash
-npm run build   # outputs static files to dist/
-npm run preview # serve the production build
-```
-
-The build is a fully static site (no server, no API keys), so it can be hosted on any
-static host.
