@@ -2470,6 +2470,13 @@ function moveSequenceStep(from: number, to: number) {
 function renderOrderSequenceStrip() {
     const strip = dom.order.sequenceStrip;
     if (!strip) return;
+    // Rolling view: rebuilding wipes the browser's scroll position, which used
+    // to bounce the strip back to the start on every tap — the tile just added
+    // sat off-screen to the right. Remember where we were, and whether this
+    // render is for a newly added step (strip grew), so we can roll to the end.
+    const prevScroll = strip.scrollLeft;
+    const grew = appState.globalSequence.length > _orderStripLastLen;
+    _orderStripLastLen = appState.globalSequence.length;
     strip.innerHTML = '';
 
     if (appState.globalSequence.length === 0) {
@@ -2565,7 +2572,24 @@ function renderOrderSequenceStrip() {
 
         strip.appendChild(item);
     });
+
+    // Keep the view rolling with the work: a new step scrolls the strip to the
+    // end and flashes the added tile; any other rebuild (reorder, removal,
+    // page switch) stays where the user was looking — restored instantly so
+    // the strip's smooth scrolling doesn't swoosh from the start each time.
+    if (grew && strip.lastElementChild) {
+        strip.scrollLeft = strip.scrollWidth;
+        strip.lastElementChild.classList.add('just-added');
+    } else {
+        strip.style.scrollBehavior = 'auto';
+        strip.scrollLeft = prevScroll;
+        strip.style.scrollBehavior = '';
+    }
 }
+
+// Length of the sequence at the last strip render — detects "a step was just
+// added" so the strip can roll to the end only then.
+let _orderStripLastLen = 0;
 
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const pos = getPointerPos(e, dom.order.canvas);
