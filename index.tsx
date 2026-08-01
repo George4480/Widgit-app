@@ -2005,23 +2005,39 @@ function updateToolbarUI() {
     const count = appState.interaction.selectedIndices.size;
     dom.define.btnDelete.textContent = count > 0 ? `Delete Selected (${count})` : "Delete Selected";
 }
+// Apparent scale of the Define canvas: fit-the-container-width × user zoom.
+// Zoom 1.0 therefore means "fit the page to the container" on EVERY page, so
+// the apparent zoom stays identical when switching between pages even when
+// their native render resolutions differ (e.g. a PDF page next to a photo).
+function defineFitScale(): number {
+    const page = appState.pages[appState.currentPageIndex];
+    if (!page) return 1;
+    const w = dom.define.canvasContainer?.clientWidth || 0;
+    return w > 0 ? w / page.width : 1;
+}
+function defineScale(): number {
+    return defineFitScale() * appState.interaction.zoomLevel;
+}
+
 function resizeCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    dom.define.canvas.width = page.width * appState.interaction.zoomLevel;
-    dom.define.canvas.height = page.height * appState.interaction.zoomLevel;
+    const s = defineScale();
+    dom.define.canvas.width = page.width * s;
+    dom.define.canvas.height = page.height * s;
     drawCanvas();
 }
 function drawCanvas() {
     const ctx = dom.define.ctx;
     const page = appState.pages[appState.currentPageIndex];
     if (!page || !ctx) return;
+    const zs = defineScale();
     ctx.save();
-    ctx.scale(appState.interaction.zoomLevel, appState.interaction.zoomLevel);
+    ctx.scale(zs, zs);
     ctx.clearRect(0, 0, page.width, page.height);
     ctx.drawImage(page.image, 0, 0);
-    
-    ctx.lineWidth = 4 / appState.interaction.zoomLevel;
+
+    ctx.lineWidth = 4 / zs;
     page.symbols.forEach((s: any, idx: number) => {
         // Render custom image if present
         if (s.customImage) {
@@ -2038,7 +2054,7 @@ function drawCanvas() {
 
         // Draw Resize Handle for selected
         if (appState.interaction.selectedIndices.has(idx)) {
-            const handleSize = 10 / appState.interaction.zoomLevel;
+            const handleSize = 10 / zs;
             ctx.fillStyle = '#1a73e8';
             ctx.fillRect(s.x + s.width - handleSize/2, s.y + s.height - handleSize/2, handleSize, handleSize);
         }
@@ -2047,10 +2063,10 @@ function drawCanvas() {
     // Marquee
     if (appState.interaction.dragAction === 'marquee' && appState.interaction.isDragging) {
          const {marqueeStart: s, marqueeCurrent: c} = appState.interaction;
-         const x = Math.min(s.x, c.x) * appState.interaction.zoomLevel;
-         const y = Math.min(s.y, c.y) * appState.interaction.zoomLevel;
-         const w = Math.abs(c.x - s.x) * appState.interaction.zoomLevel;
-         const h = Math.abs(c.y - s.y) * appState.interaction.zoomLevel;
+         const x = Math.min(s.x, c.x) * zs;
+         const y = Math.min(s.y, c.y) * zs;
+         const w = Math.abs(c.x - s.x) * zs;
+         const h = Math.abs(c.y - s.y) * zs;
          ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
 }
@@ -2107,10 +2123,10 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     }
 
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
-    
+
     const page = appState.pages[appState.currentPageIndex];
 
     // Check for Resize Handle first
@@ -2174,7 +2190,7 @@ function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
     if (!appState.interaction.isDragging || appState.interaction.dragAction === 'none') return;
     
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
     const page = appState.pages[appState.currentPageIndex];
