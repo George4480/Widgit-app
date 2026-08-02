@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
+import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
 import { isMasked, tileMaskColor, drawContentMask, clearMaskColorCache } from "./src/scaffold";
 
@@ -75,11 +75,6 @@ function createLocalUrl(file: File | Blob): string {
     return url;
 }
 
-function revokeAllLocalUrls() {
-    activeObjectUrls.forEach(url => URL.revokeObjectURL(url));
-    activeObjectUrls.clear();
-}
-
 // Application State
 const appState: AppState = {
     currentView: 'upload-view', // upload-view, loading-view, define-symbols-view, order-view, sync-view, result-view
@@ -98,16 +93,8 @@ const appState: AppState = {
     symbols: [] as SymbolTile[], // Flat list for Sync/Result
     isRecordingSync: false,
     currentSyncIndex: 0, // Used during recording
-    syncData: [] as SyncTiming[],
     audioBuffer: null as AudioBuffer | null, // Decoded audio for waveform
-    stats: {
-        avgDuration: 0
-    },
     gridConfig: {
-        rowBreakThreshold: 50,
-        colBreakThreshold: 10,
-        minSymbolWidth: 20,
-        minSymbolHeight: 20,
         contentThreshold: 245
     },
     styleConfig: {
@@ -190,7 +177,6 @@ function init() {
         },
         upload: {
             dropZone: document.getElementById('unified-drop-zone'),
-            input: document.getElementById('unified-file-input'),
             btnBrowse: document.querySelector('.browse-btn'),
             btnGenerate: document.getElementById('generate-button'),
             btnCreateBoard: document.getElementById('btn-create-board'),
@@ -232,7 +218,7 @@ function init() {
             btnDownloadPdf: document.getElementById('btn-download-pdf'),
             btnDownloadZip: document.getElementById('btn-download-zip'),
 
-            // Add-your-own-image (non-AI)
+            // Add-your-own-image
             btnUploadSymbol: document.getElementById('btn-upload-symbol'),
             inputUploadSymbol: document.getElementById('input-upload-symbol'),
         },
@@ -301,7 +287,6 @@ function init() {
             clearAll: document.getElementById('scaffold-clear-all'),
             status: document.getElementById('scaffold-status'),
             // Result-stage preview control (Preview & Export)
-            resultSection: document.getElementById('scaffold-result-section'),
             resultEnabled: document.getElementById('scaffold-result-enabled') as HTMLInputElement,
             resultControls: document.getElementById('scaffold-result-controls'),
             resultDisabledNote: document.getElementById('scaffold-result-disabled'),
@@ -461,8 +446,6 @@ function setupEventListeners() {
         e.stopPropagation();
         triggerUpload();
     });
-    // Remove old input listener as we no longer use it
-    
     dom.upload.dropZone.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.add('drag-over'); });
     dom.upload.dropZone.addEventListener('dragleave', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.remove('drag-over'); });
     dom.upload.dropZone.addEventListener('drop', (e: DragEvent) => {
@@ -509,7 +492,6 @@ function setupEventListeners() {
     
     // Assignment swapping logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
-        const other = type === 'vocal' ? 'backing' : 'vocal';
         const cardType = type === 'vocal' ? dom.upload.cardVocal : dom.upload.cardBacking;
         const cardOther = type === 'vocal' ? dom.upload.cardBacking : dom.upload.cardVocal;
         
@@ -573,7 +555,7 @@ function setupEventListeners() {
     dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
     dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
 
-    // Add-your-own-image (non-AI)
+    // Add-your-own-image
     dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
     dom.define.inputUploadSymbol.addEventListener('change', (e: Event) => handleSymbolUpload((e.target as HTMLInputElement).files));
 
@@ -1341,7 +1323,6 @@ let _videoCandidates: { time: number; dataUrl: string }[] = [];
 let _videoAudioFile: File | null = null;
 // Tile crop defined on the first captured frame (normalized 0..1), applied to
 // every frame so the imported tiles come out uniform. Null = use whole frames.
-let _videoCrop: { x: number; y: number; w: number; h: number } | null = null;
 let _videoCroppedUrls: string[] | null = null;
 
 async function handleVideoImport(file: File) {
@@ -1518,7 +1499,6 @@ function renderVideoGrid() {
 
 function openVideoPicker() {
     // Fresh crop each import.
-    _videoCrop = null;
     _videoCroppedUrls = null;
     const status = document.getElementById('crop-status');
     if (status) status.textContent = '';
@@ -1579,7 +1559,6 @@ async function applyVideoCrop() {
         w: Math.min(1, box.offsetWidth / iw),
         h: Math.min(1, box.offsetHeight / ih),
     };
-    _videoCrop = crop;
     if (status) status.textContent = 'Cropping…';
     _videoCroppedUrls = await Promise.all(_videoCandidates.map(c => cropDataUrl(c.dataUrl, crop)));
     renderVideoGrid();
@@ -1587,7 +1566,6 @@ async function applyVideoCrop() {
 }
 
 function resetVideoCrop() {
-    _videoCrop = null;
     _videoCroppedUrls = null;
     const status = document.getElementById('crop-status');
     if (status) status.textContent = 'Using whole frames.';
@@ -3076,7 +3054,6 @@ function renderSymbolNavStrip() {
     appState.symbols.forEach((sym, idx) => {
         const div = document.createElement('div');
         div.className = 'nav-symbol-item';
-        div.id = `nav-sym-${idx}`;
         
         const img = document.createElement('img');
         img.src = sym.imageSrc;
@@ -3418,10 +3395,6 @@ function drawSyncTimeline() {
     const data = buffer.getChannelData(0);
     const amp = viewportH / 3;
     const midY = viewportH / 2;
-    
-    // Map pixels to audio samples
-    // optimization: step > 1 if high zoom
-    const pixelsPerSample = zoom / buffer.sampleRate;
     
     // Draw loop: iterate pixels x from 0 to viewportW
     for(let x=0; x<viewportW; x+=2) {
@@ -4306,7 +4279,7 @@ function drawPreviewFrame(rawTime: number) {
     // "Follow the sheet" mode shows the whole songsheet with a glowing
     // highlight that scrolls down — a full-frame alternative to the conveyor.
     if (cfg.sheetMode && appState.symbols.length > 0) {
-        drawSheetFrame(ctx, w, h, time, firstStart);
+        drawSheetFrame(ctx, w, h, time);
         return;
     }
 
@@ -4495,7 +4468,7 @@ function pageContentBox(pageIdx: number) {
 
 // "Follow the sheet": draw the current page cropped to its content, glow-
 // highlight the active tile, and scroll down smoothly as the sequence advances.
-function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number) {
     const cfg = appState.styleConfig;
     ctx.fillStyle = cfg.backgroundColor;
     ctx.fillRect(0, 0, w, h);
@@ -5231,7 +5204,6 @@ function confirmExport(onConfirm: () => void) {
     // Create warning modal
     const overlay = document.createElement('div');
     overlay.className = 'warning-modal-overlay';
-    overlay.id = 'export-warning-modal';
 
     const content = document.createElement('div');
     content.className = 'warning-modal-content';

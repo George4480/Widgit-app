@@ -56,11 +56,6 @@ export interface SequenceStep {
     removalLevel?: number;
 }
 
-export interface SyncTiming {
-    symbolIndex: number;
-    time: number;
-}
-
 export interface StyleConfig {
     backgroundColor: string;
     activeScale: number;
@@ -123,10 +118,6 @@ export interface ScaffoldConfig {
 }
 
 export interface GridConfig {
-    rowBreakThreshold: number;
-    colBreakThreshold: number;
-    minSymbolWidth: number;
-    minSymbolHeight: number;
     contentThreshold: number;
 }
 
@@ -157,11 +148,7 @@ export interface AppState {
     symbols: SymbolTile[];
     isRecordingSync: boolean;
     currentSyncIndex: number;
-    syncData: SyncTiming[];
     audioBuffer: AudioBuffer | null;
-    stats: {
-        avgDuration: number;
-    };
     gridConfig: GridConfig;
     styleConfig: StyleConfig;
     /** Staged scaffold removal configuration + transient preview/assignment state. */
