@@ -164,7 +164,8 @@ let dom = {} as any;
     pStart: (v: number) => canonPhraseStart(v),
     pEnd: (v: number) => canonPhraseEnd(v),
     voiceEnd: (v: number) => canonVoiceEndTime(v),
-    leadAt: (t: number) => canonLeaderIndexAt(t),
+    voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
+    leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
 };
 
@@ -3749,43 +3750,78 @@ function canonTileOffset(v: number): number {
     return canonEntryIndex(v) - canonPhraseStart(v);
 }
 
-// The leader's tile index, continued past the end of the line.
+// Song time at which the leader's line runs out.
+function canonLeadEndTime(): number {
+    const syms = appState.symbols;
+    if (!syms.length) return 0;
+    const last = syms[syms.length - 1];
+    return last.endTime || last.startTime || 0;
+}
+
+// The tile a following voice is on once the leader has stopped — it is that many
+// tiles short of the end, and has the rest of its phrase still to sing.
+function canonTileAtLeadEnd(v: number): number {
+    return Math.max(0, appState.symbols.length - 1) - canonTileOffset(v);
+}
+
+// Which tile voice v is on at song time t.
 //
-// activeIndexAt holds on the last tile forever, which is what a normal
-// playthrough wants but would freeze every follower mid-phrase — a canon is
-// still going after the leader has finished, with the later voices several
-// tiles from home. Past the end we keep stepping at the song's own average tile
-// length so they can walk out the rest of their phrase.
-function canonLeaderIndexAt(t: number): number {
+// A canon has two regimes, because it outlives the leader:
+//
+//  • While the leader is still singing, the voice is LOCKED to it — exactly
+//    canonTileOffset symbols behind, changing symbol on the same beat.
+//
+//  • Once the leader's line runs out the voice is on its own, and walks out the
+//    rest of its phrase at those tiles' OWN recorded lengths. It must not fall
+//    back to an average tile length: a canon does not have to span the whole
+//    song, so a voice entering late — say halfway through the second A of an
+//    ABA — does most of its singing after the leader has stopped, and that tail
+//    is exactly the stretch that would lose the song's real rhythm. The tail is
+//    also what extends the finished video past the original song length.
+//
+// The two regimes meet continuously: the tail is anchored so that at the instant
+// the leader ends, the voice is on the same tile both ways.
+// The upper end is clamped to the voice's last phrase tile — once it is done it
+// holds there. The lower end is deliberately NOT clamped: a value below the
+// phrase start is how the caller knows the voice has not come in yet and should
+// be showing its count-in.
+function canonVoiceTileAt(v: number, t: number): number {
     const syms = appState.symbols;
     if (!syms.length) return -1;
     const lastIdx = syms.length - 1;
-    const endT = syms[lastIdx].endTime || syms[lastIdx].startTime || 0;
-    if (t <= endT) return activeIndexAt(t);
-    return lastIdx + Math.floor((t - endT) / canonStepSeconds()) + 1;
+    const hold = (k: number) => v === 0 ? Math.min(k, lastIdx) : Math.min(k, canonPhraseEnd(v));
+    const off = canonTileOffset(v);
+    const leadEndT = canonLeadEndTime();
+    if (t <= leadEndT) return hold(activeIndexAt(t) - off);
+    const idxAtEnd = canonTileAtLeadEnd(v);
+    if (idxAtEnd >= lastIdx) return hold(lastIdx);   // ran ahead: nothing left to walk out
+    // Anchor at the moment this voice ENTERED its current tile (the instant the
+    // leader entered its own last tile), not at the leader's end. Anchoring at
+    // the end would restart the tile's clock and leave it on screen for longer
+    // than it was ever sung for; this way the tile lasts exactly its recorded
+    // length and every tile after it follows at its own.
+    return hold(activeIndexAt(t - (syms[lastIdx].startTime || 0) + (syms[idxAtEnd].startTime || 0)));
 }
 
-// Tile length used to continue the leader's clock past the end of the song.
-function canonStepSeconds(): number {
-    return Math.max(0.05, avgTileDuration());
-}
-
-// Time at which the leader — real, or continued past the end — arrives at tile k.
-function canonLeaderTimeForIndex(k: number): number {
+// When voice v finishes its phrase, in absolute song time. Keeps an export
+// running until the last voice has actually stopped singing — for a late entry
+// that is well past the end of the leader's audio.
+function canonVoiceEndTime(v: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
     const lastIdx = syms.length - 1;
-    if (k <= lastIdx) return syms[Math.max(0, k)]?.startTime || 0;
-    const endT = syms[lastIdx].endTime || syms[lastIdx].startTime || 0;
-    return endT + (k - lastIdx - 1) * canonStepSeconds();
-}
-
-// When voice v finishes its phrase, in absolute song time — the moment the
-// leader's (continued) index has carried it past the last tile of that phrase.
-// Keeps an export running until the last voice has actually stopped singing.
-function canonVoiceEndTime(v: number): number {
-    if (!appState.symbols.length) return 0;
-    return canonLeaderTimeForIndex(canonPhraseEnd(v) + canonTileOffset(v)) + canonStepSeconds();
+    const off = canonTileOffset(v);
+    const pEnd = canonPhraseEnd(v);
+    const idxAtEnd = canonTileAtLeadEnd(v);
+    const tileEnd = (k: number) => syms[k] ? (syms[k].endTime || syms[k].startTime || 0) : 0;
+    if (pEnd <= idxAtEnd) {
+        // Finishes while the leader is still going — when the leader's own index
+        // has carried past that tile.
+        return tileEnd(Math.max(0, Math.min(lastIdx, pEnd + off)));
+    }
+    // Finishes in the tail, on its own rhythm — same anchor as canonVoiceTileAt.
+    const anchorDst = syms[Math.max(0, Math.min(lastIdx, idxAtEnd))].startTime || 0;
+    return (syms[lastIdx].startTime || 0) + (tileEnd(pEnd) - anchorDst);
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -4881,12 +4917,6 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
     const syms = appState.symbols;
-    // One tile clock for the whole frame. Every voice reads its symbol off this
-    // same index, displaced by its own whole-tile offset, so all the rows change
-    // symbol on the same beat and stay exactly N symbols apart all the way
-    // through — which is the thing a canon has to get right.
-    const lead = canonLeaderIndexAt(time);
-
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
         const cy = bandH * v + bandH / 2;
@@ -4894,7 +4924,8 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         // given, a whole number of tiles behind.
         const pStart = v === 0 ? 0 : canonPhraseStart(v);
         const pEnd = v === 0 ? Math.max(0, syms.length - 1) : canonPhraseEnd(v);
-        const target = lead - canonTileOffset(v);
+        // Locked to the leader while it sings, then on its own recorded rhythm.
+        const target = canonVoiceTileAt(v, time);
         // Count-ins are a genuine time quantity, so they still work in seconds —
         // measured to the real moment this voice enters.
         const enterT = v === 0 ? firstStart : canonEntryTime(v);
