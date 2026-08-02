@@ -89,6 +89,13 @@ export interface StyleConfig {
      * canonEntries[0] is voice 2, [1] is voice 3, [2] is voice 4.
      */
     canonEntries: number[];
+    /**
+     * Which tile of the melody each FOLLOWING voice starts singing from, as a
+     * 0-based tile index (defaults to 0 — the very first tile, i.e. the full
+     * line). Lets a voice jump in partway through the line instead of always
+     * starting from the beginning. canonStartTiles[0] is voice 2, etc.
+     */
+    canonStartTiles: number[];
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,

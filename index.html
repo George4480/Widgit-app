@@ -1834,6 +1834,17 @@
             border-radius: 3px;
             background: var(--primary);
         }
+        .trigger-tile .trigger-badge-start {
+            position: absolute;
+            bottom: 1px;
+            left: 1px;
+            background: #fff;
+            font-size: 0.6rem;
+            font-weight: 700;
+            padding: 1px 4px;
+            border-radius: 3px;
+            border: 1.5px solid var(--primary);
+        }
         .trigger-tile.loop-in { border-color: #818cf8; background: rgba(129,140,248,0.18); }
         .trigger-tile.picked { border-color: var(--primary); }
         .trigger-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
@@ -2560,7 +2571,7 @@
 
             <div class="settings-section" data-hide-in-sheet>
                 <h4 class="settings-section-title">🎯 Canon</h4>
-                <p class="settings-note">A <strong>different</strong> form: the same melody simply <strong>fired later</strong>. Each following voice comes in at a point <strong>you choose</strong>, sings the line <strong>once</strong>, and it ends. It does <strong>not</strong> loop.</p>
+                <p class="settings-note">A <strong>different</strong> form: the same melody simply <strong>fired later</strong>. Each following voice comes in at a point <strong>you choose</strong>, sings the line <strong>once</strong> (from the start, or from a tile of its own choosing), and it ends. It does <strong>not</strong> loop.</p>
                 <div class="round-toggle-row">
                     <label class="round-toggle">
                         <input type="checkbox" id="style-canon-enabled">
@@ -2573,7 +2584,11 @@
                         <span style="font-weight:600; font-size:0.85rem;">Set entry for:</span>
                         <span id="canon-voice-buttons" class="seg-group" role="group" aria-label="Which voice to set the entry point for"></span>
                     </div>
-                    <label style="font-weight:600; font-size:0.85rem;">Entry point <span class="section-note">tap the tile the leader is on when this voice starts</span></label>
+                    <div class="scaffold-row" style="margin-top:6px;">
+                        <span style="font-weight:600; font-size:0.85rem;">Pick:</span>
+                        <span id="canon-pick-mode-buttons" class="seg-group" role="group" aria-label="Whether tapping a tile sets the entry point or the sing-from tile"></span>
+                    </div>
+                    <label id="canon-pick-strip-label" style="font-weight:600; font-size:0.85rem;">Entry point <span class="section-note">tap the tile the leader is on when this voice starts</span></label>
                     <div id="canon-pick-strip" class="trigger-strip" role="group" aria-label="Pick the entry tile for the chosen voice"></div>
                 </div>
                 <div id="canon-actions" class="scaffold-row" style="display:none;">
