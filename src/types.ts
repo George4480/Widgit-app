@@ -84,6 +84,20 @@ export interface StyleConfig {
      * canonEntries[0] is voice 2, [1] is voice 3, [2] is voice 4.
      */
     canonEntries: number[];
+    /**
+     * First tile of the phrase each FOLLOWING voice sings, as a 0-based index
+     * into its own line. Deliberately separate from canonEntries: that decides
+     * WHEN a voice fires, this decides WHAT it sings at that moment, and the two
+     * are not the same choice. canonStarts[0] is voice 2, [1] voice 3, [2] voice 4.
+     * Absent in projects saved before per-voice phrases existed — those load as
+     * 0, i.e. every voice starts at the first tile, the original behaviour.
+     */
+    canonStarts: number[];
+    /**
+     * Last tile of each following voice's sung phrase (0-based, inclusive).
+     * -1 means sing on to the end of the song, which is the default.
+     */
+    canonEnds: number[];
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
