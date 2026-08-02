@@ -158,11 +158,13 @@ let dom = {} as any;
 // than by eyeballing a rendered frame. Exposed for tests only — nothing in the
 // app reads this.
 (window as any).__canonProbe = {
-    offset: (v: number) => canonEntryOffset(v),
+    tileOffset: (v: number) => canonTileOffset(v),
     entryTime: (v: number) => canonEntryTime(v),
+    entryIndex: (v: number) => canonEntryIndex(v),
     pStart: (v: number) => canonPhraseStart(v),
     pEnd: (v: number) => canonPhraseEnd(v),
     voiceEnd: (v: number) => canonVoiceEndTime(v),
+    leadAt: (t: number) => canonLeaderIndexAt(t),
     normalize: () => normalizeCanonEntries(),
 };
 
@@ -3710,41 +3712,80 @@ function canonPhraseEnd(v: number): number {
     return Math.max(canonPhraseStart(v), Math.min(maxIdx, e));
 }
 
+// Entry tile of voice v, as a 0-based index into the leader's line.
+function canonEntryIndex(v: number): number {
+    if (v <= 0) return 0;
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    return Math.max(0, Math.min(maxIdx, appState.styleConfig.canonEntries?.[v - 1] ?? v * 2));
+}
+
 // Absolute song time at which voice v fires — the moment the leader arrives at
-// that voice's entry tile.
+// that voice's entry tile. Used for count-ins and preview jumps, which are
+// genuinely time quantities; the canon's own alignment is not (see below).
 function canonEntryTime(v: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
-    if (v <= 0) return syms[0].startTime || 0;
-    const idx = Math.max(0, Math.min(syms.length - 1, appState.styleConfig.canonEntries?.[v - 1] ?? v * 2));
-    return syms[idx].startTime || 0;
+    return syms[canonEntryIndex(v)]?.startTime || 0;
 }
 
-// How far voice v's own clock is shifted from the leader's.
+// How many TILES voice v sits behind the leader.
 //
-// The voice must be showing the FIRST TILE OF ITS PHRASE at the instant the
-// leader reaches its entry tile, so the shift is the gap between those two
-// tiles' start times. It is NOT the gap from the start of the song — that only
-// happens to be the same number while the phrase starts at tile 1, which is why
-// the old formula worked before phrases were selectable.
+// This is the heart of the canon, and it is counted in tiles — never seconds.
+// The voice must be on the first tile of its phrase at the moment the leader
+// reaches its entry tile, so the gap is entry - phraseStart, and it stays that
+// gap for the whole song: when the leader steps to the next symbol, every voice
+// steps to its own next symbol.
 //
-// The result is signed on purpose: a voice that enters early on a late phrase
-// runs ahead of the leader, which is a legitimate setup.
-function canonEntryOffset(v: number): number {
+// A seconds-based shift cannot hold that. Tiles are hand-tapped and differ in
+// length, so a fixed time offset puts a follower part-way through a tile and it
+// drifts further out of step with every symbol that passes. These voice rows are
+// a visual conductor telling each group which symbol to sing *now*, so they have
+// to move together, on the beat, a whole number of symbols apart.
+//
+// Signed on purpose: a voice entering early on a later phrase runs ahead of the
+// leader, which is a legitimate setup.
+function canonTileOffset(v: number): number {
+    if (v <= 0) return 0;
+    return canonEntryIndex(v) - canonPhraseStart(v);
+}
+
+// The leader's tile index, continued past the end of the line.
+//
+// activeIndexAt holds on the last tile forever, which is what a normal
+// playthrough wants but would freeze every follower mid-phrase — a canon is
+// still going after the leader has finished, with the later voices several
+// tiles from home. Past the end we keep stepping at the song's own average tile
+// length so they can walk out the rest of their phrase.
+function canonLeaderIndexAt(t: number): number {
     const syms = appState.symbols;
-    if (v <= 0 || !syms.length) return 0;
-    const phraseStartT = syms[canonPhraseStart(v)]?.startTime || 0;
-    return canonEntryTime(v) - phraseStartT;
+    if (!syms.length) return -1;
+    const lastIdx = syms.length - 1;
+    const endT = syms[lastIdx].endTime || syms[lastIdx].startTime || 0;
+    if (t <= endT) return activeIndexAt(t);
+    return lastIdx + Math.floor((t - endT) / canonStepSeconds()) + 1;
 }
 
-// When voice v finishes its phrase, in absolute song time. Used to keep an
-// export running until the last voice has actually finished singing.
-function canonVoiceEndTime(v: number): number {
+// Tile length used to continue the leader's clock past the end of the song.
+function canonStepSeconds(): number {
+    return Math.max(0.05, avgTileDuration());
+}
+
+// Time at which the leader — real, or continued past the end — arrives at tile k.
+function canonLeaderTimeForIndex(k: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
-    const endTile = syms[canonPhraseEnd(v)];
-    const endT = endTile ? (endTile.endTime || endTile.startTime || 0) : 0;
-    return endT + canonEntryOffset(v);
+    const lastIdx = syms.length - 1;
+    if (k <= lastIdx) return syms[Math.max(0, k)]?.startTime || 0;
+    const endT = syms[lastIdx].endTime || syms[lastIdx].startTime || 0;
+    return endT + (k - lastIdx - 1) * canonStepSeconds();
+}
+
+// When voice v finishes its phrase, in absolute song time — the moment the
+// leader's (continued) index has carried it past the last tile of that phrase.
+// Keeps an export running until the last voice has actually stopped singing.
+function canonVoiceEndTime(v: number): number {
+    if (!appState.symbols.length) return 0;
+    return canonLeaderTimeForIndex(canonPhraseEnd(v) + canonTileOffset(v)) + canonStepSeconds();
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -4831,8 +4872,8 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     }
 }
 
-// Render a canon: every voice sings the identical full line, each fired later
-// than the leader at its own chosen entry point (canonEntryOffset). Unlike the
+// Render a canon: every voice sings its phrase of the same line, each a whole
+// number of tiles behind the leader (canonTileOffset). Unlike the
 // round it does not loop to a forced unison finish — voices simply hold on the
 // last tile once done. `preroll` is the count-in run-up length in seconds.
 function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, preroll: number) {
@@ -4840,18 +4881,23 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
     const syms = appState.symbols;
+    // One tile clock for the whole frame. Every voice reads its symbol off this
+    // same index, displaced by its own whole-tile offset, so all the rows change
+    // symbol on the same beat and stay exactly N symbols apart all the way
+    // through — which is the thing a canon has to get right.
+    const lead = canonLeaderIndexAt(time);
+
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
         const cy = bandH * v + bandH / 2;
-        // The same melody, fired later — offset by this voice's chosen entry.
-        const effTime = time - canonEntryOffset(v);
-        // Where this voice's own phrase begins on its own clock. The leader
-        // always sings the whole line from the top; a follower starts wherever
-        // its phrase was set, so it is that tile — not the song's first tile —
-        // that decides when it has begun and what the count-in counts down to.
-        const phraseStartT = v === 0
-            ? firstStart
-            : (syms[canonPhraseStart(v)]?.startTime ?? firstStart);
+        // The leader sings the whole line; a follower sings the phrase it was
+        // given, a whole number of tiles behind.
+        const pStart = v === 0 ? 0 : canonPhraseStart(v);
+        const pEnd = v === 0 ? Math.max(0, syms.length - 1) : canonPhraseEnd(v);
+        const target = lead - canonTileOffset(v);
+        // Count-ins are a genuine time quantity, so they still work in seconds —
+        // measured to the real moment this voice enters.
+        const enterT = v === 0 ? firstStart : canonEntryTime(v);
 
         // Subtle band wash in the voice colour.
         ctx.save();
@@ -4874,9 +4920,9 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         ctx.fillText(label, 12 + lw / 2, cy + 1);
         ctx.restore();
 
-        if (effTime < phraseStartT) {
+        if (target < pStart) {
             // Not started yet: count-in for followers, else a gentle status line.
-            const secondsUntil = phraseStartT - effTime; // song-time until this voice enters
+            const secondsUntil = enterT - time; // song-time until this voice enters
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -4904,18 +4950,10 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             }
             ctx.restore();
         } else {
-            let activeIdx = activeIndexAt(effTime);
-            if (v > 0) {
-                // Keep the voice inside its own phrase: once it reaches the last
-                // tile of that phrase it holds there rather than running on
-                // through the rest of the song (or vanishing off the end).
-                const endTile = canonPhraseEnd(v);
-                const endT = syms[endTile]
-                    ? (syms[endTile].endTime || syms[endTile].startTime || 0)
-                    : 0;
-                if (effTime >= endT || activeIdx === -1 || activeIdx > endTile) activeIdx = endTile;
-            }
-            if (activeIdx !== -1) {
+            // Clamp into this voice's phrase: it holds the last tile once done
+            // rather than running on through the rest of the line.
+            const activeIdx = Math.max(pStart, Math.min(pEnd, target));
+            if (activeIdx >= 0 && activeIdx < syms.length) {
                 drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
             }
         }
