@@ -1588,6 +1588,32 @@
         /* When picking a loop, the strip invites a click and hides drag affordance. */
         .order-sequence-strip.loop-picking .order-sequence-item { cursor: pointer; }
         .order-sequence-strip.loop-picking .order-sequence-item .seq-controls { display: none; }
+        /* ---- Insert-mode markers on the order sequence strip ---- */
+        .order-sequence-item.insert-caret {
+            box-shadow: inset 4px 0 0 0 #16a34a, inset 0 0 0 2px rgba(22, 163, 74, 0.55);
+        }
+        .order-sequence-item .insert-badge {
+            position: absolute;
+            top: 2px; right: 2px;
+            background: #16a34a;
+            color: #fff;
+            font-size: 0.56rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 5px;
+            z-index: 6;
+            letter-spacing: 0.02em;
+        }
+        .order-sequence-item .seq-btn.insert-active {
+            background: #16a34a;
+        }
+        #order-insert-hint {
+            margin: 0 0 8px;
+            padding: 6px 10px;
+            background: rgba(22, 163, 74, 0.12);
+            border: 1px solid rgba(22, 163, 74, 0.45);
+            border-radius: 8px;
+        }
         #btn-order-loop-toggle.active {
             background: var(--primary);
             color: #fff;
@@ -2164,13 +2190,15 @@
                     <canvas id="order-canvas"></canvas>
                 </div>
 
-                <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, or tap a tile to jump to its page:</p>
+                <p class="helper-text">Full reading order (all pages) — drag to reorder, use ‹ › to nudge, × to remove, ＋ to insert missed tiles at that spot, or tap a tile to jump to its page:</p>
 
                 <div id="order-loop-panel" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin: 4px 0 8px;">
                     <button id="btn-order-loop-toggle" type="button" class="button secondary small" title="Mark the section a musical round loops over">🔁 Mark Round Loop</button>
                     <button id="btn-order-loop-clear" type="button" class="button secondary small" style="display:none; color:#c5221f;">Clear Loop</button>
                     <span id="order-loop-hint" class="helper-text" style="margin:0; flex:1; min-width:180px;">For a musical round: turn this on, then click the tile the loop <strong>starts</strong> on and the tile it <strong>ends</strong> on.</span>
                 </div>
+
+                <div id="order-insert-hint" class="helper-text" style="display:none;"></div>
 
                 <div id="order-sequence-strip" class="order-sequence-strip">
                     <!-- Items injected by JS -->
