@@ -169,7 +169,26 @@ let dom = {} as any;
     normalize: () => normalizeCanonEntries(),
 };
 
+// Allow hover-to-reveal affordances only on a device with NO touch at all.
+//
+// The obvious test, @media (hover: none), is not trustworthy: a phone set to
+// "Request desktop site" reports hover:hover, which silently disabled the touch
+// fallback and left a destructive × invisible but still tappable. Sniffing
+// pointerType is no better — browsers emit compatibility mouse events after a
+// touch. navigator.maxTouchPoints is the one signal desktop mode does not spoof:
+// a phone still reports at least 1 in that mode.
+//
+// The test is deliberately asymmetric. A hidden control that still responds to
+// taps is far worse than a control that is always shown, so anything with any
+// touch capability — including a touchscreen laptop — keeps them visible.
+function markPointerCapability() {
+    if ((navigator.maxTouchPoints || 0) === 0) {
+        document.documentElement.classList.add('pointer-mouse');
+    }
+}
+
 function init() {
+    markPointerCapability();
     // Map DOM elements
     dom = {
         global: {

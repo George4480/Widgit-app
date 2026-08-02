@@ -302,7 +302,16 @@
             border-radius: 8px;
             cursor: pointer;
             transition: background-color 0.2s;
-            display: inline-block;
+            /* inline-flex, not inline-block: min-height on an inline-block grows
+               the box but leaves the label riding at the top. */
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            /* Unconditional floor. Sizing controls for touch inside a max-width
+               media query does not survive a phone asking for the desktop site —
+               the layout viewport reports ~980px, the query never matches, and
+               the whole page is then optically scaled to ~0.4x. */
+            min-height: 44px;
             text-align: center;
             touch-action: manipulation;
         }
@@ -326,8 +335,9 @@
         }
         
         .button.small {
-            padding: 8px 16px;
+            padding: 10px 16px;
             font-size: 0.9rem;
+            min-height: 42px;
         }
 
         .button-group {
@@ -545,6 +555,13 @@
         #record-tap-button {
             font-size: 1.2rem;
             padding: 15px 30px;
+            /* The most repetition-heavy control in the app — one accurate tap per
+               symbol, in rhythm. Sized unconditionally; .sync-area is already a
+               centred flex column so a width-capped pill is right at any width. */
+            min-height: 56px;
+            width: 100%;
+            max-width: 420px;
+            margin: 0 auto;
             border-radius: 50px;
             background-color: #34a853;
             box-shadow: 0 4px 15px rgba(52, 168, 83, 0.4);
@@ -1441,8 +1458,8 @@
         /* ---- Cross-page sequence strip ---- */
         .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
         .order-sequence-item {
-            flex: 0 0 84px;
-            height: 84px;
+            flex: 0 0 96px;
+            height: 96px;
             cursor: grab;
         }
         .order-sequence-item.dragging { opacity: 0.4; }
@@ -1528,13 +1545,23 @@
             display: flex;
             justify-content: space-between;
             align-items: stretch;
-            opacity: 0;
+            /* Visible by default. These buttons are hit-testable whatever their
+               opacity, and one of them is a destructive ×, so they must never be
+               invisible-but-live. They used to be revealed on hover with a
+               @media (hover: none) fallback for touch — but a phone asking for
+               the desktop site reports hover:hover, so that fallback silently
+               stopped applying and a tap meant for "jump to this tile's page"
+               landed on an unseen × and dropped the tile from the order. The
+               fade is now opt-in for real mouse pointers only (see .pointer-mouse,
+               set from a pointermove whose pointerType is genuinely 'mouse'). */
+            opacity: 1;
             transition: opacity 0.15s ease;
-            background: linear-gradient(to top, rgba(0,0,0,0.55), transparent);
+            background: linear-gradient(to top, rgba(0,0,0,0.5), transparent);
             z-index: 6;
         }
-        .order-sequence-item:hover .seq-controls,
-        .order-sequence-item:focus-within .seq-controls { opacity: 1; }
+        html.pointer-mouse .order-sequence-item .seq-controls { opacity: 0; }
+        html.pointer-mouse .order-sequence-item:hover .seq-controls,
+        html.pointer-mouse .order-sequence-item:focus-within .seq-controls { opacity: 1; }
         .order-sequence-item .seq-btn {
             flex: 1;
             border: none;
@@ -1544,6 +1571,7 @@
             font-weight: 700;
             line-height: 1;
             padding: 5px 0;
+            min-height: 30px;
             cursor: pointer;
             text-shadow: 0 1px 2px rgba(0,0,0,0.6);
         }
@@ -1556,10 +1584,6 @@
             text-align: center;
             max-width: 640px;
             margin: 0 auto;
-        }
-        /* On touch devices the controls can't rely on hover — always show them. */
-        @media (hover: none) {
-            .order-sequence-item .seq-controls { opacity: 1; }
         }
 
         /* ---- Friendlier setting controls ---- */
@@ -1760,11 +1784,14 @@
         .transport-time { font-family: monospace; font-size: 0.8rem; color: var(--text-muted); min-width: 96px; text-align: right; white-space: nowrap; }
 
         .stage-body { display: flex; gap: 14px; align-items: flex-start; }
-        .stage-rail { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; position: sticky; top: 12px; }
+        .stage-rail { display: flex; flex-direction: column; gap: 10px; flex: 0 0 auto; position: sticky; top: 12px; }
         .stage-main { flex: 1 1 auto; min-width: 0; }
 
         .rail-btn {
-            width: 54px; min-width: 54px; height: 54px; padding: 4px 2px; margin: 0;
+            /* Touch-sized unconditionally. The 62x50 enlargement used to live only
+               in @media (max-width: 600px), which never matches on a phone asking
+               for the desktop site. Harmless with a mouse. */
+            width: 62px; min-width: 62px; height: 52px; padding: 4px 2px; margin: 0;
             display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
             background: var(--surface); color: var(--text);
             border: 1px solid var(--border); border-radius: 12px;
@@ -1774,7 +1801,7 @@
         .rail-btn:active { transform: translateY(1px); }
         .rail-btn.is-active { background: var(--primary); color: #fff; border-color: var(--primary); }
         .rail-btn .rail-ico { font-size: 1.2rem; }
-        .rail-btn .rail-lbl { font-size: 0.56rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+        .rail-btn .rail-lbl { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
         .rail-btn.danger { color: #c5221f; }
         .rail-btn.danger:hover { border-color: #c5221f; background: rgba(197,34,31,0.08); }
 
