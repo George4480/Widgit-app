@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, SyncTiming, StyleConfig, GridConfig, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
+import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
 import { isMasked, tileMaskColor, drawContentMask, clearMaskColorCache } from "./src/scaffold";
 
@@ -75,11 +75,6 @@ function createLocalUrl(file: File | Blob): string {
     return url;
 }
 
-function revokeAllLocalUrls() {
-    activeObjectUrls.forEach(url => URL.revokeObjectURL(url));
-    activeObjectUrls.clear();
-}
-
 // Application State
 const appState: AppState = {
     currentView: 'upload-view', // upload-view, loading-view, define-symbols-view, order-view, sync-view, result-view
@@ -98,16 +93,8 @@ const appState: AppState = {
     symbols: [] as SymbolTile[], // Flat list for Sync/Result
     isRecordingSync: false,
     currentSyncIndex: 0, // Used during recording
-    syncData: [] as SyncTiming[],
     audioBuffer: null as AudioBuffer | null, // Decoded audio for waveform
-    stats: {
-        avgDuration: 0
-    },
     gridConfig: {
-        rowBreakThreshold: 50,
-        colBreakThreshold: 10,
-        minSymbolWidth: 20,
-        minSymbolHeight: 20,
         contentThreshold: 245
     },
     styleConfig: {
@@ -128,6 +115,8 @@ const appState: AppState = {
         canonEnabled: false,
         canonVoices: 2,
         canonEntries: [2, 4, 6],
+        canonStarts: [0, 0, 0],
+        canonEnds: [-1, -1, -1],
         canonCountdown: true,
         canonCountInBeats: 4,
         sheetMode: false
@@ -164,7 +153,42 @@ let dom = {} as any;
 // codebase already parks _originalPageBackgrounds on window; same pattern.
 (window as any).__seesong = appState;
 
+// The canon's timing maths is the one part of the app that is pure arithmetic
+// over the tile list, so it is worth being able to assert on directly rather
+// than by eyeballing a rendered frame. Exposed for tests only — nothing in the
+// app reads this.
+(window as any).__canonProbe = {
+    tileOffset: (v: number) => canonTileOffset(v),
+    entryTime: (v: number) => canonEntryTime(v),
+    entryIndex: (v: number) => canonEntryIndex(v),
+    pStart: (v: number) => canonPhraseStart(v),
+    pEnd: (v: number) => canonPhraseEnd(v),
+    voiceEnd: (v: number) => canonVoiceEndTime(v),
+    voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
+    leadEnd: () => canonLeadEndTime(),
+    normalize: () => normalizeCanonEntries(),
+};
+
+// Allow hover-to-reveal affordances only on a device with NO touch at all.
+//
+// The obvious test, @media (hover: none), is not trustworthy: a phone set to
+// "Request desktop site" reports hover:hover, which silently disabled the touch
+// fallback and left a destructive × invisible but still tappable. Sniffing
+// pointerType is no better — browsers emit compatibility mouse events after a
+// touch. navigator.maxTouchPoints is the one signal desktop mode does not spoof:
+// a phone still reports at least 1 in that mode.
+//
+// The test is deliberately asymmetric. A hidden control that still responds to
+// taps is far worse than a control that is always shown, so anything with any
+// touch capability — including a touchscreen laptop — keeps them visible.
+function markPointerCapability() {
+    if ((navigator.maxTouchPoints || 0) === 0) {
+        document.documentElement.classList.add('pointer-mouse');
+    }
+}
+
 function init() {
+    markPointerCapability();
     // Map DOM elements
     dom = {
         global: {
@@ -190,7 +214,6 @@ function init() {
         },
         upload: {
             dropZone: document.getElementById('unified-drop-zone'),
-            input: document.getElementById('unified-file-input'),
             btnBrowse: document.querySelector('.browse-btn'),
             btnGenerate: document.getElementById('generate-button'),
             btnCreateBoard: document.getElementById('btn-create-board'),
@@ -232,7 +255,7 @@ function init() {
             btnDownloadPdf: document.getElementById('btn-download-pdf'),
             btnDownloadZip: document.getElementById('btn-download-zip'),
 
-            // Add-your-own-image (non-AI)
+            // Add-your-own-image
             btnUploadSymbol: document.getElementById('btn-upload-symbol'),
             inputUploadSymbol: document.getElementById('input-upload-symbol'),
         },
@@ -301,7 +324,6 @@ function init() {
             clearAll: document.getElementById('scaffold-clear-all'),
             status: document.getElementById('scaffold-status'),
             // Result-stage preview control (Preview & Export)
-            resultSection: document.getElementById('scaffold-result-section'),
             resultEnabled: document.getElementById('scaffold-result-enabled') as HTMLInputElement,
             resultControls: document.getElementById('scaffold-result-controls'),
             resultDisabledNote: document.getElementById('scaffold-result-disabled'),
@@ -350,6 +372,7 @@ function init() {
             canonPicker: document.getElementById('canon-picker'),
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
+            canonPhraseStrip: document.getElementById('canon-phrase-strip'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
@@ -461,8 +484,6 @@ function setupEventListeners() {
         e.stopPropagation();
         triggerUpload();
     });
-    // Remove old input listener as we no longer use it
-    
     dom.upload.dropZone.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.add('drag-over'); });
     dom.upload.dropZone.addEventListener('dragleave', (e: DragEvent) => { e.preventDefault(); dom.upload.dropZone.classList.remove('drag-over'); });
     dom.upload.dropZone.addEventListener('drop', (e: DragEvent) => {
@@ -509,7 +530,6 @@ function setupEventListeners() {
     
     // Assignment swapping logic
     const handleAudioCardClick = (type: 'vocal' | 'backing') => {
-        const other = type === 'vocal' ? 'backing' : 'vocal';
         const cardType = type === 'vocal' ? dom.upload.cardVocal : dom.upload.cardBacking;
         const cardOther = type === 'vocal' ? dom.upload.cardBacking : dom.upload.cardVocal;
         
@@ -573,7 +593,7 @@ function setupEventListeners() {
     dom.define.btnDownloadPdf.addEventListener('click', downloadBoardPdf);
     dom.define.btnDownloadZip.addEventListener('click', downloadBoardImages);
 
-    // Add-your-own-image (non-AI)
+    // Add-your-own-image
     dom.define.btnUploadSymbol.addEventListener('click', () => dom.define.inputUploadSymbol.click());
     dom.define.inputUploadSymbol.addEventListener('change', (e: Event) => handleSymbolUpload((e.target as HTMLInputElement).files));
 
@@ -1341,7 +1361,6 @@ let _videoCandidates: { time: number; dataUrl: string }[] = [];
 let _videoAudioFile: File | null = null;
 // Tile crop defined on the first captured frame (normalized 0..1), applied to
 // every frame so the imported tiles come out uniform. Null = use whole frames.
-let _videoCrop: { x: number; y: number; w: number; h: number } | null = null;
 let _videoCroppedUrls: string[] | null = null;
 
 async function handleVideoImport(file: File) {
@@ -1518,7 +1537,6 @@ function renderVideoGrid() {
 
 function openVideoPicker() {
     // Fresh crop each import.
-    _videoCrop = null;
     _videoCroppedUrls = null;
     const status = document.getElementById('crop-status');
     if (status) status.textContent = '';
@@ -1579,7 +1597,6 @@ async function applyVideoCrop() {
         w: Math.min(1, box.offsetWidth / iw),
         h: Math.min(1, box.offsetHeight / ih),
     };
-    _videoCrop = crop;
     if (status) status.textContent = 'Cropping…';
     _videoCroppedUrls = await Promise.all(_videoCandidates.map(c => cropDataUrl(c.dataUrl, crop)));
     renderVideoGrid();
@@ -1587,7 +1604,6 @@ async function applyVideoCrop() {
 }
 
 function resetVideoCrop() {
-    _videoCrop = null;
     _videoCroppedUrls = null;
     const status = document.getElementById('crop-status');
     if (status) status.textContent = 'Using whole frames.';
@@ -3076,7 +3092,6 @@ function renderSymbolNavStrip() {
     appState.symbols.forEach((sym, idx) => {
         const div = document.createElement('div');
         div.className = 'nav-symbol-item';
-        div.id = `nav-sym-${idx}`;
         
         const img = document.createElement('img');
         img.src = sym.imageSrc;
@@ -3419,10 +3434,6 @@ function drawSyncTimeline() {
     const amp = viewportH / 3;
     const midY = viewportH / 2;
     
-    // Map pixels to audio samples
-    // optimization: step > 1 if high zoom
-    const pixelsPerSample = zoom / buffer.sampleRate;
-    
     // Draw loop: iterate pixels x from 0 to viewportW
     for(let x=0; x<viewportW; x+=2) {
         const timeAtPixel = startTime + (x / zoom);
@@ -3698,16 +3709,138 @@ function updateRoundUI() {
     updateNavStripRoundMarks();
 }
 
-// Canon: how many seconds after the leader a following voice fires. Voice v
-// starts its own first tile when the leader reaches tile `canonEntries[v-1]`.
-function canonEntryOffset(v: number): number {
+// --- Canon geometry -------------------------------------------------------
+// A canon needs TWO independent choices per following voice, and conflating
+// them is the classic way to get a canon that sounds wrong:
+//   • its ENTRY  — the leader tile that fires it (canonEntries), i.e. WHEN
+//   • its PHRASE — the stretch of the line it actually sings (canonStarts /
+//     canonEnds), i.e. WHAT it sings from that moment on.
+// v is 1-based over the following voices: v=1 is Voice 2.
+
+// First tile of voice v's sung phrase.
+function canonPhraseStart(v: number): number {
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    const s = appState.styleConfig.canonStarts?.[v - 1] ?? 0;
+    return Math.max(0, Math.min(maxIdx, s));
+}
+
+// Last tile of voice v's sung phrase (inclusive). -1 stored = sing to the end.
+function canonPhraseEnd(v: number): number {
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    const e = appState.styleConfig.canonEnds?.[v - 1] ?? -1;
+    if (e < 0) return maxIdx;
+    return Math.max(canonPhraseStart(v), Math.min(maxIdx, e));
+}
+
+// Entry tile of voice v, as a 0-based index into the leader's line.
+function canonEntryIndex(v: number): number {
     if (v <= 0) return 0;
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    return Math.max(0, Math.min(maxIdx, appState.styleConfig.canonEntries?.[v - 1] ?? v * 2));
+}
+
+// Absolute song time at which voice v fires — the moment the leader arrives at
+// that voice's entry tile. Used for count-ins and preview jumps, which are
+// genuinely time quantities; the canon's own alignment is not (see below).
+function canonEntryTime(v: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
-    const entries = appState.styleConfig.canonEntries || [];
-    const first = syms[0].startTime || 0;
-    const idx = Math.max(0, Math.min(syms.length - 1, entries[v - 1] ?? v * 2));
-    return Math.max(0, (syms[idx].startTime || 0) - first);
+    return syms[canonEntryIndex(v)]?.startTime || 0;
+}
+
+// How many TILES voice v sits behind the leader.
+//
+// This is the heart of the canon, and it is counted in tiles — never seconds.
+// The voice must be on the first tile of its phrase at the moment the leader
+// reaches its entry tile, so the gap is entry - phraseStart, and it stays that
+// gap for the whole song: when the leader steps to the next symbol, every voice
+// steps to its own next symbol.
+//
+// A seconds-based shift cannot hold that. Tiles are hand-tapped and differ in
+// length, so a fixed time offset puts a follower part-way through a tile and it
+// drifts further out of step with every symbol that passes. These voice rows are
+// a visual conductor telling each group which symbol to sing *now*, so they have
+// to move together, on the beat, a whole number of symbols apart.
+//
+// Signed on purpose: a voice entering early on a later phrase runs ahead of the
+// leader, which is a legitimate setup.
+function canonTileOffset(v: number): number {
+    if (v <= 0) return 0;
+    return canonEntryIndex(v) - canonPhraseStart(v);
+}
+
+// Song time at which the leader's line runs out.
+function canonLeadEndTime(): number {
+    const syms = appState.symbols;
+    if (!syms.length) return 0;
+    const last = syms[syms.length - 1];
+    return last.endTime || last.startTime || 0;
+}
+
+// The tile a following voice is on once the leader has stopped — it is that many
+// tiles short of the end, and has the rest of its phrase still to sing.
+function canonTileAtLeadEnd(v: number): number {
+    return Math.max(0, appState.symbols.length - 1) - canonTileOffset(v);
+}
+
+// Which tile voice v is on at song time t.
+//
+// A canon has two regimes, because it outlives the leader:
+//
+//  • While the leader is still singing, the voice is LOCKED to it — exactly
+//    canonTileOffset symbols behind, changing symbol on the same beat.
+//
+//  • Once the leader's line runs out the voice is on its own, and walks out the
+//    rest of its phrase at those tiles' OWN recorded lengths. It must not fall
+//    back to an average tile length: a canon does not have to span the whole
+//    song, so a voice entering late — say halfway through the second A of an
+//    ABA — does most of its singing after the leader has stopped, and that tail
+//    is exactly the stretch that would lose the song's real rhythm. The tail is
+//    also what extends the finished video past the original song length.
+//
+// The two regimes meet continuously: the tail is anchored so that at the instant
+// the leader ends, the voice is on the same tile both ways.
+// The upper end is clamped to the voice's last phrase tile — once it is done it
+// holds there. The lower end is deliberately NOT clamped: a value below the
+// phrase start is how the caller knows the voice has not come in yet and should
+// be showing its count-in.
+function canonVoiceTileAt(v: number, t: number): number {
+    const syms = appState.symbols;
+    if (!syms.length) return -1;
+    const lastIdx = syms.length - 1;
+    const hold = (k: number) => v === 0 ? Math.min(k, lastIdx) : Math.min(k, canonPhraseEnd(v));
+    const off = canonTileOffset(v);
+    const leadEndT = canonLeadEndTime();
+    if (t <= leadEndT) return hold(activeIndexAt(t) - off);
+    const idxAtEnd = canonTileAtLeadEnd(v);
+    if (idxAtEnd >= lastIdx) return hold(lastIdx);   // ran ahead: nothing left to walk out
+    // Anchor at the moment this voice ENTERED its current tile (the instant the
+    // leader entered its own last tile), not at the leader's end. Anchoring at
+    // the end would restart the tile's clock and leave it on screen for longer
+    // than it was ever sung for; this way the tile lasts exactly its recorded
+    // length and every tile after it follows at its own.
+    return hold(activeIndexAt(t - (syms[lastIdx].startTime || 0) + (syms[idxAtEnd].startTime || 0)));
+}
+
+// When voice v finishes its phrase, in absolute song time. Keeps an export
+// running until the last voice has actually stopped singing — for a late entry
+// that is well past the end of the leader's audio.
+function canonVoiceEndTime(v: number): number {
+    const syms = appState.symbols;
+    if (!syms.length) return 0;
+    const lastIdx = syms.length - 1;
+    const off = canonTileOffset(v);
+    const pEnd = canonPhraseEnd(v);
+    const idxAtEnd = canonTileAtLeadEnd(v);
+    const tileEnd = (k: number) => syms[k] ? (syms[k].endTime || syms[k].startTime || 0) : 0;
+    if (pEnd <= idxAtEnd) {
+        // Finishes while the leader is still going — when the leader's own index
+        // has carried past that tile.
+        return tileEnd(Math.max(0, Math.min(lastIdx, pEnd + off)));
+    }
+    // Finishes in the tail, on its own rhythm — same anchor as canonVoiceTileAt.
+    const anchorDst = syms[Math.max(0, Math.min(lastIdx, idxAtEnd))].startTime || 0;
+    return (syms[lastIdx].startTime || 0) + (tileEnd(pEnd) - anchorDst);
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -4000,10 +4133,24 @@ function normalizeCanonEntries() {
         if (i > 0 && v <= c.canonEntries[i - 1]) v = Math.min(maxIdx, c.canonEntries[i - 1] + 1);
         c.canonEntries[i] = v;
     }
+    // Sung phrases are clamped independently of the entries — a voice may enter
+    // anywhere and sing any stretch of the line, so the only rules are "inside
+    // the tile list" and "start no later than end". Files saved before phrases
+    // existed have no arrays at all and default to the whole line from tile 1.
+    if (!Array.isArray(c.canonStarts)) c.canonStarts = [0, 0, 0];
+    if (!Array.isArray(c.canonEnds)) c.canonEnds = [-1, -1, -1];
+    for (let i = 0; i < 3; i++) {
+        const s = Math.max(0, Math.min(maxIdx, Math.round(c.canonStarts[i] ?? 0)));
+        c.canonStarts[i] = s;
+        const e = Math.round(c.canonEnds[i] ?? -1);
+        c.canonEnds[i] = e < 0 ? -1 : Math.max(s, Math.min(maxIdx, e));
+    }
 }
 
-// Which following voice the canon picker strip currently sets (1 = Voice 2).
+// Which following voice the canon picker strips currently set (1 = Voice 2).
 let canonPickVoice = 1;
+// True once a phrase start has been tapped and we're waiting for its end tap.
+let canonPhrasePicking = false;
 
 // Keep the canon picker in step with the tile count / voice count.
 function updateCanonEntryUI() {
@@ -4029,7 +4176,12 @@ function renderCanonVoiceButtons() {
         b.classList.toggle('active', on);
         b.setAttribute('aria-pressed', String(on));
         if (on) b.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
-        b.addEventListener('click', () => { canonPickVoice = v; renderCanonVoiceButtons(); });
+        b.addEventListener('click', () => {
+            canonPickVoice = v;
+            canonPhrasePicking = false;   // don't let a pending end-tap land on the new voice
+            renderCanonVoiceButtons();
+            refreshTriggerBadges();
+        });
         holder.appendChild(b);
     }
 }
@@ -4060,6 +4212,7 @@ function renderTriggerStrips() {
     };
     build(dom.result.roundPickStrip, pickRoundLoopTile, i => `Tile ${i + 1} — tap to mark the loop phrase`);
     build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set the chosen voice's entry`);
+    build(dom.result.canonPhraseStrip, pickCanonPhraseTile, i => `Tile ${i + 1} — tap to set the phrase the chosen voice sings`);
     refreshTriggerBadges();
 }
 
@@ -4092,6 +4245,26 @@ function pickCanonEntryTile(i: number) {
     }
     for (let v = canonPickVoice; v < c.canonEntries.length; v++) {
         if (c.canonEntries[v] <= c.canonEntries[v - 1]) c.canonEntries[v] = Math.min(maxIdx, c.canonEntries[v - 1] + 1);
+    }
+    afterTriggerPointChange();
+}
+
+// Tap logic for the canon phrase strip: first tap sets where the armed voice
+// starts singing, a second later tap sets where it stops, and tapping an earlier
+// tile starts a fresh phrase — the same two-tap gesture as the round strip.
+// Entirely independent of the entry strip: when a voice comes in and what it
+// sings once it does are two different decisions.
+function pickCanonPhraseTile(i: number) {
+    const c = appState.styleConfig;
+    const slot = canonPickVoice - 1;
+    const start = c.canonStarts[slot] ?? 0;
+    if (c.canonEnds[slot] === -1 && canonPhrasePicking && i > start) {
+        c.canonEnds[slot] = i;                 // completes the phrase
+        canonPhrasePicking = false;
+    } else {
+        c.canonStarts[slot] = i;               // (re)start the phrase here
+        c.canonEnds[slot] = -1;                // …running to the end until a second tap
+        canonPhrasePicking = true;
     }
     afterTriggerPointChange();
 }
@@ -4147,6 +4320,31 @@ function refreshTriggerBadges() {
             }
         });
     }
+    // Phrase strip shows only the ARMED voice's phrase — overlaying every voice's
+    // phrase would be unreadable, and you can only edit one at a time anyway.
+    const phraseStrip = dom.result.canonPhraseStrip as HTMLElement | null;
+    if (phraseStrip) {
+        const tint = VOICE_COLORS[canonPickVoice % VOICE_COLORS.length];
+        const s = canonPhraseStart(canonPickVoice);
+        const e = canonPhraseEnd(canonPickVoice);
+        const openEnded = (appState.styleConfig.canonEnds?.[canonPickVoice - 1] ?? -1) < 0;
+        phraseStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+            el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
+            el.classList.remove('picked', 'loop-in');
+            const isStart = i === s;
+            const isEnd = !openEnded && i === e;
+            if (isStart || isEnd) {
+                el.classList.add('picked');
+                const b = document.createElement('span');
+                b.className = 'trigger-badge';
+                b.textContent = isStart ? `V${canonPickVoice + 1} sings` : 'to here';
+                b.style.background = tint;
+                el.appendChild(b);
+            } else if (i > s && i <= e) {
+                el.classList.add('loop-in');
+            }
+        });
+    }
 }
 
 // Plain-language status for the Round and Canon sections, so a teacher can see
@@ -4155,7 +4353,6 @@ function refreshTriggerBadges() {
 function updateRoundCanonStatus() {
     const cfg = appState.styleConfig;
     const syms = appState.symbols;
-    const firstStart = syms.length ? (syms[0].startTime || 0) : 0;
 
     const rs = dom.result.roundStatus as HTMLElement | null;
     const ra = dom.result.roundActions as HTMLElement | null;
@@ -4184,10 +4381,16 @@ function updateRoundCanonStatus() {
             const parts: string[] = [];
             for (let v = 1; v < voices; v++) {
                 const tile = (cfg.canonEntries[v - 1] ?? 1) + 1;
-                const at = firstStart + canonEntryOffset(v);
-                parts.push(`Voice ${v + 1} fires at tile <strong>${tile}</strong> (~${at.toFixed(1)}s)`);
+                const at = canonEntryTime(v);
+                const s = canonPhraseStart(v);
+                const e = canonPhraseEnd(v);
+                const openEnded = (cfg.canonEnds?.[v - 1] ?? -1) < 0;
+                const sings = openEnded
+                    ? `sings from tile <strong>${s + 1}</strong> to the end`
+                    : `sings tiles <strong>${s + 1} → ${e + 1}</strong>`;
+                parts.push(`<strong>Voice ${v + 1}</strong> comes in at tile <strong>${tile}</strong> (~${at.toFixed(1)}s) and ${sings}`);
             }
-            cs.innerHTML = `🎯 ${parts.join(' · ')}. Entries are kept in singing order automatically.`;
+            cs.innerHTML = `🎯 ${parts.join('. ')}. Entries are kept in singing order automatically; each voice's phrase is set separately.`;
         }
     }
 }
@@ -4207,7 +4410,7 @@ function previewVoiceEntry(kind: 'round' | 'canon') {
         entry = loopStartTime + gap;                       // when voice 2 starts singing
         preroll = cfg.roundCountdown ? gap : 1.2;          // when its band + count-in appear
     } else {
-        entry = firstStart + canonEntryOffset(1);
+        entry = canonEntryTime(1);
         const beats = Math.max(1, Math.min(8, cfg.canonCountInBeats || 4));
         preroll = cfg.canonCountdown ? beats * avgTileDuration() : 1.2;
     }
@@ -4306,7 +4509,7 @@ function drawPreviewFrame(rawTime: number) {
     // "Follow the sheet" mode shows the whole songsheet with a glowing
     // highlight that scrolls down — a full-frame alternative to the conveyor.
     if (cfg.sheetMode && appState.symbols.length > 0) {
-        drawSheetFrame(ctx, w, h, time, firstStart);
+        drawSheetFrame(ctx, w, h, time);
         return;
     }
 
@@ -4322,7 +4525,7 @@ function drawPreviewFrame(rawTime: number) {
         // stays contiguous even if entry points are set out of order.
         let maxAppeared = 0;
         for (let v = 1; v < maxVoices; v++) {
-            if (time >= firstStart + canonEntryOffset(v) - preroll) maxAppeared = v;
+            if (time >= canonEntryTime(v) - preroll) maxAppeared = v;
         }
         if (maxAppeared >= 1) {
             drawCanonFrame(ctx, w, h, time, firstStart, maxAppeared + 1, preroll);
@@ -4495,7 +4698,7 @@ function pageContentBox(pageIdx: number) {
 
 // "Follow the sheet": draw the current page cropped to its content, glow-
 // highlight the active tile, and scroll down smoothly as the sequence advances.
-function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number) {
     const cfg = appState.styleConfig;
     ctx.fillStyle = cfg.backgroundColor;
     ctx.fillRect(0, 0, w, h);
@@ -4724,19 +4927,27 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     }
 }
 
-// Render a canon: every voice sings the identical full line, each fired later
-// than the leader at its own chosen entry point (canonEntryOffset). Unlike the
+// Render a canon: every voice sings its phrase of the same line, each a whole
+// number of tiles behind the leader (canonTileOffset). Unlike the
 // round it does not loop to a forced unison finish — voices simply hold on the
 // last tile once done. `preroll` is the count-in run-up length in seconds.
 function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, preroll: number) {
     const bandH = h / voices;
     const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
+    const syms = appState.symbols;
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
         const cy = bandH * v + bandH / 2;
-        // The same melody, fired later — offset by this voice's chosen entry.
-        const effTime = time - canonEntryOffset(v);
+        // The leader sings the whole line; a follower sings the phrase it was
+        // given, a whole number of tiles behind.
+        const pStart = v === 0 ? 0 : canonPhraseStart(v);
+        const pEnd = v === 0 ? Math.max(0, syms.length - 1) : canonPhraseEnd(v);
+        // Locked to the leader while it sings, then on its own recorded rhythm.
+        const target = canonVoiceTileAt(v, time);
+        // Count-ins are a genuine time quantity, so they still work in seconds —
+        // measured to the real moment this voice enters.
+        const enterT = v === 0 ? firstStart : canonEntryTime(v);
 
         // Subtle band wash in the voice colour.
         ctx.save();
@@ -4759,9 +4970,9 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
         ctx.fillText(label, 12 + lw / 2, cy + 1);
         ctx.restore();
 
-        if (effTime < firstStart) {
+        if (target < pStart) {
             // Not started yet: count-in for followers, else a gentle status line.
-            const secondsUntil = firstStart - effTime; // song-time until this voice enters
+            const secondsUntil = enterT - time; // song-time until this voice enters
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -4789,8 +5000,10 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             }
             ctx.restore();
         } else {
-            const activeIdx = activeIndexAt(effTime);
-            if (activeIdx !== -1) {
+            // Clamp into this voice's phrase: it holds the last tile once done
+            // rather than running on through the rest of the line.
+            const activeIdx = Math.max(pStart, Math.min(pEnd, target));
+            if (activeIdx >= 0 && activeIdx < syms.length) {
                 drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
             }
         }
@@ -4913,6 +5126,15 @@ async function renderVideo(mode: 'full' | 'backing') {
     if (syms.length) {
         const last = syms[syms.length - 1];
         dur = Math.max(dur, (last.endTime || last.startTime || 0) + 1.5);
+    }
+    // A canon is still going after the leader has stopped: each following voice
+    // fires at its entry tile and only then sings its phrase. Without this the
+    // render ends with the leader and the later voices are cut off mid-phrase.
+    if (syms.length && appState.styleConfig.canonEnabled) {
+        const canonVoices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+        for (let v = 1; v < canonVoices; v++) {
+            dur = Math.max(dur, canonVoiceEndTime(v) + 1.5);
+        }
     }
     if (dur <= 0) {
         alert('Nothing to render yet — add an audio track or sync some tiles first.');
@@ -5231,7 +5453,6 @@ function confirmExport(onConfirm: () => void) {
     // Create warning modal
     const overlay = document.createElement('div');
     overlay.className = 'warning-modal-overlay';
-    overlay.id = 'export-warning-modal';
 
     const content = document.createElement('div');
     content.className = 'warning-modal-content';
