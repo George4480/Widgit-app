@@ -60,6 +60,12 @@ let syncPlaybackRate = 1;
 // start/end (as sequence positions) rather than jumping/appending.
 let orderLoopMode = false;
 
+// Order-stage insert mode: -1 = off (canvas taps append to the end); otherwise
+// the sequence slot the next tapped tile is spliced into, downshifting every
+// step after it. Advances by one after each insert so several missed tiles can
+// be tapped in a row.
+let orderInsertAt = -1;
+
 // Object URL Memory Cleaner
 const activeObjectUrls = new Set<string>();
 
@@ -247,6 +253,7 @@ function init() {
             btnLoopToggle: document.getElementById('btn-order-loop-toggle'),
             btnLoopClear: document.getElementById('btn-order-loop-clear'),
             loopHint: document.getElementById('order-loop-hint'),
+            insertHint: document.getElementById('order-insert-hint'),
             audio: document.getElementById('order-audio-player') as HTMLAudioElement
         },
         sync: {
@@ -588,10 +595,13 @@ function setupEventListeners() {
     });
     dom.order.btnBack.addEventListener('click', () => switchView('define-symbols-view'));
     dom.order.btnFinish.addEventListener('click', () => {
-        // If the user already recorded timings and came back to re-order,
-        // finishing again rebuilds the tile list and would wipe that work.
+        // Order edits made through the strip (insert / nudge / drag / remove)
+        // mirror themselves into the flat tile list, so recorded timings
+        // survive the round trip — continue silently. Only when the two have
+        // drifted apart (e.g. tiles were redefined) does finishing rebuild the
+        // list and wipe timings, which deserves a warning.
         const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
-        if (!hasTimings) { finishOrderingSymbols(); return; }
+        if (!hasTimings || flatMatchesSequence()) { finishOrderingSymbols(); return; }
         showConfirm({
             title: '⏱️ Rebuild tiles and discard recorded timings?',
             message: 'You\'ve already recorded timings for this song. Continuing rebuilds the tile list from the current order and clears all recorded timings. Choose Cancel to keep your recording and return with the "Sync" step instead.',
@@ -1744,6 +1754,9 @@ function switchView(viewId: string) {
     if (dom.order.audio) dom.order.audio.pause();
     if (dom.sync.audio) dom.sync.audio.pause();
 
+    // Insert mode is an order-stage gesture — leaving the stage disarms it.
+    if (viewId !== 'order-view') orderInsertAt = -1;
+
     Object.values(dom.views).forEach((el: HTMLElement) => el.style.display = 'none');
     dom.views[viewId === 'upload-view' ? 'upload' : 
               viewId === 'loading-view' ? 'loading' :
@@ -2244,11 +2257,13 @@ function globalPositionsFor(pageIdx: number, symIdx: number): number[] {
 // Remove every step that references a page, and (optionally) shift symbol
 // indices after a deleted symbol on that page. Used by delete/clear/redetect.
 function pruneGlobalSequence(pageIdx: number, opts: { removedSym?: number; clearPage?: boolean } = {}) {
-    appState.globalSequence = appState.globalSequence.filter(step => {
-        if (step.page !== pageIdx) return true;
-        if (opts.clearPage) return false;
-        if (opts.removedSym !== undefined && step.sym === opts.removedSym) return false;
-        return true;
+    const mirror = flatMatchesSequence();
+    const keptIdx: number[] = [];
+    appState.globalSequence = appState.globalSequence.filter((step, i) => {
+        const keep = step.page !== pageIdx
+            || (!opts.clearPage && !(opts.removedSym !== undefined && step.sym === opts.removedSym));
+        if (keep) keptIdx.push(i);
+        return keep;
     }).map(step => {
         if (step.page === pageIdx && opts.removedSym !== undefined && step.sym > opts.removedSym) {
             // Preserve the occurrence's scaffold assignment across the reindex.
@@ -2256,6 +2271,12 @@ function pruneGlobalSequence(pageIdx: number, opts: { removedSym?: number; clear
         }
         return step;
     });
+    // Timings already recorded ride along: drop the same rows from the flat
+    // list so the surviving tiles keep their recorded times.
+    if (mirror) {
+        appState.symbols = keptIdx.map(i => appState.symbols[i]);
+        appState.symbols.forEach((s, i) => s.globalIndex = i);
+    }
 }
 
 function setupOrderView() {
@@ -2277,6 +2298,7 @@ function setupOrderView() {
     drawOrderCanvas();
     renderOrderSequenceStrip();
     updateOrderLoopUI();
+    updateOrderInsertUI();
 }
 function drawOrderCanvas() {
     const ctx = dom.order.ctx;
@@ -2440,8 +2462,22 @@ function invalidatePageThumbs(pageIdx: number) {
 function moveSequenceStep(from: number, to: number) {
     const seq = appState.globalSequence;
     if (to < 0 || to >= seq.length || from === to) return;
+    const mirror = flatMatchesSequence();
     const [step] = seq.splice(from, 1);
     seq.splice(to, 0, step);
+    if (mirror) {
+        // Timings already recorded: move the tile through the flat list too,
+        // but keep each recorded time pinned to its slot in the song — the
+        // symbols shuffle, the timeline stays monotonic.
+        const times = appState.symbols.map(s => ({ st: s.startTime, et: s.endTime }));
+        const [flat] = appState.symbols.splice(from, 1);
+        appState.symbols.splice(to, 0, flat);
+        appState.symbols.forEach((s, i) => {
+            s.globalIndex = i;
+            s.startTime = times[i].st;
+            s.endTime = times[i].et;
+        });
+    }
     // Keep the round-loop bounds pointing at the same tiles after the move.
     const shift = (idx: number) => {
         if (idx === -1) return -1;
@@ -2459,6 +2495,129 @@ function moveSequenceStep(from: number, to: number) {
     drawOrderCanvas();
     renderOrderSequenceStrip();
     updateOrderLoopUI();
+}
+
+// True when the flat Sync/Result tile list still lines up 1:1 with the reading
+// order — flat[i] was built from sequence[i] and both point at the same source
+// tile. This is what makes it safe to edit the order after timings have been
+// recorded: aligned edits mirror themselves into the flat list and the
+// timings survive, instead of the list being rebuilt from scratch (which
+// wipes every recorded time).
+function flatMatchesSequence(): boolean {
+    const seq = appState.globalSequence;
+    if (seq.length === 0 || appState.symbols.length !== seq.length) return false;
+    return seq.every((step, i) => {
+        const src = appState.pages[step.page]?.symbols[step.sym];
+        const flat = appState.symbols[i];
+        return !!src && !!flat && flat.pageIndex === step.page &&
+            flat.x === src.x && flat.y === src.y &&
+            flat.width === src.width && flat.height === src.height;
+    });
+}
+
+// Insert steps into the reading order at slot `at` (0-based), downshifting
+// every step after them — the fix for "I missed a tile and the song has 100
+// of them". If timings are already recorded, matching entries are spliced
+// into the flat tile list at the same slots so nothing else loses its time;
+// the newcomers get a placeholder timing carved from their neighbours'
+// window (see stampInsertedTimings). `at` past the end simply appends.
+function insertSequenceSteps(at: number, steps: SequenceStep[], opts: { stamp?: boolean } = {}) {
+    if (steps.length === 0) return;
+    const seq = appState.globalSequence;
+    const slot = Math.max(0, Math.min(at, seq.length));
+    const mirror = flatMatchesSequence();
+    seq.splice(slot, 0, ...steps);
+    if (mirror) {
+        const entries = steps.map(buildFlatSymbolFor).filter((e): e is SymbolTile => !!e);
+        // A brand-new occurrence starts untimed even if its source tile
+        // carries a time from another occurrence (e.g. a loaded project).
+        entries.forEach(e => { e.startTime = 0; e.endTime = 0; });
+        appState.symbols.splice(slot, 0, ...entries);
+        appState.symbols.forEach((s, i) => s.globalIndex = i);
+        if (opts.stamp !== false) stampInsertedTimings(slot, entries.length);
+    }
+    // Keep the round-loop bounds pointing at the same tiles.
+    const r = appState.round;
+    if (r.start !== -1 && r.start >= slot) r.start += steps.length;
+    if (r.end !== -1 && r.end >= slot) r.end += steps.length;
+    saveHistoryState();
+    drawOrderCanvas();
+    renderOrderSequenceStrip();
+    updateOrderLoopUI();
+}
+
+// Give freshly inserted flat entries a workable placeholder timing carved out
+// of the surrounding tiles' windows, so they appear on the timeline where the
+// missed word roughly is (a small nudge to fix) instead of sitting untimed at
+// 0:00 where the fine-tune tools can't reach them. Runs only when the
+// relevant neighbours are timed — during ordinary (pre-sync) ordering
+// everything is untimed and this is a no-op.
+function stampInsertedTimings(at: number, count: number) {
+    if (count <= 0) return;
+    const syms = appState.symbols;
+    const prev = at > 0 ? syms[at - 1] : null;
+    const next = at + count < syms.length ? syms[at + count] : null;
+    const prevTimed = !!prev && ((prev.startTime || 0) > 0 || (prev.endTime || 0) > 0);
+    const nextTimed = !!next && (next.startTime || 0) > 0;
+    let winStart: number;
+    let winEnd: number;
+    if (prev && next && prevTimed && nextTimed) {
+        const s = prev.startTime || 0;
+        const e = next.startTime || 0;
+        const pe = prev.endTime || 0;
+        if (e - s < 0.02) return;
+        if (pe > s && e - pe > 0.1) {
+            // A real silence gap already sits after the previous tile — the
+            // missed word almost certainly lives there. Fill it.
+            winStart = pe;
+            winEnd = e;
+        } else {
+            // Windows are contiguous: split the span between the two
+            // neighbours' starts evenly with the newcomers; the previous
+            // tile keeps the first share.
+            winStart = s + (e - s) / (count + 1);
+            winEnd = e;
+            prev.endTime = winStart;
+        }
+    } else if (!prev && next && nextTimed) {
+        // Inserted at the very front: take up to 0.8s per tile of the intro.
+        winEnd = next.startTime || 0;
+        winStart = Math.max(0, winEnd - 0.8 * count);
+        if (winEnd - winStart < 0.02) return;
+    } else if (prev && prevTimed && !next) {
+        // Appended after the last timed tile: continue past its end.
+        const pe = prev.endTime || 0;
+        winStart = pe > (prev.startTime || 0) ? pe : (prev.startTime || 0) + 0.4;
+        winEnd = winStart + 0.8 * count;
+    } else {
+        return; // an untimed neighbour → leave untimed; Sync flags it with ⚠️
+    }
+    const slice = (winEnd - winStart) / count;
+    for (let i = 0; i < count; i++) {
+        syms[at + i].startTime = winStart + i * slice;
+        syms[at + i].endTime = winStart + (i + 1) * slice;
+    }
+}
+
+// Arm/disarm insert mode at a strip slot ("insert before this tile"). Tapping
+// the same ＋ again turns it off; arming replaces loop-marking mode.
+function toggleInsertAt(seqIdx: number) {
+    orderInsertAt = orderInsertAt === seqIdx ? -1 : seqIdx;
+    if (orderInsertAt !== -1 && orderLoopMode) {
+        orderLoopMode = false;
+        updateOrderLoopUI();
+    }
+    renderOrderSequenceStrip();
+    updateOrderInsertUI();
+}
+
+function updateOrderInsertUI() {
+    const hint = dom.order.insertHint;
+    if (!hint) return;
+    if (orderInsertAt === -1) { hint.style.display = 'none'; return; }
+    hint.style.display = 'block';
+    const slot = Math.min(orderInsertAt, appState.globalSequence.length) + 1;
+    hint.innerHTML = `➕ <strong>Insert mode:</strong> tap tiles on the page above — the next one becomes number <strong>${slot}</strong> and every tile after shifts down. Switch pages if the missing tile is elsewhere. Tap the green <strong>＋</strong> again when you're done.`;
 }
 
 // Renders the ENTIRE cross-page reading order (not just the current page), so
@@ -2499,6 +2658,15 @@ function renderOrderSequenceStrip() {
             }
         }
 
+        // Insert-mode caret: the next tapped tile lands BEFORE this one.
+        if (seqIdx === orderInsertAt) {
+            item.classList.add('insert-caret');
+            const ib = document.createElement('div');
+            ib.className = 'insert-badge';
+            ib.textContent = '➕ here';
+            item.appendChild(ib);
+        }
+
         const img = document.createElement('img');
         img.src = stepThumb(step.page, step.sym);
         item.appendChild(img);
@@ -2526,14 +2694,30 @@ function renderOrderSequenceStrip() {
             b.onclick = (e) => { e.stopPropagation(); fn(); };
             return b;
         };
+        const btnInsert = mkBtn('＋', orderInsertAt === seqIdx
+            ? 'Stop inserting'
+            : `Insert missed tile(s) here: the next tile you tap on the page becomes number ${seqIdx + 1} and everything after shifts down`,
+            () => toggleInsertAt(seqIdx));
+        if (orderInsertAt === seqIdx) btnInsert.classList.add('insert-active');
+        controls.appendChild(btnInsert);
         controls.appendChild(mkBtn('‹', 'Move earlier', () => moveSequenceStep(seqIdx, seqIdx - 1)));
         controls.appendChild(mkBtn('×', 'Remove from order', () => {
+            const mirror = flatMatchesSequence();
             appState.globalSequence.splice(seqIdx, 1);
+            if (mirror) {
+                // Timings already recorded: drop the same row from the flat
+                // list so every other tile keeps its time. (Any silence left
+                // behind shows up as a gap warning at the Sync stage.)
+                appState.symbols.splice(seqIdx, 1);
+                appState.symbols.forEach((s, i) => s.globalIndex = i);
+            }
             adjustRoundForRemoval(seqIdx);
+            if (orderInsertAt > seqIdx) orderInsertAt--;
             saveHistoryState();
             drawOrderCanvas();
             renderOrderSequenceStrip();
             updateOrderLoopUI();
+            updateOrderInsertUI();
         }));
         controls.appendChild(mkBtn('›', 'Move later', () => moveSequenceStep(seqIdx, seqIdx + 1)));
         item.appendChild(controls);
@@ -2597,13 +2781,21 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
         return;
     }
 
-    // Append to the ONE continuous cross-page reading order. Clicking the
+    // Add to the ONE continuous cross-page reading order. Clicking the
     // same tile again (here or on a later visit to this page) just repeats
-    // it — exactly what a chorus / repeated word needs.
-    appState.globalSequence.push({ page: appState.currentPageIndex, sym: hitIdx });
-    saveHistoryState();
-    drawOrderCanvas();
-    renderOrderSequenceStrip();
+    // it — exactly what a chorus / repeated word needs. Normally the tile is
+    // appended; with insert mode armed it's spliced in at the marked slot and
+    // everything after shifts down (the fix for a missed tile in a long song).
+    const step: SequenceStep = { page: appState.currentPageIndex, sym: hitIdx };
+    if (orderInsertAt !== -1) {
+        const slot = orderInsertAt;
+        orderInsertAt++; // advance first so the re-rendered strip draws the
+                         // caret after the tile just placed
+        insertSequenceSteps(slot, [step]);
+        updateOrderInsertUI();
+    } else {
+        insertSequenceSteps(appState.globalSequence.length, [step]);
+    }
 }
 
 // --- Round-loop marking at the Order stage ------------------------------
@@ -2613,6 +2805,10 @@ function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
 
 function toggleOrderLoopMode() {
     orderLoopMode = !orderLoopMode;
+    if (orderLoopMode && orderInsertAt !== -1) {
+        orderInsertAt = -1; // loop marking and inserting are exclusive gestures
+        updateOrderInsertUI();
+    }
     updateOrderLoopUI();
     drawOrderCanvas();
     renderOrderSequenceStrip();
@@ -2705,10 +2901,14 @@ function autoOrderPage() {
     const pageIdx = appState.currentPageIndex;
     const page = appState.pages[pageIdx];
     pruneGlobalSequence(pageIdx, { clearPage: true });
-    readingOrderIndices(page).forEach(si => appState.globalSequence.push({ page: pageIdx, sym: si }));
-    saveHistoryState();
-    drawOrderCanvas();
-    renderOrderSequenceStrip();
+    const steps = readingOrderIndices(page).map(si => ({ page: pageIdx, sym: si }));
+    if (steps.length > 0) {
+        insertSequenceSteps(appState.globalSequence.length, steps, { stamp: false });
+    } else {
+        saveHistoryState();
+        drawOrderCanvas();
+        renderOrderSequenceStrip();
+    }
 }
 
 function resetOrderPage() {
@@ -2735,33 +2935,41 @@ function effectiveSequence(): SequenceStep[] {
     return seq;
 }
 
+// Build one flat Sync/Result entry (tile crop + metadata) for a sequence step.
+function buildFlatSymbolFor(step: SequenceStep): SymbolTile | null {
+    const page = appState.pages[step.page];
+    const sym = page?.symbols[step.sym];
+    if (!sym) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = sym.width; canvas.height = sym.height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+        if (sym.customImage) ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
+        else ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
+    }
+    return {
+        globalIndex: 0,
+        pageIndex: step.page,
+        imageSrc: canvas.toDataURL(),
+        startTime: 0,
+        endTime: 0,
+        direction: '',
+        ...sym,
+        // Mirror the occurrence's scaffold assignment onto the flat entry
+        // (after the spread — the source tile carries no removalLevel).
+        removalLevel: step.removalLevel,
+    };
+}
+
 // Build the flat appState.symbols list (one entry per sequence step, so a
 // repeated tile becomes independent entries with their own timing).
 function buildFlatSymbols() {
     appState.symbols = [];
     effectiveSequence().forEach(step => {
-        const page = appState.pages[step.page];
-        const sym = page.symbols[step.sym];
-        if (!sym) return;
-        const canvas = document.createElement('canvas');
-        canvas.width = sym.width; canvas.height = sym.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-            if (sym.customImage) ctx.drawImage(sym.customImage, 0, 0, sym.width, sym.height);
-            else ctx.drawImage(page.image, sym.x, sym.y, sym.width, sym.height, 0, 0, sym.width, sym.height);
-        }
-        appState.symbols.push({
-            globalIndex: appState.symbols.length,
-            pageIndex: step.page,
-            imageSrc: canvas.toDataURL(),
-            startTime: 0,
-            endTime: 0,
-            direction: '',
-            ...sym,
-            // Mirror the occurrence's scaffold assignment onto the flat entry
-            // (after the spread — the source tile carries no removalLevel).
-            removalLevel: step.removalLevel,
-        });
+        const entry = buildFlatSymbolFor(step);
+        if (!entry) return;
+        entry.globalIndex = appState.symbols.length;
+        appState.symbols.push(entry);
     });
 }
 
@@ -2793,7 +3001,16 @@ function maskTileIfHidden(
 }
 
 function finishOrderingSymbols() {
-    buildFlatSymbols();
+    // When the flat Sync list still lines up 1:1 with the (possibly edited)
+    // reading order — inserts, moves and removals mirror themselves into it —
+    // keep it as-is so recorded timings survive the round trip. Rebuild from
+    // scratch only when the two have drifted apart (e.g. tiles redefined).
+    if (flatMatchesSequence()) {
+        appState.symbols.forEach((s, i) => s.globalIndex = i);
+        syncFlatRemovalLevels();
+    } else {
+        buildFlatSymbols();
+    }
     if (appState.symbols.length === 0) {
         alert("No tiles in the reading order yet! Tap tiles on the page in the order they should play.");
         return;
@@ -2808,13 +3025,14 @@ function setupSyncView() {
     appState.isRecordingSync = false;
     appState.interaction.selectedSyncIndex = -1;
     appState.interaction.syncScrollX = 0; // Reset scroll
-    
-    // Initial State: Recording Mode
-    // Show Visual Cue
-    dom.sync.visualCue.style.display = 'flex';
-    // Hide Fine Tuning Tools
-    dom.sync.containerFineTuning.style.display = 'none';
-    
+
+    // With timings already recorded (a back-to-Order round trip, a resumed
+    // project) open straight in fine-tune mode — re-recording stays one click
+    // away. Otherwise start in recording mode with the visual cue.
+    const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
+    dom.sync.visualCue.style.display = hasTimings ? 'none' : 'flex';
+    dom.sync.containerFineTuning.style.display = hasTimings ? 'block' : 'none';
+
     dom.sync.audio.playbackRate = syncPlaybackRate; // keep chosen speed on re-entry
     updateSyncButtonUI();
     renderSymbolNavStrip(); // Prepare, but hidden
