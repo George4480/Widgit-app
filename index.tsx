@@ -118,6 +118,7 @@ const appState: AppState = {
         canonStarts: [0, 0, 0],
         canonEnds: [-1, -1, -1],
         canonCountdown: true,
+        exportRes: '720',
         canonCountInBeats: 4,
         sheetMode: false
     },
@@ -782,6 +783,9 @@ function setupEventListeners() {
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
         appState.styleConfig.sheetMode = segGet('displayMode') === 1;
+        // Export resolution only affects the rendered file, never the preview.
+        const res = segGet('exportRes');
+        if (res) appState.styleConfig.exportRes = String(res);
         // Enable/disable each feature's sub-controls to match its own toggle.
         // The round-gap slider is also disabled while a loop phrase is marked,
         // because the marked phrase's length drives the entry gap then — a live
@@ -4140,6 +4144,7 @@ function syncStyleControls() {
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('displayMode', c.sheetMode ? 1 : 0);
+    segSet('exportRes', parseInt(c.exportRes || '720', 10));
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
@@ -4467,7 +4472,7 @@ function previewVoiceEntry(kind: 'round' | 'canon') {
 }
 
 async function setupResultView() {
-    dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    dom.result.canvas.width = PREVIEW_SIZE.w; dom.result.canvas.height = PREVIEW_SIZE.h;
     dom.sync.audio.playbackRate = 1; // preview always plays at normal speed
     _bboxCache.clear(); // sheet-mode crop boxes recomputed for current tiles
     syncStyleControls();
@@ -4534,10 +4539,48 @@ function updatePreviewTransport() {
         dom.result.timeLabel.textContent = `${fmtClock(cur)} / ${fmtClock(dur)}`;
     }
 }
+// Every hard-coded pixel size in the render path is authored against a 360px-tall
+// frame. Multiplying them by this keeps the composition identical at any export
+// resolution — only the pixel count changes, not the layout. The on-screen
+// preview stays 360 tall, so k is 1 there and nothing about it moves.
+function frameScale(ctx: CanvasRenderingContext2D): number {
+    return (ctx.canvas.height || 360) / 360;
+}
+
+// The preview canvas stays small — it only has to be legible on this page. The
+// EXPORT is what ends up on a classroom whiteboard, so it renders at a real
+// resolution. Every drawn size is multiplied by frameScale, so the composition
+// at 720p and 1080p is identical to the preview, just with more pixels.
+const PREVIEW_SIZE = { w: 640, h: 360 };
+const EXPORT_SIZES: Record<string, { w: number; h: number; label: string }> = {
+    '720':  { w: 1280, h: 720,  label: '720p' },
+    '1080': { w: 1920, h: 1080, label: '1080p' },
+};
+function exportSize() {
+    return EXPORT_SIZES[appState.styleConfig.exportRes] || EXPORT_SIZES['720'];
+}
+
+// Swap the result canvas up to the export resolution for the duration of a
+// render, then put it back. Safe to do to the on-screen canvas because the
+// rendering overlay covers the page while a render is running. captureStream
+// must be taken AFTER this, so the track is created at the right size.
+function beginHiResRender(): { w: number; h: number } {
+    const size = exportSize();
+    dom.result.canvas.width = size.w;
+    dom.result.canvas.height = size.h;
+    return size;
+}
+function endHiResRender() {
+    dom.result.canvas.width = PREVIEW_SIZE.w;
+    dom.result.canvas.height = PREVIEW_SIZE.h;
+    drawPreviewFrame(dom.sync.audio.currentTime || 0);
+}
+
 function drawPreviewFrame(rawTime: number) {
     const ctx = dom.result.canvas.getContext('2d');
     const w = dom.result.canvas.width;
     const h = dom.result.canvas.height;
+    const k = frameScale(ctx);
     const cfg = appState.styleConfig;
     
     // Apply Latency (Global Correction)
@@ -4612,13 +4655,13 @@ function drawPreviewFrame(rawTime: number) {
         ctx.textBaseline = 'middle';
         
         // Title
-        ctx.font = 'bold 36px sans-serif';
-        ctx.fillText(appState.songTitle, w/2, h/2 - 20);
+        ctx.font = `bold ${36 * k}px sans-serif`;
+        ctx.fillText(appState.songTitle, w/2, h/2 - 20 * k);
         
         // Subtitle/Hint
-        ctx.font = '20px sans-serif';
+        ctx.font = `${20 * k}px sans-serif`;
         ctx.fillStyle = '#666';
-        ctx.fillText("Get Ready...", w/2, h/2 + 30);
+        ctx.fillText("Get Ready...", w/2, h/2 + 30 * k);
         
         ctx.restore();
     }
@@ -4630,11 +4673,11 @@ function drawPreviewFrame(rawTime: number) {
     const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
         if (!appState.preview.loadedImages.has(idx)) return;
         const img = appState.preview.loadedImages.get(idx);
-        const baseSize = 220;
+        const baseSize = 220 * k;
         const size = baseSize * scale;
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 5;
+        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
 
         const ratio = Math.min(size/img.width, size/img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
@@ -4664,7 +4707,7 @@ function drawPreviewFrame(rawTime: number) {
             if (start + i < appState.symbols.length) {
                 const s = cfg.nextScale * Math.pow(0.9, i-1);
                 const o = cfg.nextOpacity * Math.pow(0.8, i-1) * introFadeIn;
-                drawSym(start+i, cx + (i * cfg.spacing), s, o);
+                drawSym(start+i, cx + (i * cfg.spacing * k), s, o);
             }
         }
         
@@ -4676,10 +4719,10 @@ function drawPreviewFrame(rawTime: number) {
             const sym = appState.symbols[activeIndex];
             if (sym.direction) {
                 ctx.save();
-                ctx.font = 'italic 20px Georgia, serif';
+                ctx.font = `italic ${20 * k}px Georgia, serif`;
                 ctx.fillStyle = '#444';
                 ctx.textAlign = 'center';
-                ctx.fillText(sym.direction, cx, h - 30);
+                ctx.fillText(sym.direction, cx, h - 30 * k);
                 ctx.restore();
             }
 
@@ -4695,7 +4738,7 @@ function drawPreviewFrame(rawTime: number) {
             if (activeIndex - i >= 0) {
                 const s = cfg.prevScale * Math.pow(0.9, i-1);
                 const o = cfg.prevOpacity * Math.pow(0.8, i-1);
-                drawSym(activeIndex - i, cx - (i * cfg.spacing), s, o);
+                drawSym(activeIndex - i, cx - (i * cfg.spacing * k), s, o);
             }
         }
     }
@@ -4876,6 +4919,7 @@ const VOICE_NAMES = ['Group 1', 'Group 2', 'Group 3', 'Group 4'];
 // drawn in its own horizontal band, colour-coded, separated by divider lines.
 function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, gap: number, loopStartTime: number) {
     const bandH = h / voices;
+    const k = frameScale(ctx);
 
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
@@ -4894,16 +4938,16 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
         // Group label pill on the left.
         ctx.save();
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold ${13 * k}px sans-serif`;
         ctx.textBaseline = 'middle';
         const label = VOICE_NAMES[v % VOICE_NAMES.length];
-        const lw = ctx.measureText(label).width + 18;
+        const lw = ctx.measureText(label).width + 18 * k;
         ctx.fillStyle = tint;
-        roundRect(ctx, 12, cy - 13, lw, 26, 13);
+        roundRect(ctx, 12 * k, cy - 13 * k, lw, 26 * k, 13 * k);
         ctx.fill();
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(label, 12 + lw / 2, cy + 1);
+        ctx.fillText(label, 12 * k + lw / 2, cy + 1);
         ctx.restore();
 
         // Has this voice started yet?
@@ -4924,17 +4968,17 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
                 const f = (elapsed - beatIdx * beatDur) / beatDur; // 0→1 within the beat
                 const pop = 1 + 0.28 * (1 - f);                  // pops as each beat lands
                 ctx.fillStyle = tint;
-                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92) * pop)}px sans-serif`;
+                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92 * k) * pop)}px sans-serif`;
                 ctx.globalAlpha = 0.4 + 0.6 * (1 - f);
                 ctx.fillText(String(n), w / 2, cy);
                 ctx.globalAlpha = 0.85;
                 ctx.fillStyle = tint;
-                ctx.font = 'bold 13px sans-serif';
-                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56));
+                ctx.font = `bold ${13 * k}px sans-serif`;
+                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56 * k));
             } else {
                 ctx.globalAlpha = 0.5;
                 ctx.fillStyle = tint;
-                ctx.font = 'italic 15px sans-serif';
+                ctx.font = `italic ${15 * k}px sans-serif`;
                 ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
             }
             ctx.restore();
@@ -4977,6 +5021,7 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 // last tile once done. `preroll` is the count-in run-up length in seconds.
 function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, preroll: number) {
     const bandH = h / voices;
+    const k = frameScale(ctx);
     const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
     const syms = appState.symbols;
@@ -5002,16 +5047,16 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
         // Voice label pill on the left.
         ctx.save();
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold ${13 * k}px sans-serif`;
         ctx.textBaseline = 'middle';
         const label = 'Voice ' + (v + 1);
-        const lw = ctx.measureText(label).width + 18;
+        const lw = ctx.measureText(label).width + 18 * k;
         ctx.fillStyle = tint;
-        roundRect(ctx, 12, cy - 13, lw, 26, 13);
+        roundRect(ctx, 12 * k, cy - 13 * k, lw, 26 * k, 13 * k);
         ctx.fill();
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(label, 12 + lw / 2, cy + 1);
+        ctx.fillText(label, 12 * k + lw / 2, cy + 1);
         ctx.restore();
 
         if (target < pStart) {
@@ -5029,17 +5074,17 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
                 const f = (elapsed - beatIdx * beatDur) / beatDur; // 0→1 within the beat
                 const pop = 1 + 0.28 * (1 - f);                  // pops as each beat lands
                 ctx.fillStyle = tint;
-                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92) * pop)}px sans-serif`;
+                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92 * k) * pop)}px sans-serif`;
                 ctx.globalAlpha = 0.4 + 0.6 * (1 - f);
                 ctx.fillText(String(n), w / 2, cy);
                 ctx.globalAlpha = 0.85;
                 ctx.fillStyle = tint;
-                ctx.font = 'bold 13px sans-serif';
-                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56));
+                ctx.font = `bold ${13 * k}px sans-serif`;
+                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56 * k));
             } else {
                 ctx.globalAlpha = 0.5;
                 ctx.fillStyle = tint;
-                ctx.font = 'italic 15px sans-serif';
+                ctx.font = `italic ${15 * k}px sans-serif`;
                 ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
             }
             ctx.restore();
@@ -5072,7 +5117,10 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
     const cfg = appState.styleConfig;
     const scaffoldLevel = currentScaffoldLevel();
-    const rowScale = Math.min(1, bandH / 240);
+    const k = frameScale(ctx);
+    // Cap against k, not 1, so the row grows with the frame instead of staying
+    // authored-size and shrinking relative to a larger export.
+    const rowScale = Math.min(k, bandH / 240);
     const baseSize = 200 * rowScale;
     const spacing = cfg.spacing * rowScale;
     const cx = w / 2;
@@ -5083,19 +5131,19 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
         const size = baseSize * scale;
         const ratio = Math.min(size / img.width, size / img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
-        const pad = active ? 12 : 8;
+        const pad = (active ? 12 : 8) * k;
         ctx.save();
         ctx.globalAlpha = opacity;
         // Colour-coded card behind the tile.
         ctx.fillStyle = tint;
         ctx.globalAlpha = opacity * (active ? 0.22 : 0.14);
-        roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+        roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12 * k);
         ctx.fill();
         if (active) {
             ctx.globalAlpha = opacity;
             ctx.strokeStyle = tint;
             ctx.lineWidth = 3;
-            roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+            roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12 * k);
             ctx.stroke();
         }
         ctx.globalAlpha = opacity;
@@ -5187,6 +5235,10 @@ async function renderVideo(mode: 'full' | 'backing') {
         return;
     }
 
+    const size = beginHiResRender();
+    if (dom.rendering.progressText) {
+        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
+    }
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     
@@ -5211,9 +5263,15 @@ async function renderVideo(mode: 'full' | 'backing') {
         // simple graphics content exports noticeably smaller. MP4 (H.264) is less
         // efficient, so keep it a little higher there to hold quality.
         const isMp4 = mime.includes("mp4");
-        const bitrate = isMp4 ? 2500000 : 1600000;
+        const bitrate = exportBitrate(isMp4);
         recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
-    } catch (e) { alert("Recording not supported or codec missing."); return; }
+    } catch (e) {
+        alert("Recording not supported or codec missing.");
+        dom.rendering.overlay.style.display = 'none';
+        endHiResRender();
+        audioCtx.close();
+        return;
+    }
     
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
@@ -5226,6 +5284,7 @@ async function renderVideo(mode: 'full' | 'backing') {
         a.href = url; a.download = `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
+        endHiResRender();     // put the preview canvas back to its own size
         audioCtx.close();
     };
 
@@ -5252,11 +5311,23 @@ function projectFileBase(): string {
 }
 
 // Pick a supported MediaRecorder mime + a bitrate for this content.
+// Bitrate for the chosen export size. The old flat 1.6/2.5 Mbps was tuned for a
+// 640x360 frame; spending the same bits on 4x (720p) or 9x (1080p) the pixels
+// would make a bigger export look WORSE than the small one. Scaled by pixel
+// count with a 0.75 exponent rather than linearly, because codecs get more
+// efficient at higher resolutions and this content is mostly flat colour.
+function exportBitrate(isMp4: boolean): number {
+    const base = isMp4 ? 2500000 : 1600000;
+    const size = exportSize();
+    const ratio = (size.w * size.h) / (PREVIEW_SIZE.w * PREVIEW_SIZE.h);
+    return Math.round(base * Math.pow(ratio, 0.75));
+}
+
 function pickRecorderMime(): { mime: string; bitrate: number } {
     const preferredTypes = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
     let mime = "video/webm";
     for (const t of preferredTypes) { if (MediaRecorder.isTypeSupported(t)) { mime = t; break; } }
-    return { mime, bitrate: mime.includes("mp4") ? 2500000 : 1600000 };
+    return { mime, bitrate: exportBitrate(mime.includes("mp4")) };
 }
 
 // A between-sections title card for the progressive practice video.
@@ -5270,12 +5341,13 @@ function drawScaffoldTitleCard(ctx: CanvasRenderingContext2D, w: number, h: numb
     ctx.globalAlpha = Math.max(0, Math.min(1, fade));
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const k = frameScale(ctx);
     ctx.fillStyle = '#333';
-    ctx.font = 'bold 40px sans-serif';
-    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18);
-    ctx.font = '20px sans-serif';
+    ctx.font = `bold ${40 * k}px sans-serif`;
+    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18 * k);
+    ctx.font = `${20 * k}px sans-serif`;
     ctx.fillStyle = '#666';
-    ctx.fillText(level === 0 ? 'All symbols visible' : 'Some symbols will now be hidden', w / 2, h / 2 + 26);
+    ctx.fillText(level === 0 ? 'All symbols visible' : 'Some symbols will now be hidden', w / 2, h / 2 + 26 * k);
     ctx.restore();
 }
 
@@ -5329,6 +5401,10 @@ async function renderProgressiveVideo() {
     const sectionDur = TITLE_DUR + perfDur;
     const total = sectionDur * levels.length;
 
+    const size = beginHiResRender();
+    if (dom.rendering.progressText) {
+        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
+    }
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
 
@@ -5336,7 +5412,7 @@ async function renderProgressiveVideo() {
     try {
         const { mime, bitrate } = pickRecorderMime();
         recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
-    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; audioCtx.close(); return; }
+    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; endHiResRender(); audioCtx.close(); return; }
 
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
@@ -5350,6 +5426,7 @@ async function renderProgressiveVideo() {
         a.href = url; a.download = `${projectFileBase()}_progressive.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
+        endHiResRender();     // put the preview canvas back to its own size
         audioCtx.close();
     };
 

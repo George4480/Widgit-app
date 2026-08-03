@@ -100,6 +100,13 @@ export interface StyleConfig {
     canonEnds: number[];
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
+    /**
+     * Resolution of the EXPORTED video, as a key into EXPORT_SIZES ('720' |
+     * '1080'). The on-screen preview is always 640x360; this only affects the
+     * rendered file. Absent in projects saved before the setting existed, which
+     * load as '720'.
+     */
+    exportRes: string;
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
     // excluding header/footer logos), glow-highlight the current tile, and
     // scroll down continuously as the song progresses. Alternative to conveyor.
