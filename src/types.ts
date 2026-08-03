@@ -130,15 +130,44 @@ export interface StyleConfig {
 }
 
 /**
- * Staged scaffold removal: progressively hide visual prompts across numbered,
- * cumulative practice levels to support recall and independent singing. The
- * per-occurrence assignments live on SequenceStep.removalLevel; this holds the
- * feature's configuration and transient preview/assignment UI state.
+ * How much of a masked tile is taken away. A Widgit tile is a picture with its
+ * word underneath, and the two are worth removing separately — taking the word
+ * away leaves a symbol to read, taking the symbol away leaves text to read, and
+ * they are different skills.
+ *
+ *   'blank'     — background colour only: no picture, no word.
+ *   'symbol'    — the picture stays, the word underneath is covered.
+ *   'word'      — the word stays, the picture above it is covered.
+ *   'alternate' — alternates symbol-only / word-only along the reading order.
+ *
+ * Named for what SURVIVES, not what is removed.
+ */
+export type ScaffoldMaskMode = 'blank' | 'symbol' | 'word' | 'alternate';
+
+/**
+ * Staged scaffold removal: progressively strip the tiles themselves back across
+ * numbered, cumulative practice levels to support recall and independent
+ * singing. Which tiles are affected at each level lives on
+ * SequenceStep.removalLevel; how much of an affected tile is taken away is the
+ * level's ScaffoldMaskMode. This holds the feature's configuration and the
+ * transient preview/assignment UI state.
  */
 export interface ScaffoldConfig {
     enabled: boolean;
     /** Number of configured levels (>=1). Levels are numbered 1..levelCount. */
     levelCount: number;
+    /**
+     * Mask mode per level — index 0 is level 1. Entries past the end (and files
+     * saved before mask modes existed) read as 'blank', the original all-or-
+     * nothing behaviour.
+     */
+    levelModes: ScaffoldMaskMode[];
+    /**
+     * Height of the word strip at the bottom of a tile, as a fraction of tile
+     * height. Decides where the 'symbol'/'word' modes cut. Boards vary, so it is
+     * adjustable; 0.3 suits a typical Widgit symbol-above-word tile.
+     */
+    wordBand: number;
     /**
      * The level currently "armed" for assignment at the Sync stage. 0 = no level
      * armed, so nav-strip taps keep their ordinary timeline-selection behaviour.

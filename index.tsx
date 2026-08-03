@@ -4,9 +4,13 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
+import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig, ScaffoldMaskMode } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
-import { isMasked, tileMaskColor, drawContentMask, clearMaskColorCache } from "./src/scaffold";
+import {
+    isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
+    levelMaskMode, resolveMaskMode, clampWordBand,
+    WORD_BAND_MIN, WORD_BAND_MAX, WORD_BAND_DEFAULT,
+} from "./src/scaffold";
 
 // Vercel Web Analytics — collects anonymous page-view/visitor metrics once the
 // app is served from Vercel (no-op in local dev).
@@ -27,6 +31,11 @@ function defaultScaffold(): ScaffoldConfig {
     return {
         enabled: false,
         levelCount: 3,
+        // A default progression that means something musically: take the words
+        // away first (the picture still carries the meaning), then the pictures
+        // (the words still carry it), then the tile goes blank.
+        levelModes: ['symbol', 'word', 'blank', 'blank', 'blank', 'blank'],
+        wordBand: WORD_BAND_DEFAULT,
         selectedAssignmentLevel: 0,
         previewLevel: 0,
         exportMode: 'single',
@@ -36,11 +45,21 @@ function defaultScaffold(): ScaffoldConfig {
 // the field, or missing newer keys) keep sane values, and reset the transient
 // UI bits that should never carry across a load.
 function normalizeScaffold(saved: any): ScaffoldConfig {
-    const s = { ...defaultScaffold(), ...(saved && typeof saved === 'object' ? saved : {}) };
+    const hadScaffold = !!saved && typeof saved === 'object';
+    const s = { ...defaultScaffold(), ...(hadScaffold ? saved : {}) };
     s.levelCount = Math.max(1, Math.min(SCAFFOLD_MAX_LEVELS, Math.round(s.levelCount) || 3));
     s.previewLevel = Math.max(0, Math.min(s.levelCount, Math.round(s.previewLevel) || 0));
     s.selectedAssignmentLevel = 0; // never resume in an armed assignment mode
     if (s.exportMode !== 'progressive') s.exportMode = 'single';
+    // A project saved before mask modes existed blanked every masked tile. Keep
+    // it looking as it was left rather than silently applying the new default
+    // progression to somebody's finished work.
+    if (hadScaffold && !Array.isArray((saved as any).levelModes)) {
+        s.levelModes = Array(SCAFFOLD_MAX_LEVELS).fill('blank');
+    }
+    s.levelModes = Array.from({ length: SCAFFOLD_MAX_LEVELS },
+        (_, i) => levelMaskMode(s.levelModes, i + 1));
+    s.wordBand = clampWordBand(Number(s.wordBand));
     return s;
 }
 
@@ -174,6 +193,30 @@ let dom = {} as any;
     maxOffset: () => canonMaxOffset(),
     leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
+};
+
+// Same idea for scaffold masking: which mode a level resolves to, and where the
+// mask actually lands on a tile. `sample` draws one mask onto a scratch canvas
+// over a known background and reports which rows it covered, so the split can be
+// asserted rather than eyeballed. Tests only — nothing in the app reads this.
+(window as any).__scaffoldProbe = {
+    modeAt: (level: number, ordinal: number) => scaffoldMaskModeAt(level, ordinal),
+    levelMode: (level: number) => levelMaskMode(appState.scaffold.levelModes, level),
+    sample: (mode: any, band: number, size = 100) => {
+        const cv = document.createElement('canvas');
+        cv.width = size; cv.height = size;
+        const cx = cv.getContext('2d') as CanvasRenderingContext2D;
+        cx.fillStyle = '#000000';
+        cx.fillRect(0, 0, size, size);
+        drawContentMask(cx, '#ffffff', 0, 0, size, size, mode, band);
+        const d = cx.getImageData(0, 0, size, size).data;
+        const rows: number[] = [];
+        for (let y = 0; y < size; y++) {
+            const i = (y * size + Math.floor(size / 2)) * 4;
+            if (d[i] > 200) rows.push(y);   // white => covered
+        }
+        return { first: rows.length ? rows[0] : -1, last: rows.length ? rows[rows.length - 1] : -1, count: rows.length };
+    },
 };
 
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
@@ -325,6 +368,11 @@ function init() {
             body: document.getElementById('scaffold-body'),
             levelButtons: document.getElementById('scaffold-level-buttons'),
             previewButtons: document.getElementById('scaffold-preview-buttons'),
+            modeButtons: document.getElementById('scaffold-mode-buttons'),
+            modeLevel: document.getElementById('scaffold-mode-level'),
+            bandRow: document.getElementById('scaffold-band-row'),
+            wordBand: document.getElementById('scaffold-word-band') as HTMLInputElement,
+            bandValue: document.getElementById('scaffold-band-value'),
             addLevel: document.getElementById('scaffold-add-level') as HTMLButtonElement,
             applyMatching: document.getElementById('scaffold-apply-matching'),
             clearLevel: document.getElementById('scaffold-clear-level'),
@@ -335,6 +383,11 @@ function init() {
             resultControls: document.getElementById('scaffold-result-controls'),
             resultDisabledNote: document.getElementById('scaffold-result-disabled'),
             resultPreviewButtons: document.getElementById('scaffold-result-preview-buttons'),
+            resultModeButtons: document.getElementById('scaffold-result-mode-buttons'),
+            resultModeLevel: document.getElementById('scaffold-result-mode-level'),
+            resultBandRow: document.getElementById('scaffold-result-band-row'),
+            resultWordBand: document.getElementById('scaffold-result-word-band') as HTMLInputElement,
+            resultBandValue: document.getElementById('scaffold-result-band-value'),
             btnProgressive: document.getElementById('btn-export-progressive'),
         },
         result: {
@@ -718,6 +771,9 @@ function setupEventListeners() {
     if (dom.scaffold.applyMatching) dom.scaffold.applyMatching.addEventListener('click', applyScaffoldToMatching);
     if (dom.scaffold.clearLevel) dom.scaffold.clearLevel.addEventListener('click', clearScaffoldSelectedLevel);
     if (dom.scaffold.clearAll) dom.scaffold.clearAll.addEventListener('click', clearAllScaffold);
+    [dom.scaffold.wordBand, dom.scaffold.resultWordBand].forEach(el => {
+        if (el) el.addEventListener('input', () => setScaffoldWordBand(Number(el.value) / 100));
+    });
     if (dom.scaffold.btnProgressive) dom.scaffold.btnProgressive.addEventListener('click', () => confirmExport(() => renderProgressiveVideo()));
 
 
@@ -3201,9 +3257,16 @@ function syncFlatRemovalLevels() {
     appState.symbols.forEach((s, i) => { s.removalLevel = seq[i]?.removalLevel; });
 }
 
+// What a masked tile shows at the given level, for the tile at reading-order
+// position `ordinal` (which only matters for the alternating mode).
+function scaffoldMaskModeAt(level: number, ordinal: number) {
+    return resolveMaskMode(levelMaskMode(appState.scaffold.levelModes, level), ordinal);
+}
+
 // Cover the just-drawn tile image with a background-coloured inset mask when the
-// occurrence is hidden at the active scaffold level. `img` is the tile crop
-// (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
+// occurrence is masked at the active scaffold level. How much gets covered — all
+// of it, the word, or the picture — is the level's mask mode. `img` is the tile
+// crop (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
 function maskTileIfHidden(
     ctx: CanvasRenderingContext2D,
     sym: SymbolTile | undefined,
@@ -3212,7 +3275,8 @@ function maskTileIfHidden(
     level: number,
 ) {
     if (!sym || !isMasked(sym.removalLevel, level)) return;
-    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh);
+    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh,
+        scaffoldMaskModeAt(level, sym.globalIndex ?? 0), appState.scaffold.wordBand);
 }
 
 function finishOrderingSymbols() {
@@ -3405,11 +3469,11 @@ function assignScaffoldLevel(flatIdx: number, level: number) {
     if (cur === level) {
         step.removalLevel = undefined;
         if (sym) sym.removalLevel = undefined;
-        announceScaffold(`Tile ${flatIdx + 1} is visible again.`);
+        announceScaffold(`Tile ${flatIdx + 1} is shown in full again.`);
     } else {
         step.removalLevel = level;
         if (sym) sym.removalLevel = level;
-        announceScaffold(`Tile ${flatIdx + 1} will hide from level ${level} onwards.`);
+        announceScaffold(`Tile ${flatIdx + 1} will show ${SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says} from level ${level} onwards.`);
     }
     scaffoldLastTile = flatIdx;
     saveHistoryState();
@@ -3488,6 +3552,56 @@ function addScaffoldLevel() {
     announceScaffold(`Added level ${sc.levelCount}.`);
 }
 
+// Which level the mask-mode picker is editing: the one you have armed for
+// assignment if any, otherwise the one you are previewing, otherwise level 1.
+// Either way it is the level you are currently looking at or working on.
+function scaffoldModeLevel(): number {
+    const sc = appState.scaffold;
+    return Math.min(sc.levelCount, sc.selectedAssignmentLevel || sc.previewLevel || 1);
+}
+
+const SCAFFOLD_MODE_LABELS: Record<ScaffoldMaskMode, { label: string; title: string; says: string }> = {
+    symbol: {
+        label: 'Picture only',
+        title: 'Cover the word, leave the picture — read the symbol',
+        says: 'the picture, with the word covered',
+    },
+    word: {
+        label: 'Word only',
+        title: 'Cover the picture, leave the word — read the text',
+        says: 'the word, with the picture covered',
+    },
+    alternate: {
+        label: 'Alternate',
+        title: 'Alternate picture-only and word-only along the song',
+        says: 'picture and word alternately along the song',
+    },
+    blank: {
+        label: 'Blank tile',
+        title: 'Cover both — the tile keeps its place and colour, nothing else',
+        says: 'nothing but the tile itself',
+    },
+};
+
+function setScaffoldLevelMode(level: number, mode: ScaffoldMaskMode) {
+    const sc = appState.scaffold;
+    if (level < 1 || level > sc.levelCount) return;
+    sc.levelModes[level - 1] = mode;
+    // Show what was just chosen — changing a level's look is pointless if you
+    // are still previewing a different level.
+    sc.previewLevel = level;
+    saveHistoryState();
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+    announceScaffold(`Level ${level} now shows ${SCAFFOLD_MODE_LABELS[mode].says}.`);
+}
+
+function setScaffoldWordBand(fraction: number) {
+    appState.scaffold.wordBand = clampWordBand(fraction);
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+}
+
 // Set which level the preview/single-export shows. Shared by the Sync-stage
 // preview buttons and the Preview & Export scaffold-level control.
 function setScaffoldPreviewLevel(level: number) {
@@ -3515,17 +3629,20 @@ function updateNavStripScaffold() {
     const items = strip.querySelectorAll('.nav-symbol-item');
     items.forEach((item: HTMLElement, i: number) => {
         item.querySelectorAll('.scaffold-badge').forEach(b => b.remove());
-        item.classList.remove('scaffold-masked');
+        item.classList.remove('scaffold-masked', 'mask-blank', 'mask-symbol', 'mask-word');
         const lvl = appState.symbols[i]?.removalLevel || 0;
         if (sc.enabled && lvl > 0) {
             const b = document.createElement('div');
             b.className = 'scaffold-badge';
             b.textContent = 'L' + lvl;
-            b.title = `Hidden from level ${lvl} onwards`;
+            b.title = `Stripped back from level ${lvl} onwards`;
             b.setAttribute('aria-label', `Removal level ${lvl}`);
             item.appendChild(b);
         }
-        if (sc.enabled && isMasked(lvl, previewLevel)) item.classList.add('scaffold-masked');
+        if (sc.enabled && isMasked(lvl, previewLevel)) {
+            // Hatch the part the video actually takes away at this level.
+            item.classList.add('scaffold-masked', 'mask-' + scaffoldMaskModeAt(previewLevel, i));
+        }
     });
     updateScaffoldStatus();
 }
@@ -3535,10 +3652,14 @@ function updateScaffoldStatus() {
     if (!dom.scaffold.status) return;
     if (!sc.enabled) { dom.scaffold.status.textContent = ''; return; }
     const assigned = appState.symbols.filter(s => s.removalLevel).length;
-    if (sc.selectedAssignmentLevel > 0) {
-        dom.scaffold.status.textContent = `Assigning level ${sc.selectedAssignmentLevel}: tap tiles to hide them from level ${sc.selectedAssignmentLevel} onwards. ${assigned} tile(s) assigned so far.`;
+    const lvl = sc.selectedAssignmentLevel;
+    if (lvl > 0) {
+        const says = SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, lvl)].says;
+        dom.scaffold.status.textContent = `Assigning level ${lvl}: tap tiles to strip them back from level ${lvl} onwards, where they show ${says}. ${assigned} tile(s) assigned so far.`;
     } else {
-        const p = sc.previewLevel === 0 ? 'full support' : `level ${sc.previewLevel}`;
+        const p = sc.previewLevel === 0
+            ? 'full support'
+            : `level ${sc.previewLevel} — stripped tiles show ${SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, sc.previewLevel)].says}`;
         dom.scaffold.status.textContent = `${assigned} tile(s) assigned. Previewing ${p}. Choose a level above to start assigning.`;
     }
 }
@@ -3573,6 +3694,32 @@ function renderScaffoldControls() {
     // Preview level buttons — Result stage (same previewLevel).
     if (dom.scaffold.resultPreviewButtons) buildScaffoldPreviewButtons(dom.scaffold.resultPreviewButtons);
 
+    // How far the level being worked on strips a tile back, in both panels.
+    const modeLevel = scaffoldModeLevel();
+    if (dom.scaffold.modeButtons) buildScaffoldModeButtons(dom.scaffold.modeButtons, modeLevel);
+    if (dom.scaffold.resultModeButtons) buildScaffoldModeButtons(dom.scaffold.resultModeButtons, modeLevel);
+    [dom.scaffold.modeLevel, dom.scaffold.resultModeLevel].forEach(el => {
+        if (el) el.textContent = String(modeLevel);
+    });
+
+    // The word strip only decides anything when some level actually splits the
+    // tile, so it stays out of the way until one does.
+    const splits = sc.levelModes.some(m => m === 'symbol' || m === 'word' || m === 'alternate');
+    const bandPct = Math.round(clampWordBand(sc.wordBand) * 100);
+    [dom.scaffold.bandRow, dom.scaffold.resultBandRow].forEach(el => {
+        if (el) (el as HTMLElement).style.display = splits ? '' : 'none';
+    });
+    [dom.scaffold.wordBand, dom.scaffold.resultWordBand].forEach(el => {
+        if (el) {
+            el.min = String(Math.round(WORD_BAND_MIN * 100));
+            el.max = String(Math.round(WORD_BAND_MAX * 100));
+            if (Number(el.value) !== bandPct) el.value = String(bandPct);
+        }
+    });
+    [dom.scaffold.bandValue, dom.scaffold.resultBandValue].forEach(el => {
+        if (el) el.textContent = `bottom ${bandPct}% of the tile`;
+    });
+
     // Result-stage section: the feature can be switched on right here as well as
     // at the Sync stage, so the export screen is self-sufficient.
     if (dom.scaffold.resultEnabled) dom.scaffold.resultEnabled.checked = sc.enabled;
@@ -3598,6 +3745,23 @@ function buildScaffoldPreviewButtons(container: HTMLElement) {
     };
     mk(0, 'Full support');
     for (let n = 1; n <= sc.levelCount; n++) mk(n, 'Level ' + n);
+}
+
+function buildScaffoldModeButtons(container: HTMLElement, level: number) {
+    const current = levelMaskMode(appState.scaffold.levelModes, level);
+    container.innerHTML = '';
+    (['symbol', 'word', 'alternate', 'blank'] as ScaffoldMaskMode[]).forEach(mode => {
+        const meta = SCAFFOLD_MODE_LABELS[mode];
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = meta.label;
+        b.title = meta.title;
+        const on = current === mode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.addEventListener('click', () => setScaffoldLevelMode(level, mode));
+        container.appendChild(b);
+    });
 }
 
 function drawSyncTimeline() {
@@ -5191,7 +5355,8 @@ function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             const mw = s.width * scale;
             const mh = s.height * scale;
             if (my + mh < 0 || my > h) return; // outside the visible window
-            drawContentMask(ctx, tileMaskColor(appState.preview.loadedImages.get(i), tileSourceKey(s)), mx, my, mw, mh);
+            drawContentMask(ctx, tileMaskColor(appState.preview.loadedImages.get(i), tileSourceKey(s)), mx, my, mw, mh,
+                scaffoldMaskModeAt(sheetLevel, i), appState.scaffold.wordBand);
         });
     }
 
@@ -5666,7 +5831,12 @@ function drawScaffoldTitleCard(ctx: CanvasRenderingContext2D, w: number, h: numb
     ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18 * k);
     ctx.font = `${20 * k}px sans-serif`;
     ctx.fillStyle = '#666';
-    ctx.fillText(level === 0 ? 'All symbols visible' : 'Some symbols will now be hidden', w / 2, h / 2 + 26 * k);
+    // Name what actually changes at this level, so a class watching the video
+    // knows what to expect before the song restarts.
+    const sub = level === 0
+        ? 'All symbols visible'
+        : 'Some tiles now show ' + SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says;
+    ctx.fillText(sub, w / 2, h / 2 + 26 * k);
     ctx.restore();
 }
 

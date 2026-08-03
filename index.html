@@ -1707,17 +1707,23 @@
             border-radius: 4px;
             z-index: 4;
         }
-        /* A tile hidden at the current preview level: dim + hatch so it reads as removed. */
-        .nav-symbol-item.scaffold-masked img { opacity: 0.18; }
+        /* A tile stripped back at the current preview level. The hatch covers the
+           part that is actually taken away, so the strip shows the same split as
+           the video: whole tile, the word band, or everything above it. */
         .nav-symbol-item.scaffold-masked::after {
             content: "";
             position: absolute;
-            inset: 6px;
+            left: 6px; right: 6px;
+            top: 6px; bottom: 6px;
             border-radius: 4px;
-            background: repeating-linear-gradient(45deg, rgba(120,120,140,0.28) 0 6px, rgba(120,120,140,0.12) 6px 12px);
+            background: repeating-linear-gradient(45deg, rgba(120,120,140,0.55) 0 6px, rgba(120,120,140,0.32) 6px 12px);
             pointer-events: none;
         }
+        .nav-symbol-item.scaffold-masked.mask-blank img { opacity: 0.18; }
+        .nav-symbol-item.scaffold-masked.mask-symbol::after { top: auto; height: 30%; }
+        .nav-symbol-item.scaffold-masked.mask-word::after { bottom: auto; height: 62%; }
         #scaffold-level-section .seg-group { margin-top: 4px; }
+        #scaffold-mode-buttons button, #scaffold-result-mode-buttons button { white-space: nowrap; }
 
         /* ---- Round/Canon trigger-point pickers (tap a tile directly) ---- */
         .trigger-strip {
@@ -2227,11 +2233,11 @@
             <label class="round-toggle" style="align-items:center;">
                 <input type="checkbox" id="scaffold-enabled">
                 <span><strong>🫥 Staged scaffold removal</strong>
-                    <span class="section-note" style="display:block; font-weight:400;">Gradually hide selected cues across practice levels to support recall and independent singing.</span>
+                    <span class="section-note" style="display:block; font-weight:400;">Strip the tiles back a stage at a time — words off, then pictures, then nothing but the tile — to support recall and independent singing.</span>
                 </span>
             </label>
             <div id="scaffold-body" style="display:none;">
-                <p class="scaffold-instr">Choose a level, then tap the tiles that should disappear from that level onwards.</p>
+                <p class="scaffold-instr">Choose a level, then tap the tiles it applies to. Set how far that level strips a tile back below.</p>
                 <div class="scaffold-row" id="scaffold-level-section">
                     <span class="scaffold-lbl">Assign level:</span>
                     <span id="scaffold-level-buttons" class="seg-group" role="group" aria-label="Scaffold assignment level"></span>
@@ -2240,6 +2246,17 @@
                 <div class="scaffold-row">
                     <span class="scaffold-lbl">Preview:</span>
                     <span id="scaffold-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                </div>
+                <div class="scaffold-row">
+                    <span class="scaffold-lbl">Level <span id="scaffold-mode-level">1</span> shows:</span>
+                    <span id="scaffold-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                </div>
+                <div class="scaffold-row" id="scaffold-band-row">
+                    <span class="scaffold-lbl">Word strip:</span>
+                    <input type="range" id="scaffold-word-band" min="15" max="50" step="1" value="30"
+                           aria-label="Height of the word strip at the bottom of a tile" style="flex:1 1 120px; width:0; min-width:80px;">
+                    <span id="scaffold-band-value" class="section-note" style="margin:0;"></span>
+                    <span class="section-note" style="margin:0; flex-basis:100%;">Where the word ends and the picture begins. Nudge it if the split lands in the wrong place on your board.</span>
                 </div>
                 <div class="scaffold-row">
                     <button id="scaffold-apply-matching" type="button" class="button secondary small" style="margin:0;" title="Apply the last-tapped tile's level to every other occurrence of the same symbol">Apply to matching occurrences</button>
@@ -2327,7 +2344,7 @@
                 <label class="round-toggle" style="align-items:center;">
                     <input type="checkbox" id="scaffold-result-enabled">
                     <span>Enable staged scaffold removal
-                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles disappear at each level back on the <strong>Synchronize</strong> step; set the level and export from here.</span>
+                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles each level applies to back on the <strong>Synchronize</strong> step; set the level, how far it strips them back, and export from here.</span>
                     </span>
                 </label>
                 <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on to preview each practice level and export a progressive practice video.</p>
@@ -2335,6 +2352,15 @@
                     <div class="setting-item">
                         <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
                         <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                    </div>
+                    <div class="setting-item">
+                        <label>Level <span id="scaffold-result-mode-level">1</span> shows <span class="section-note">how far the tiles are stripped back at this level</span></label>
+                        <span id="scaffold-result-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                    </div>
+                    <div class="setting-item" id="scaffold-result-band-row">
+                        <label>Word strip <span id="scaffold-result-band-value" class="section-note"></span></label>
+                        <input type="range" id="scaffold-result-word-band" min="15" max="50" step="1" value="30" style="width:100%;"
+                               aria-label="Height of the word strip at the bottom of a tile">
                     </div>
                     <div class="setting-item">
                         <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
