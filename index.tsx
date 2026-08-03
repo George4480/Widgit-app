@@ -4,6 +4,9 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
 import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig, ScaffoldMaskMode } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
 import {
+    hasWebCodecs, pickVideoCodec, calibrateEncoder, renderFast, FastRenderCancelled,
+} from "./src/render";
+import {
     isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
     levelMaskMode, resolveMaskMode, clampWordBand,
     WORD_BAND_MIN, WORD_BAND_MAX, WORD_BAND_DEFAULT,
@@ -5894,13 +5897,88 @@ function renderJobRealtime(opts: {
     });
 }
 
+// Whether the WebCodecs path is worth using at the current export size, decided
+// once per session by measuring. Null = not yet asked.
+let _fastPathChoice: { key: string; codec: string | null } | null = null;
+
 /**
- * Render one video, choosing how. Today this is the real-time MediaRecorder
- * path; the WebCodecs fast path plugs in here once it lands, which is why every
- * caller goes through this rather than calling the renderer directly.
+ * Decide between the deterministic WebCodecs renderer and the real-time
+ * MediaRecorder one — by measuring this machine, not by assuming.
+ *
+ * Encode speed varies enormously with hardware support: software VP9 measured
+ * 2.85x real time at 720p but 0.81x at 1080p, i.e. SLOWER than simply recording
+ * in real time. A machine with a hardware encoder flips that. Since there is no
+ * way to ask, a short calibration burst answers it, and anything that does not
+ * beat real time falls back. The export can therefore never come out slower
+ * than it was before this existed.
  */
-function renderJob(opts: Parameters<typeof renderJobRealtime>[0]) {
-    return renderJobRealtime(opts);
+async function chooseFastCodec(size: { w: number; h: number }, bitrate: number, durationSec: number): Promise<string | null> {
+    const key = `${size.w}x${size.h}`;
+    if (_fastPathChoice && _fastPathChoice.key === key) return _fastPathChoice.codec;
+    let codec: string | null = null;
+    try {
+        if (hasWebCodecs()) {
+            const picked = await pickVideoCodec(size, bitrate);
+            if (picked) {
+                // Calibrate on the real frames at the real size — the canvas is
+                // already switched over by the caller.
+                const msPerFrame = await calibrateEncoder({
+                    size, codec: picked, bitrate, canvas: dom.result.canvas,
+                    drawFrame: (t) => drawPreviewFrame(t), durationSec,
+                });
+                const realtimeBudget = 1000 / 30;   // one frame's worth of wall clock at 30fps
+                // Require a clear margin, not a photo finish. Measurement carries
+                // noise, and a path that only ties is not worth the risk when the
+                // alternative is the one that has always worked.
+                codec = msPerFrame < realtimeBudget * 0.7 ? picked : null;
+                console.info(`[render] ${key} ${picked}: ${msPerFrame.toFixed(1)} ms/frame ` +
+                    `(~${(realtimeBudget / msPerFrame).toFixed(2)}x real time) → ` +
+                    (codec ? 'fast path' : 'falling back to real-time recording'));
+            }
+        }
+    } catch (e) {
+        console.warn('[render] calibration failed, using the real-time path:', e);
+        codec = null;
+    }
+    _fastPathChoice = { key, codec };
+    return codec;
+}
+
+/**
+ * Render one video, choosing how. Every caller goes through here rather than
+ * calling a renderer directly, so the choice is made in one place.
+ */
+async function renderJob(opts: Parameters<typeof renderJobRealtime>[0]): Promise<{ blob: Blob; ext: string }> {
+    const size = exportSize();
+    const bitrate = exportBitrate(false);
+    const restoreLevel = scaffoldRenderLevelOverride;
+
+    // Switch the canvas to export size and select the stage BEFORE calibrating,
+    // so the measurement draws exactly the frames the render will draw.
+    beginHiResRender();
+    scaffoldRenderLevelOverride = opts.stage;
+    const codec = await chooseFastCodec(size, bitrate, opts.dur);
+    if (!codec) { scaffoldRenderLevelOverride = restoreLevel; return renderJobRealtime(opts); }
+
+    try {
+        const blob = await renderFast({
+            size, fps: 30, durationSec: opts.dur, bitrate,
+            canvas: dom.result.canvas,
+            drawFrame: (t) => drawPreviewFrame(t),
+            audioBuffer: opts.audioBuffer,
+            onProgress: opts.onProgress,
+            signal: opts.signal,
+        });
+        return { blob, ext: 'webm' };
+    } catch (e) {
+        if (e instanceof FastRenderCancelled) throw new RenderCancelled();
+        // A fast render that breaks should cost the teacher a slower export, not
+        // the export. Take the proven path and stop offering the fast one.
+        console.warn('[render] fast path failed, falling back to real-time recording:', e);
+        _fastPathChoice = { key: `${size.w}x${size.h}`, codec: null };
+        scaffoldRenderLevelOverride = restoreLevel;
+        return renderJobRealtime(opts);
+    }
 }
 
 // ---- Practice videos: one file per stage --------------------------------
