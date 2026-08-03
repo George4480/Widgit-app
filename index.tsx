@@ -5910,6 +5910,14 @@ async function saveProjectJson() {
         latencyOffset: appState.interaction.latencyOffset,
         currentView: appState.currentView,
         globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym, removalLevel: s.removalLevel })),
+        // The actual recording. Read from the flat list, which is the only place
+        // timings are ever written; the per-page tiles below keep their
+        // startTime/endTime fields for backward compatibility but are always 0.
+        timings: appState.symbols.map(s => ({
+            st: s.startTime || 0,
+            et: s.endTime || 0,
+            dir: s.direction || '',
+        })),
         round: { start: appState.round.start, end: appState.round.end },
         pages: savedPages
     };
@@ -6021,6 +6029,18 @@ function handleProjectLoadFile(e: Event) {
 
             // Rebuild Flat List
             rebuildGlobalSymbolsList();
+
+            // Put the recording back on it. Saved per occurrence and in reading
+            // order, so it lines up 1:1 with the list just rebuilt.
+            if (Array.isArray(data.timings)) {
+                appState.symbols.forEach((sym, i) => {
+                    const t = data.timings[i];
+                    if (!t) return;
+                    sym.startTime = t.st || 0;
+                    sym.endTime = t.et || 0;
+                    if (t.dir) sym.direction = t.dir;
+                });
+            }
             
             // Backup backgrounds
             (window as any)._originalPageBackgrounds = [...appState.pages];

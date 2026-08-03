@@ -232,6 +232,16 @@ export interface ProjectSaveData {
     currentView?: string;
     /** Cross-page reading order. Absent in files saved before this feature. */
     globalSequence?: SequenceStep[];
+    /**
+     * The recorded sync, one entry per reading-order step, parallel to
+     * globalSequence. Timings live on the DERIVED flat tile list, not on the
+     * page tiles, so they have to be saved separately — page tiles carry
+     * startTime/endTime fields that nothing ever writes to, and a save built
+     * from those contains only zeros. Per occurrence, not per tile: a repeated
+     * chorus symbol is one tile sung at several different moments.
+     * Absent in files saved before this was fixed; those load untimed.
+     */
+    timings?: { st: number; et: number; dir?: string }[];
     /** Round loop section by tile index. Absent in older files. */
     round?: { start: number; end: number };
     pages: {
