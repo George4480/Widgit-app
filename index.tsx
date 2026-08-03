@@ -232,6 +232,48 @@ let dom = {} as any;
     },
 };
 
+// Video-import tile finding. `tilesOn` runs the real detector over an image so a
+// test can assert what a canon frame yields without driving the whole import UI;
+// the rest are the pure helpers underneath. Tests only.
+(window as any).__importProbe = {
+    tilesOn: (dataUrl: string) => new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve(detectFrameTiles(im));
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    }),
+    dropContainers: (boxes: any) => dropContainerBoxes(boxes),
+    // Each stage of the frame detector, for diagnosing which one loses a tile.
+    stages: (dataUrl: string) => new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => {
+            const nw = im.naturalWidth, nh = im.naturalHeight;
+            const w = Math.min(nw, FRAME_DETECT_W), h = Math.max(1, Math.round(nh * (w / nw)));
+            const px = imagePixels(im, w, h);
+            const mask = frameInkMask(px, w, h);
+            let ink = 0;
+            for (let i = 0; i < mask.length; i += 4) if (mask[i] < 128) ink++;
+            const rawBoxes = detectBoxes(mask, w, h, 128);
+            const split = splitStackedBoxes(mask, w, h, rawBoxes);
+            const cv = document.createElement('canvas');
+            cv.width = w; cv.height = h;
+            cv.getContext('2d')!.putImageData(new ImageData(mask, w, h), 0, 0);
+            resolve({
+                size: [w, h], inkFraction: +(ink / (w * h)).toFixed(3),
+                rawBoxes: rawBoxes.map(b => [b.x, b.y, b.width, b.height]),
+                afterSplit: split.map(b => [b.x, b.y, b.width, b.height]),
+                maskUrl: cv.toDataURL('image/png'),
+            });
+        };
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    }),
+    match: (boxes: any, reference: any, previous: any) => matchFrameBox(boxes, reference, previous),
+    // Paint one preview frame at time t and hand back the canvas as a PNG, so a
+    // test can feed the app's own canon rendering straight into the detector.
+    frameAt: (t: number) => { drawPreviewFrame(t); return dom.result.canvas.toDataURL('image/png'); },
+};
+
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
 //
 // The obvious test, @media (hover: none), is not trustworthy: a phone set to
@@ -1665,26 +1707,217 @@ function renderVideoGrid() {
 // runs over a PDF page, and return the boxes it finds as fractions of the frame.
 // This is the same code path and the same sensitivity setting the Refine Grid
 // stage uses, so what it finds here is what it would find there.
-function detectFrameTiles(img: HTMLImageElement): { x: number; y: number; w: number; h: number }[] {
-    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    if (!w || !h) return [];
-    const boxes = detectBoxes(imagePixels(img, w, h), w, h, appState.gridConfig.contentThreshold);
-    return boxes
-        // Ignore slivers and anything spanning almost the whole frame (a band
-        // wash or a divider rule rather than a tile).
-        .filter(b => b.width > w * 0.06 && b.height > h * 0.08 && b.width < w * 0.92)
+type FrameBox = { x: number; y: number; w: number; h: number };
+
+// Detection runs on a downscaled copy: boxes come back as fractions either way,
+// and doing ~60 frames at full resolution is seconds of frozen UI for no gain.
+const FRAME_DETECT_W = 560;
+
+/**
+ * Turn a video frame into a black-on-white ink mask, measured against the
+ * background it actually has rather than an absolute brightness.
+ *
+ * detectBoxes asks "is this pixel darker than `threshold`?", which suits a
+ * songboard scanned on white paper. A rendered video frame has whatever
+ * background colour the teacher chose — the default alone is #f0f8ff, whose red
+ * channel is below the default threshold, so EVERY pixel reads as ink and the
+ * whole frame comes back as one box. A canon makes it worse by washing a tint
+ * behind each voice row.
+ *
+ * Taking the median of each row as that row's background fixes both: a band wash
+ * becomes the local background and cancels out, leaving only the tiles standing
+ * proud of it.
+ */
+/**
+ * How far a pixel must sit from the background to count as ink.
+ *
+ * Measured by sweeping a rendered conveyor frame and a canon frame: below ~40
+ * the soft drop shadow under each tile counts as ink and bridges the gaps, so
+ * neighbouring tiles weld into one box; above ~70 pale tiles start dropping out.
+ * Between 50 and 65 both frames segment exactly right — a conveyor into its
+ * three visible tiles, a canon into two voice rows of four. This sits in the
+ * middle of that range.
+ */
+const FRAME_INK_MARGIN = 57;
+
+function frameInkMask(data: Uint8ClampedArray, w: number, h: number, margin = FRAME_INK_MARGIN): Uint8ClampedArray {
+    // Background from a ring around the frame edge. Every layout the app renders
+    // — conveyor, canon rows, spotlight, now/next — insets its tiles, so the
+    // border is background. Taking the median across the whole ring shrugs off
+    // the odd label pill or tile that strays into it.
+    //
+    // (Sampling per row instead looks tempting and is wrong: on any row where the
+    // tiles cover more than half the width, the row median IS a tile, and the
+    // mask comes out inverted — background as ink, tiles as holes.)
+    const samples: number[][] = [[], [], []];
+    const band = Math.max(2, Math.round(Math.min(w, h) * 0.04));
+    const push = (x: number, y: number) => {
+        const i = (y * w + x) * 4;
+        samples[0].push(data[i]); samples[1].push(data[i + 1]); samples[2].push(data[i + 2]);
+    };
+    for (let y = 0; y < band; y++) for (let x = 0; x < w; x += 3) { push(x, y); push(x, h - 1 - y); }
+    for (let x = 0; x < band; x++) for (let y = 0; y < h; y += 3) { push(x, y); push(w - 1 - x, y); }
+    const bg = samples.map(s => { s.sort((a, b) => a - b); return s[s.length >> 1] ?? 255; });
+
+    const out = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h * 4; i += 4) {
+        const d = Math.max(Math.abs(data[i] - bg[0]), Math.abs(data[i + 1] - bg[1]), Math.abs(data[i + 2] - bg[2]));
+        // A canon washes a faint tint behind each voice row; the margin has to
+        // clear that without losing a pale tile.
+        const v = d > margin ? 0 : 255;
+        out[i] = v; out[i + 1] = v; out[i + 2] = v; out[i + 3] = 255;
+    }
+    return out;
+}
+
+/**
+ * Split any box that holds two tiles stacked on top of each other.
+ *
+ * detectBoxes segments rows across the WHOLE frame first, so two vertically
+ * adjacent tiles separated by a thin rule land in one band — which is exactly
+ * how a canon frame is laid out: voice 1's active tile sits directly above voice
+ * 2's, parted by a dashed divider. Re-scanning rows using only the columns
+ * inside a box gets the gap back, because a horizontal dashed line is nearly
+ * nothing within one tile's width.
+ */
+function splitStackedBoxes(mask: Uint8ClampedArray, w: number, h: number, boxes: SymbolTile[]): SymbolTile[] {
+    const out: SymbolTile[] = [];
+    for (const b of boxes) {
+        const x0 = Math.max(0, Math.round(b.x)), x1 = Math.min(w, Math.round(b.x + b.width));
+        const y0 = Math.max(0, Math.round(b.y)), y1 = Math.min(h, Math.round(b.y + b.height));
+        const span = Math.max(1, x1 - x0);
+        const bands: { s: number; e: number }[] = [];
+        let inBand = false, start = 0;
+        for (let y = y0; y < y1; y++) {
+            let ink = 0;
+            for (let x = x0; x < x1; x++) if (mask[(y * w + x) * 4] < 128) ink++;
+            // A real tile row fills a good part of its own width; a divider rule
+            // crossing the box contributes almost nothing at this scale.
+            if (ink > span * 0.12) { if (!inBand) { inBand = true; start = y; } }
+            else if (inBand) { inBand = false; if (y - start > h * 0.04) bands.push({ s: start, e: y }); }
+        }
+        if (inBand && y1 - start > h * 0.04) bands.push({ s: start, e: y1 });
+        if (bands.length < 2) { out.push(b); continue; }
+        for (const band of bands) out.push({ x: b.x, y: band.s, width: b.width, height: band.e - band.s });
+    }
+    return out;
+}
+
+/**
+ * Segment an ink mask into boxes: horizontal bands, then columns within each.
+ *
+ * Deliberately NOT detectBoxes. That one starts a band from about two inked
+ * pixels in a scanline, which is right for a scanned page of line art and far
+ * too eager on a rendered frame, where a dashed divider or a drop shadow is
+ * enough to join everything together. These thresholds want a real share of the
+ * width before they believe in a row.
+ */
+function segmentFrameMask(mask: Uint8ClampedArray, w: number, h: number): SymbolTile[] {
+    const inked = (x: number, y: number) => mask[(y * w + x) * 4] < 128 ? 1 : 0;
+    const bands: { s: number; e: number }[] = [];
+    let inBand = false, start = 0;
+    for (let y = 0; y < h; y++) {
+        let c = 0;
+        for (let x = 0; x < w; x++) c += inked(x, y);
+        if (c > w * 0.05) { if (!inBand) { inBand = true; start = y; } }
+        else if (inBand) { inBand = false; if (y - start > h * 0.05) bands.push({ s: start, e: y }); }
+    }
+    if (inBand && h - start > h * 0.05) bands.push({ s: start, e: h });
+
+    const out: SymbolTile[] = [];
+    for (const band of bands) {
+        const bh = band.e - band.s;
+        let inCol = false, cs = 0;
+        for (let x = 0; x < w; x++) {
+            let c = 0;
+            for (let y = band.s; y < band.e; y++) c += inked(x, y);
+            if (c > bh * 0.25) { if (!inCol) { inCol = true; cs = x; } }
+            else if (inCol) { inCol = false; if (x - cs > w * 0.03) out.push({ x: cs, y: band.s, width: x - cs, height: bh }); }
+        }
+        if (inCol && w - cs > w * 0.03) out.push({ x: cs, y: band.s, width: w - cs, height: bh });
+    }
+    return out;
+}
+
+function detectFrameTiles(img: HTMLImageElement): FrameBox[] {
+    const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
+    if (!nw || !nh) return [];
+    const w = Math.min(nw, FRAME_DETECT_W);
+    const h = Math.max(1, Math.round(nh * (w / nw)));
+    const mask = frameInkMask(imagePixels(img, w, h), w, h);
+    const raw = splitStackedBoxes(mask, w, h, segmentFrameMask(mask, w, h));
+    const boxes = raw
+        // Ignore slivers, and anything spanning almost the whole frame in either
+        // direction — that is a band wash or a divider rule, never a tile. The
+        // height guard is what rejects the box wrapping both voices of a canon.
+        .filter(b => b.width > w * 0.06 && b.height > h * 0.08
+                  && b.width < w * 0.92 && b.height < h * 0.9)
         .map(b => ({ x: b.x / w, y: b.y / h, w: b.width / w, h: b.height / h }));
+    return dropContainerBoxes(boxes);
+}
+
+/**
+ * Throw away any box that wholly contains another one.
+ *
+ * The row pass in detectBoxes treats a scanline as "ink" from about two pixels,
+ * so a canon's dashed divider or a voice-label pill is enough to weld separate
+ * rows into one band. The band then comes back as a box wrapping several real
+ * tiles, and cropping to it yields the tile-inside-a-tile pictures a canon
+ * section produces today. A tile never contains another tile, so a container is
+ * always the wrong answer — keep the innermost boxes.
+ */
+function dropContainerBoxes(boxes: FrameBox[]): FrameBox[] {
+    if (boxes.length < 2) return boxes;
+    const pad = 0.01;   // tolerance, in frame fractions, for near-coincident edges
+    const contains = (a: FrameBox, b: FrameBox) =>
+        a.x <= b.x + pad && a.y <= b.y + pad &&
+        a.x + a.w >= b.x + b.w - pad && a.y + a.h >= b.y + b.h - pad &&
+        a.w * a.h > b.w * b.h * 1.2;   // strictly bigger, not just rounding noise
+    const kept = boxes.filter(a => !boxes.some(b => b !== a && contains(a, b)));
+    return kept.length ? kept : boxes;
 }
 
 // Best default among the detected tiles: the one nearest the centre of the
 // frame, breaking ties by area. In a conveyor that is the active tile; in a
 // canon it is whichever voice row sits closest to the middle, and the others are
 // one tap away.
-function bestTileBox(boxes: { x: number; y: number; w: number; h: number }[]) {
+function bestTileBox(boxes: FrameBox[]) {
     let best = null, bestScore = -Infinity;
     for (const b of boxes) {
         const dx = (b.x + b.w / 2) - 0.5, dy = (b.y + b.h / 2) - 0.5;
         const score = b.w * b.h * 2 - Math.hypot(dx, dy);
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+
+/**
+ * Which box on THIS frame corresponds to the tile the user picked.
+ *
+ * Scored on shape first, then position: a video whose layout changes partway —
+ * a canon section splitting one row of tiles into two voice rows — moves the
+ * tile without resizing it much, so size similarity is the more reliable signal.
+ * `previous` pulls the choice towards last frame's answer, which is what keeps
+ * the crop locked to ONE voice through a canon instead of flipping between two
+ * near-identical rows.
+ */
+function matchFrameBox(boxes: FrameBox[], reference: FrameBox, previous: FrameBox | null): FrameBox | null {
+    if (!boxes.length) return null;
+    const mid = (b: FrameBox) => [b.x + b.w / 2, b.y + b.h / 2];
+    const [rx, ry] = mid(reference);
+    let best: FrameBox | null = null, bestScore = -Infinity;
+    for (const b of boxes) {
+        const [bx, by] = mid(b);
+        // 1 when the box is the same shape as the reference, falling off with
+        // relative difference in each dimension.
+        const shape = 1 - Math.min(1, (Math.abs(b.w - reference.w) / Math.max(0.01, reference.w)
+                                     + Math.abs(b.h - reference.h) / Math.max(0.01, reference.h)) / 2);
+        const near = 1 - Math.min(1, Math.hypot(bx - rx, by - ry));
+        let score = shape * 2 + near;
+        if (previous) {
+            const [px, py] = mid(previous);
+            score += (1 - Math.min(1, Math.hypot(bx - px, by - py))) * 1.5;
+        }
         if (score > bestScore) { bestScore = score; best = b; }
     }
     return best;
@@ -1810,7 +2043,32 @@ function cropDataUrl(dataUrl: string, crop: { x: number; y: number; w: number; h
     });
 }
 
-// Apply the crop box (as drawn on the first frame) to every captured frame.
+/** Decode a data URL to an image, for detection. */
+function loadDataUrlImage(dataUrl: string): Promise<HTMLImageElement | null> {
+    return new Promise(resolve => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    });
+}
+
+/**
+ * Crop every captured frame to the tile the user picked — finding that tile on
+ * each frame rather than stamping one rectangle over all of them.
+ *
+ * A fixed rectangle only works while the video's layout holds still. It does not:
+ * a See Song recording puts one row of tiles on screen, then a canon section
+ * splits into two voice rows and the tile moves. The old behaviour cropped every
+ * later frame to wherever the tile used to be, which is what produced the
+ * tile-inside-a-tile pictures from the canon section onwards.
+ *
+ * Each frame is detected independently and matched against the chosen box, with
+ * a pull towards the previous frame's answer so the crop stays locked to one
+ * voice instead of alternating between two near-identical rows. Frames where
+ * nothing is found fall back to the fixed rectangle, which is no worse than
+ * before.
+ */
 async function applyVideoCrop() {
     const box = document.getElementById('video-crop-box') as HTMLElement | null;
     const img = document.getElementById('video-crop-img') as HTMLImageElement | null;
@@ -1818,16 +2076,38 @@ async function applyVideoCrop() {
     if (!box || !img || box.style.display === 'none') return;
     const iw = img.clientWidth, ih = img.clientHeight;
     if (!iw || !ih) return;
-    const crop = {
+    const reference: FrameBox = {
         x: Math.max(0, box.offsetLeft / iw),
         y: Math.max(0, box.offsetTop / ih),
         w: Math.min(1, box.offsetWidth / iw),
         h: Math.min(1, box.offsetHeight / ih),
     };
-    if (status) status.textContent = 'Cropping…';
-    _videoCroppedUrls = await Promise.all(_videoCandidates.map(c => cropDataUrl(c.dataUrl, crop)));
+
+    const total = _videoCandidates.length;
+    const urls: string[] = [];
+    let tracked = 0;
+    let previous: FrameBox | null = null;
+    for (let i = 0; i < total; i++) {
+        if (status) status.textContent = `Finding the tile on frame ${i + 1} of ${total}…`;
+        const cand = _videoCandidates[i];
+        let crop = reference;
+        const im = await loadDataUrlImage(cand.dataUrl);
+        if (im) {
+            const match = matchFrameBox(detectFrameTiles(im), reference, previous);
+            if (match) { crop = match; previous = match; tracked++; }
+        }
+        urls.push(await cropDataUrl(cand.dataUrl, crop));
+        // Let the status text actually paint between frames.
+        if ((i & 3) === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    _videoCroppedUrls = urls;
     renderVideoGrid();
-    if (status) status.textContent = `Cropped ${_videoCroppedUrls.length} frame${_videoCroppedUrls.length === 1 ? '' : 's'} to the tile area.`;
+    if (status) {
+        const missed = total - tracked;
+        status.textContent = `Cropped ${total} frame${total === 1 ? '' : 's'}. `
+            + `Found the tile on ${tracked}`
+            + (missed ? `, and used your box for the other ${missed}.` : ' of them.');
+    }
 }
 
 function resetVideoCrop() {
