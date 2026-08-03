@@ -2032,11 +2032,54 @@ function updateToolbarUI() {
     const count = appState.interaction.selectedIndices.size;
     dom.define.btnDelete.textContent = count > 0 ? `Delete Selected (${count})` : "Delete Selected";
 }
+// Scale that makes the songboard fit the width it has to live in.
+//
+// A rendered PDF page is commonly 1600px+ wide. Sizing the canvas straight off
+// page.width made the element that many CSS px across, which the container then
+// grew to fit, so the whole document overflowed sideways — and a phone responds
+// to a wide document by zooming out to fit it, shrinking the entire interface.
+// That is the "malformed display size": the app was not laid out wrongly, it was
+// being scaled down to accommodate one oversized canvas. The Order stage already
+// fits to its container (see setupOrderView); this brings Define into line.
+// Cached rather than recomputed on demand: drawCanvas and the pointer handlers
+// must use exactly the scale the canvas was sized with, or the drawing and the
+// hit-testing drift apart. Recomputing from clientWidth would also be circular,
+// because the canvas is itself part of what determines that width.
+let _defineFit = 1;
+function defineFitScale(): number {
+    return _defineFit;
+}
+
+// Total scale from page coordinates to canvas pixels: fit to the container, then
+// apply the user's zoom on top. Zoom still enlarges — the container scrolls.
+function defineScale(): number {
+    return defineFitScale() * appState.interaction.zoomLevel;
+}
+
 function resizeCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    dom.define.canvas.width = page.width * appState.interaction.zoomLevel;
-    dom.define.canvas.height = page.height * appState.interaction.zoomLevel;
+    const canvas = dom.define.canvas;
+    const container = dom.define.canvasContainer;
+    if (container && page.width) {
+        // Collapse the canvas AND its container before measuring, then read the
+        // space the parent actually has. Measuring the container directly is no
+        // good once it has already been propped open by an oversized canvas —
+        // it reports the inflated width, we fit to that, and the document stays
+        // too wide, which is what makes a phone zoom the whole interface out.
+        const prevCanvas = canvas.style.width;
+        const prevContainer = container.style.width;
+        canvas.style.width = '0px';
+        container.style.width = '0px';
+        const parent = container.parentElement as HTMLElement | null;
+        const avail = parent ? parent.clientWidth : container.clientWidth;
+        container.style.width = prevContainer;
+        canvas.style.width = prevCanvas;
+        if (avail > 0) _defineFit = avail / page.width;
+    }
+    const s = defineScale();
+    canvas.width = page.width * s;
+    canvas.height = page.height * s;
     drawCanvas();
 }
 function drawCanvas() {
@@ -2044,11 +2087,12 @@ function drawCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page || !ctx) return;
     ctx.save();
-    ctx.scale(appState.interaction.zoomLevel, appState.interaction.zoomLevel);
+    const dScale = defineScale();
+    ctx.scale(dScale, dScale);
     ctx.clearRect(0, 0, page.width, page.height);
     ctx.drawImage(page.image, 0, 0);
     
-    ctx.lineWidth = 4 / appState.interaction.zoomLevel;
+    ctx.lineWidth = 4 / dScale;
     page.symbols.forEach((s: any, idx: number) => {
         // Render custom image if present
         if (s.customImage) {
@@ -2065,7 +2109,7 @@ function drawCanvas() {
 
         // Draw Resize Handle for selected
         if (appState.interaction.selectedIndices.has(idx)) {
-            const handleSize = 10 / appState.interaction.zoomLevel;
+            const handleSize = 10 / dScale;
             ctx.fillStyle = '#1a73e8';
             ctx.fillRect(s.x + s.width - handleSize/2, s.y + s.height - handleSize/2, handleSize, handleSize);
         }
@@ -2074,10 +2118,10 @@ function drawCanvas() {
     // Marquee
     if (appState.interaction.dragAction === 'marquee' && appState.interaction.isDragging) {
          const {marqueeStart: s, marqueeCurrent: c} = appState.interaction;
-         const x = Math.min(s.x, c.x) * appState.interaction.zoomLevel;
-         const y = Math.min(s.y, c.y) * appState.interaction.zoomLevel;
-         const w = Math.abs(c.x - s.x) * appState.interaction.zoomLevel;
-         const h = Math.abs(c.y - s.y) * appState.interaction.zoomLevel;
+         const x = Math.min(s.x, c.x) * dScale;
+         const y = Math.min(s.y, c.y) * dScale;
+         const w = Math.abs(c.x - s.x) * dScale;
+         const h = Math.abs(c.y - s.y) * dScale;
          ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
 }
@@ -2134,7 +2178,7 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     }
 
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
     
@@ -2201,7 +2245,7 @@ function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
     if (!appState.interaction.isDragging || appState.interaction.dragAction === 'none') return;
     
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
     const page = appState.pages[appState.currentPageIndex];
