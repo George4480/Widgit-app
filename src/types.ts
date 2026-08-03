@@ -146,11 +146,17 @@ export type ScaffoldMaskMode = 'blank' | 'symbol' | 'word' | 'alternate';
 
 /**
  * Staged scaffold removal: progressively strip the tiles themselves back across
- * numbered, cumulative practice levels to support recall and independent
- * singing. Which tiles are affected at each level lives on
+ * numbered, cumulative practice STAGES to support recall and independent
+ * singing. Which tiles are affected at each stage lives on
  * SequenceStep.removalLevel; how much of an affected tile is taken away is the
- * level's ScaffoldMaskMode. This holds the feature's configuration and the
+ * stage's ScaffoldMaskMode. This holds the feature's configuration and the
  * transient preview/assignment UI state.
+ *
+ * Note on naming: the interface says "stage" throughout — "level" ranks a child
+ * by what they cannot yet do, which is the wrong idea for a practice sequence.
+ * The FIELD names below still say "level" because they are written into saved
+ * project files; renaming them would strand every project already saved. Stored
+ * name is historical, the user-facing word is "stage".
  */
 export interface ScaffoldConfig {
     enabled: boolean;

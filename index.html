@@ -1691,10 +1691,10 @@
         }
         .scaffold-lbl { font-weight: 600; font-size: 0.82rem; }
         .scaffold-status { font-size: 0.8rem; color: var(--text-muted); margin: 8px 0 0; min-height: 1.1em; }
-        /* When arming a level, hint that nav-strip taps now assign. */
+        /* When arming a stage, hint that nav-strip taps now assign. */
         .symbol-nav-strip.scaffold-assigning { outline: 2px dashed var(--primary); outline-offset: 2px; }
         .symbol-nav-strip.scaffold-assigning .nav-symbol-item { cursor: cell; }
-        /* Removal-level badge (top-right) — text label, not colour-only. */
+        /* Removal-stage badge (top-right) — text label, not colour-only. */
         .nav-symbol-item .scaffold-badge {
             position: absolute;
             top: 2px;
@@ -1707,7 +1707,7 @@
             border-radius: 4px;
             z-index: 4;
         }
-        /* A tile stripped back at the current preview level. The hatch covers the
+        /* A tile stripped back at the current preview stage. The hatch covers the
            part that is actually taken away, so the strip shows the same split as
            the video: whole tile, the word band, or everything above it. */
         .nav-symbol-item.scaffold-masked::after {
@@ -1723,6 +1723,16 @@
         .nav-symbol-item.scaffold-masked.mask-symbol::after { top: auto; height: 30%; }
         .nav-symbol-item.scaffold-masked.mask-word::after { bottom: auto; height: 62%; }
         #scaffold-level-section .seg-group { margin-top: 4px; }
+        /* Stage picker: which stages get their own video file. */
+        .stage-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+        .stage-picker label {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 8px 12px; min-height: 42px; box-sizing: border-box;
+            border: 1px solid var(--border, #ccc); border-radius: 8px;
+            font-size: 0.85rem; font-weight: 600; cursor: pointer; background: var(--surface, #fff);
+        }
+        .stage-picker label:has(input:checked) { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+        .stage-picker input { width: 16px; height: 16px; margin: 0; }
         #scaffold-mode-buttons button, #scaffold-result-mode-buttons button { white-space: nowrap; }
 
         /* ---- Round/Canon trigger-point pickers (tap a tile directly) ---- */
@@ -2228,7 +2238,7 @@
         </div>
 
         <!-- Staged scaffold removal: progressively hide selected cues across
-             numbered practice levels to support recall and independent singing. -->
+             numbered practice stages to support recall and independent singing. -->
         <div class="scaffold-panel">
             <label class="round-toggle" style="align-items:center;">
                 <input type="checkbox" id="scaffold-enabled">
@@ -2237,19 +2247,19 @@
                 </span>
             </label>
             <div id="scaffold-body" style="display:none;">
-                <p class="scaffold-instr">Choose a level, then tap the tiles it applies to. Set how far that level strips a tile back below.</p>
+                <p class="scaffold-instr">Choose a stage, then tap the tiles it applies to. Set how far that stage strips a tile back below.</p>
                 <div class="scaffold-row" id="scaffold-level-section">
-                    <span class="scaffold-lbl">Assign level:</span>
-                    <span id="scaffold-level-buttons" class="seg-group" role="group" aria-label="Scaffold assignment level"></span>
-                    <button id="scaffold-add-level" type="button" class="button secondary small" style="margin:0;" title="Add another practice level">+ Add level</button>
+                    <span class="scaffold-lbl">Assign stage:</span>
+                    <span id="scaffold-level-buttons" class="seg-group" role="group" aria-label="Scaffold assignment stage"></span>
+                    <button id="scaffold-add-level" type="button" class="button secondary small" style="margin:0;" title="Add another practice stage">+ Add stage</button>
                 </div>
                 <div class="scaffold-row">
                     <span class="scaffold-lbl">Preview:</span>
-                    <span id="scaffold-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                    <span id="scaffold-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview stage"></span>
                 </div>
                 <div class="scaffold-row">
-                    <span class="scaffold-lbl">Level <span id="scaffold-mode-level">1</span> shows:</span>
-                    <span id="scaffold-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                    <span class="scaffold-lbl">Stage <span id="scaffold-mode-level">1</span> shows:</span>
+                    <span id="scaffold-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this stage"></span>
                 </div>
                 <div class="scaffold-row" id="scaffold-band-row">
                     <span class="scaffold-lbl">Word strip:</span>
@@ -2259,8 +2269,8 @@
                     <span class="section-note" style="margin:0; flex-basis:100%;">Where the word ends and the picture begins. Nudge it if the split lands in the wrong place on your board.</span>
                 </div>
                 <div class="scaffold-row">
-                    <button id="scaffold-apply-matching" type="button" class="button secondary small" style="margin:0;" title="Apply the last-tapped tile's level to every other occurrence of the same symbol">Apply to matching occurrences</button>
-                    <button id="scaffold-clear-level" type="button" class="button secondary small" style="margin:0;" title="Remove all assignments at the chosen level">Clear selected level</button>
+                    <button id="scaffold-apply-matching" type="button" class="button secondary small" style="margin:0;" title="Apply the last-tapped tile's stage to every other occurrence of the same symbol">Apply to matching occurrences</button>
+                    <button id="scaffold-clear-level" type="button" class="button secondary small" style="margin:0;" title="Remove all assignments at the chosen stage">Clear selected stage</button>
                     <button id="scaffold-clear-all" type="button" class="button secondary small" style="margin:0; color:#c5221f;" title="Remove every scaffold assignment">Clear all</button>
                 </div>
                 <p id="scaffold-status" class="scaffold-status" role="status" aria-live="polite"></p>
@@ -2344,27 +2354,36 @@
                 <label class="round-toggle" style="align-items:center;">
                     <input type="checkbox" id="scaffold-result-enabled">
                     <span>Enable staged scaffold removal
-                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles each level applies to back on the <strong>Synchronize</strong> step; set the level, how far it strips them back, and export from here.</span>
+                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles each stage applies to back on the <strong>Synchronize</strong> step; set the stage, how far it strips them back, and export from here.</span>
                     </span>
                 </label>
-                <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on to preview each practice level and export a progressive practice video.</p>
+                <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on to preview each practice stage and export a set of practice videos.</p>
                 <div id="scaffold-result-controls">
                     <div class="setting-item">
-                        <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
-                        <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                        <label>Practice stage <span class="section-note">what the preview and a normal export show</span></label>
+                        <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview stage"></span>
                     </div>
                     <div class="setting-item">
-                        <label>Level <span id="scaffold-result-mode-level">1</span> shows <span class="section-note">how far the tiles are stripped back at this level</span></label>
-                        <span id="scaffold-result-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                        <label>Stage <span id="scaffold-result-mode-level">1</span> shows <span class="section-note">how far the tiles are stripped back at this stage</span></label>
+                        <span id="scaffold-result-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this stage"></span>
                     </div>
                     <div class="setting-item" id="scaffold-result-band-row">
                         <label>Word strip <span id="scaffold-result-band-value" class="section-note"></span></label>
                         <input type="range" id="scaffold-result-word-band" min="15" max="50" step="1" value="30" style="width:100%;"
                                aria-label="Height of the word strip at the bottom of a tile">
                     </div>
+                    <!-- One video per stage. A single long video means hunting for
+                         the right timestamp mid-lesson; a file per stage is one you
+                         just press play on. -->
                     <div class="setting-item">
-                        <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
-                        <p class="section-note" style="margin-left:0; margin-top:6px;">One continuous video that plays the song at full support, then repeats it at each level in turn — a short title card announces each level before the song restarts.</p>
+                        <label>Practice videos <span class="section-note">one file per stage, ready to play</span></label>
+                        <div id="stage-export-picker" class="stage-picker" role="group" aria-label="Stages to export"></div>
+                        <button id="btn-export-stages" type="button" class="button" style="margin:10px 0 0; background: var(--primary); color:#fff;">🎬 Export practice videos</button>
+                        <p id="stage-export-note" class="section-note" style="margin-left:0; margin-top:6px;"></p>
+                    </div>
+                    <div class="setting-item">
+                        <button id="btn-export-progressive" type="button" class="button secondary" style="margin:0;">Export as one continuous video</button>
+                        <p class="section-note" style="margin-left:0; margin-top:6px;">The older format: a single video that plays the song at full support, then repeats it at each stage in turn, with a title card between. Useful for a run-through; harder to jump into a particular stage.</p>
                     </div>
                 </div>
             </div>
@@ -2593,8 +2612,15 @@
     <!-- Rendering Overlay -->
     <div id="rendering-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; justify-content: center; align-items: center; flex-direction: column;">
         <div class="loader" style="border-top-color: var(--primary-text); width: 60px; height: 60px;"></div>
-        <h3 style="color: white; margin-top: 20px;">Rendering Video...</h3>
-        <p id="rendering-progress-text" style="color: #ddd;">0%</p>
+        <h3 id="rendering-title" style="color: white; margin-top: 20px;">Rendering video…</h3>
+        <p id="rendering-progress-text" style="color: #ddd; margin: 0 0 10px;">0%</p>
+        <!-- A render can run for minutes; a bar and a time estimate say whether
+             it is worth waiting, and Cancel means you are not stuck with it. -->
+        <div style="width: min(340px, 76vw); height: 8px; background: rgba(255,255,255,0.2); border-radius: 4px; overflow: hidden;">
+            <div id="rendering-progress-bar" style="width: 0%; height: 100%; background: var(--primary-text, #fff); transition: width 0.25s linear;"></div>
+        </div>
+        <p id="rendering-eta" style="color: #aaa; font-size: 0.85rem; margin: 10px 0 0; min-height: 1.2em;"></p>
+        <button id="btn-cancel-render" type="button" class="button secondary small" style="margin-top: 16px;">Cancel</button>
     </div>
 
     <!-- Video Import: processing overlay -->
