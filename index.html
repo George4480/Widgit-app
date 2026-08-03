@@ -1453,6 +1453,16 @@
         }
 
         /* ---- Video-import crop editor ---- */
+        #crop-detected { position:absolute; inset:0; pointer-events:none; }
+        #crop-detected .detected-tile {
+            position:absolute; pointer-events:auto; cursor:pointer;
+            border:2px dashed rgba(22,163,74,.95); border-radius:6px;
+            background:rgba(22,163,74,.10); padding:0; margin:0;
+        }
+        #crop-detected .detected-tile:hover,
+        #crop-detected .detected-tile:focus-visible {
+            background:rgba(22,163,74,.24); border-style:solid;
+        }
         .crop-handle {
             position: absolute; width: 16px; height: 16px;
             background: #fff; border: 2px solid var(--primary);
@@ -2564,15 +2574,25 @@
                      every captured frame to that same region so tiles are uniform. -->
                 <div id="video-crop-editor" style="margin: 6px 0 14px;">
                     <p style="margin:.2em 0; font-weight:600;">1 · Set the tile area <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">(optional)</span></p>
-                    <p style="margin:.2em 0 8px; font-size:.85rem; color:var(--text-muted);">Drag the box over <strong>one tile</strong> on the first frame, then “Apply to all frames”. Every captured frame is cropped to that same area, so the tiles come out the same size. Skip this to keep whole frames.</p>
+                    <p style="margin:.2em 0 8px; font-size:.85rem; color:var(--text-muted);">We look for the tiles on this frame the same way we do on a songboard, and outline what we find. <strong>Tap the tile you want</strong> — every captured frame is cropped to that same area. Step through a few frames to check it lines up, then “Apply to all frames”.</p>
                     <div id="video-crop-stage" style="position:relative; display:inline-block; max-width:100%; touch-action:none; user-select:none; line-height:0;">
-                        <img id="video-crop-img" style="max-width:100%; max-height:40vh; display:block; border-radius:8px;" alt="First captured frame">
+                        <img id="video-crop-img" style="max-width:100%; max-height:40vh; display:block; border-radius:8px;" alt="Captured frame">
+                        <div id="crop-detected"></div>
                         <div id="video-crop-box" style="position:absolute; border:2px solid var(--primary); box-shadow:0 0 0 9999px rgba(0,0,0,.4); box-sizing:border-box; cursor:move; display:none;">
                             <div class="crop-handle" data-h="nw"></div>
                             <div class="crop-handle" data-h="ne"></div>
                             <div class="crop-handle" data-h="sw"></div>
                             <div class="crop-handle" data-h="se"></div>
                         </div>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <button id="btn-crop-prev" class="button secondary small" style="margin:0;" title="Previous captured frame">◀</button>
+                        <span id="crop-frame-label" style="font-size:.8rem; color:var(--text-muted); min-width:11rem;"></span>
+                        <button id="btn-crop-next" class="button secondary small" style="margin:0;" title="Next captured frame">▶</button>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                        <label for="crop-sensitivity" style="font-size:.8rem; font-weight:600; color:var(--text-muted);">Detection sensitivity</label>
+                        <input type="range" id="crop-sensitivity" min="150" max="254" step="2" style="flex:1 1 140px; min-width:0;">
                     </div>
                     <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                         <button id="btn-crop-apply" class="button small" style="margin:0;">✂ Apply to all frames</button>

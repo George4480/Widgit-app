@@ -501,6 +501,20 @@ function setupEventListeners() {
     // Import from video
     const btnImportVideo = document.getElementById('btn-import-video');
     const inputVideo = document.getElementById('input-video-import') as HTMLInputElement;
+    const cropPrev = document.getElementById('btn-crop-prev');
+    const cropNext = document.getElementById('btn-crop-next');
+    const cropSens = document.getElementById('crop-sensitivity') as HTMLInputElement | null;
+    // Stepping frames keeps YOUR box and just re-detects, so you can check the
+    // same crop against several tiles before committing to it.
+    if (cropPrev) cropPrev.addEventListener('click', () => showCropFrame(_cropFrameIdx - 1, false));
+    if (cropNext) cropNext.addEventListener('click', () => showCropFrame(_cropFrameIdx + 1, false));
+    if (cropSens) {
+        cropSens.value = String(appState.gridConfig.contentThreshold);
+        cropSens.addEventListener('change', () => {
+            appState.gridConfig.contentThreshold = parseInt(cropSens.value, 10);
+            showCropFrame(_cropFrameIdx, true);   // re-detect and re-propose
+        });
+    }
     if (btnImportVideo && inputVideo) {
         btnImportVideo.addEventListener('click', () => inputVideo.click());
         inputVideo.addEventListener('change', (e) => {
@@ -1361,7 +1375,7 @@ async function processImageFile(file: File) {
 // project. All processing is local to the browser — nothing is uploaded.
 // ============================================================
 
-let _videoCandidates: { time: number; dataUrl: string }[] = [];
+let _videoCandidates: { time: number; dataUrl: string; content?: number }[] = [];
 let _videoAudioFile: File | null = null;
 // Tile crop defined on the first captured frame (normalized 0..1), applied to
 // every frame so the imported tiles come out uniform. Null = use whole frames.
@@ -1487,7 +1501,18 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
         return worst;
     };
 
-    const results: { time: number; dataUrl: string }[] = [];
+    // `content` = fraction of the frame that is not background. The title card is
+    // near zero; a frame with tiles on it is not. Computed from the downscaled
+    // probe we already have, so it costs nothing.
+    const contentRatio = (px: Uint8ClampedArray) => {
+        const bg = [px[0], px[1], px[2]];
+        let on = 0;
+        for (let i = 0; i < px.length; i += 4) {
+            if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 40) on++;
+        }
+        return on / (SW * SH);
+    };
+    const results: { time: number; dataUrl: string; content: number }[] = [];
     let lastKept: Uint8ClampedArray | null = null;
     let prevProbe: Uint8ClampedArray | null = null;
     let pending = 0;
@@ -1504,7 +1529,7 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
             // probes of sustained change so we never miss a fast/uneasy transition.
             if (motion <= SETTLED || pending >= 3) {
                 fctx.drawImage(video, 0, 0, full.width, full.height);
-                results.push({ time: t, dataUrl: full.toDataURL('image/png') });
+                results.push({ time: t, dataUrl: full.toDataURL('image/png'), content: contentRatio(cur) });
                 lastKept = cur.slice();
                 pending = 0;
                 setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
@@ -1531,11 +1556,81 @@ function renderVideoGrid() {
     _videoCandidates.forEach((c, i) => {
         const cell = document.createElement('label');
         cell.className = 'vframe';
+        // A near-empty capture is the title card or a fade, not a tile. Leave it
+        // unticked rather than making you spot it and untick it yourself.
+        const blank = (c.content ?? 1) < 0.02;
         cell.innerHTML =
-            `<input type="checkbox" data-idx="${i}" checked>` +
+            `<input type="checkbox" data-idx="${i}"${blank ? '' : ' checked'}>` +
             `<img src="${urls[i]}" alt="frame at ${c.time.toFixed(1)}s">` +
-            `<span class="vframe-time">${c.time.toFixed(1)}s</span>`;
+            `<span class="vframe-time">${c.time.toFixed(1)}s${blank ? ' · blank' : ''}</span>`;
         grid.appendChild(cell);
+    });
+}
+
+// Run the app's own tile detection over a captured video frame, exactly as it
+// runs over a PDF page, and return the boxes it finds as fractions of the frame.
+// This is the same code path and the same sensitivity setting the Refine Grid
+// stage uses, so what it finds here is what it would find there.
+function detectFrameTiles(img: HTMLImageElement): { x: number; y: number; w: number; h: number }[] {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!w || !h) return [];
+    const boxes = detectBoxes(imagePixels(img, w, h), w, h, appState.gridConfig.contentThreshold);
+    return boxes
+        // Ignore slivers and anything spanning almost the whole frame (a band
+        // wash or a divider rule rather than a tile).
+        .filter(b => b.width > w * 0.06 && b.height > h * 0.08 && b.width < w * 0.92)
+        .map(b => ({ x: b.x / w, y: b.y / h, w: b.width / w, h: b.height / h }));
+}
+
+// Best default among the detected tiles: the one nearest the centre of the
+// frame, breaking ties by area. In a conveyor that is the active tile; in a
+// canon it is whichever voice row sits closest to the middle, and the others are
+// one tap away.
+function bestTileBox(boxes: { x: number; y: number; w: number; h: number }[]) {
+    let best = null, bestScore = -Infinity;
+    for (const b of boxes) {
+        const dx = (b.x + b.w / 2) - 0.5, dy = (b.y + b.h / 2) - 0.5;
+        const score = b.w * b.h * 2 - Math.hypot(dx, dy);
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+
+// Which captured frame the crop editor is currently showing.
+let _cropFrameIdx = 0;
+
+function setCropBox(box: { x: number; y: number; w: number; h: number }, iw: number, ih: number) {
+    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
+    if (!cropBox) return;
+    cropBox.style.display = 'block';
+    cropBox.style.left = `${Math.round(box.x * iw)}px`;
+    cropBox.style.top = `${Math.round(box.y * ih)}px`;
+    cropBox.style.width = `${Math.round(box.w * iw)}px`;
+    cropBox.style.height = `${Math.round(box.h * ih)}px`;
+}
+
+// Draw an outline over every detected tile. Tapping one snaps the crop box to it.
+function renderDetectedTiles(boxes: { x: number; y: number; w: number; h: number }[], iw: number, ih: number) {
+    const layer = document.getElementById('crop-detected');
+    if (!layer) return;
+    layer.innerHTML = '';
+    boxes.forEach(b => {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'detected-tile';
+        el.title = 'Use this tile';
+        el.setAttribute('aria-label', 'Use this tile');
+        el.style.left = `${b.x * iw}px`;
+        el.style.top = `${b.y * ih}px`;
+        el.style.width = `${b.w * iw}px`;
+        el.style.height = `${b.h * ih}px`;
+        el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setCropBox(b, iw, ih);
+            const st = document.getElementById('crop-status');
+            if (st) st.textContent = 'Tile chosen. Check it on another frame, then apply.';
+        });
+        layer.appendChild(el);
     });
 }
 
@@ -1545,30 +1640,64 @@ function openVideoPicker() {
     const status = document.getElementById('crop-status');
     if (status) status.textContent = '';
 
-    // Load the first captured frame into the crop editor and drop a default box.
     const cropEditor = document.getElementById('video-crop-editor');
-    const cropImg = document.getElementById('video-crop-img') as HTMLImageElement | null;
-    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
-    if (cropEditor && cropImg && cropBox) {
+    if (cropEditor) {
+        cropEditor.style.display = _videoCandidates.length > 0 ? '' : 'none';
         if (_videoCandidates.length > 0) {
-            cropEditor.style.display = '';
-            cropImg.onload = () => {
-                const iw = cropImg.clientWidth, ih = cropImg.clientHeight;
-                const bw = iw * 0.5, bh = ih * 0.55;
-                cropBox.style.display = 'block';
-                cropBox.style.left = `${Math.round((iw - bw) / 2)}px`;
-                cropBox.style.top = `${Math.round((ih - bh) / 2)}px`;
-                cropBox.style.width = `${Math.round(bw)}px`;
-                cropBox.style.height = `${Math.round(bh)}px`;
-            };
-            cropImg.src = _videoCandidates[0].dataUrl;
-        } else {
-            cropEditor.style.display = 'none';
+            // Open on a frame that actually HAS a tile on it. The first capture is
+            // usually the title card — a flat colour with nothing to aim at, which
+            // left you positioning the box by guesswork.
+            _cropFrameIdx = 0;
+            showCropFrame(firstContentfulFrame(), true);
         }
     }
 
     renderVideoGrid();
     document.getElementById('video-picker-overlay')!.style.display = 'flex';
+}
+
+// Index of the first captured frame with real content on it. Falls back to the
+// first frame if every capture looks flat.
+function firstContentfulFrame(): number {
+    let best = 0, bestVal = -1;
+    for (let i = 0; i < _videoCandidates.length; i++) {
+        const c = _videoCandidates[i].content ?? 1;
+        if (c > 0.06) return i;            // first frame with real content wins
+        if (c > bestVal) { bestVal = c; best = i; }
+    }
+    return best;
+}
+
+// Put a captured frame in the crop editor. With `autoBox`, the tile region is
+// detected and the box placed on it; otherwise the current box is left alone so
+// you can step through frames and check your own box against several tiles.
+function showCropFrame(idx: number, autoBox: boolean) {
+    const cropImg = document.getElementById('video-crop-img') as HTMLImageElement | null;
+    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
+    const cap = document.getElementById('crop-frame-label');
+    if (!cropImg || !cropBox || !_videoCandidates.length) return;
+    _cropFrameIdx = Math.max(0, Math.min(_videoCandidates.length - 1, idx));
+    const cand = _videoCandidates[_cropFrameIdx];
+    cropImg.onload = () => {
+        const iw = cropImg.clientWidth, ih = cropImg.clientHeight;
+        // Detect the tiles on this frame with the app's own detector and offer
+        // them as tappable outlines, so choosing one is a tap rather than an
+        // exercise in eyeballing a rectangle.
+        const found = detectFrameTiles(cropImg);
+        renderDetectedTiles(found, iw, ih);
+        if (autoBox) {
+            const box = bestTileBox(found) || { x: 0.25, y: 0.22, w: 0.5, h: 0.55 };
+            setCropBox(box, iw, ih);
+        }
+        const st = document.getElementById('crop-status');
+        if (st) {
+            st.textContent = found.length
+                ? `Found ${found.length} tile${found.length === 1 ? '' : 's'} on this frame — tap the one you want, or drag the box.`
+                : 'No tiles found on this frame — try another frame, or drag the box yourself.';
+        }
+        if (cap) cap.textContent = `Frame ${_cropFrameIdx + 1} of ${_videoCandidates.length} · ${cand.time.toFixed(1)}s`;
+    };
+    cropImg.src = cand.dataUrl;
 }
 
 // Crop a data URL to a normalized region, returning a new data URL.
@@ -2129,23 +2258,12 @@ function drawCanvas() {
          ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
 }
-function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: boolean = true) {
-    const page = appState.pages[pageIndex];
-    if (!page) return;
-    page.symbols = []; // Clear previous
-    page.sequence = [];
-    pruneGlobalSequence(pageIndex, { clearPage: true });
-    invalidatePageThumbs(pageIndex);
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = page.width; tempCanvas.height = page.height;
-    const ctx = tempCanvas.getContext('2d');
-    ctx.drawImage(page.image, 0, 0);
-    const data = ctx.getImageData(0, 0, page.width, page.height).data;
-    const w = page.width; const h = page.height;
-    const threshold = appState.gridConfig.contentThreshold;
-
-    // Simplified Grid Logic
+// The tile detector, as a pure function over pixels. Extracted from
+// runGridDetection so the video import can run the SAME detection on a captured
+// frame that a PDF page gets — one algorithm, one sensitivity slider, one set of
+// behaviours to learn, instead of a separate crop-a-rectangle-by-eye flow.
+function detectBoxes(data: Uint8ClampedArray, w: number, h: number, threshold: number): SymbolTile[] {
+    const out: SymbolTile[] = [];
     let rows = [], inRow = false, startY = 0;
     for (let y = 0; y < h; y++) {
         let count = 0;
@@ -2167,10 +2285,32 @@ function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: b
                 if (data[idx] < threshold || data[idx+1] < threshold || data[idx+2] < threshold) count++;
             }
             if (count > (r.e-r.s)*0.002) { if(!inCol) { inCol=true; startX=x; } }
-            else { if(inCol) { inCol=false; if(x-startX > 20) page.symbols.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
+            else { if(inCol) { inCol=false; if(x-startX > 20) out.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
         }
-        if(inCol && w-startX>20) page.symbols.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
+        if(inCol && w-startX>20) out.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
     });
+    return out;
+}
+
+// Pixels of any image, ready for detectBoxes.
+function imagePixels(img: HTMLImageElement | HTMLCanvasElement, w: number, h: number): Uint8ClampedArray {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.drawImage(img, 0, 0, w, h);
+    return g.getImageData(0, 0, w, h).data;
+}
+
+function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: boolean = true) {
+    const page = appState.pages[pageIndex];
+    if (!page) return;
+    page.symbols = []; // Clear previous
+    page.sequence = [];
+    pruneGlobalSequence(pageIndex, { clearPage: true });
+    invalidatePageThumbs(pageIndex);
+
+    const data = imagePixels(page.image, page.width, page.height);
+    page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
     if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
