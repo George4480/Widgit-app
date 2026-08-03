@@ -98,8 +98,31 @@ export interface StyleConfig {
      * -1 means sing on to the end of the song, which is the default.
      */
     canonEnds: number[];
+    /**
+     * Tail loop: a short phrase the voices repeat at the end so a canon can
+     * finish in unison instead of each voice simply stopping when it runs out
+     * of line. 0-based tile indices into the reading order; -1 = no loop.
+     */
+    canonLoopStart: number;
+    canonLoopEnd: number;
+    /**
+     * How many times the LEADER repeats that phrase. 0 = work it out
+     * automatically, which is almost always what you want: a voice N tiles
+     * behind needs exactly N tiles of vamp to catch up, so the count follows
+     * from the tile offsets and the loop length rather than being guessed.
+     * Following voices repeat proportionally fewer times, so every voice runs
+     * out of music at the same moment.
+     */
+    canonLoopRepeats: number;
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
+    /**
+     * Resolution of the EXPORTED video, as a key into EXPORT_SIZES ('720' |
+     * '1080'). The on-screen preview is always 640x360; this only affects the
+     * rendered file. Absent in projects saved before the setting existed, which
+     * load as '720'.
+     */
+    exportRes: string;
     // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
     // excluding header/footer logos), glow-highlight the current tile, and
     // scroll down continuously as the song progresses. Alternative to conveyor.
@@ -107,15 +130,44 @@ export interface StyleConfig {
 }
 
 /**
- * Staged scaffold removal: progressively hide visual prompts across numbered,
- * cumulative practice levels to support recall and independent singing. The
- * per-occurrence assignments live on SequenceStep.removalLevel; this holds the
- * feature's configuration and transient preview/assignment UI state.
+ * How much of a masked tile is taken away. A Widgit tile is a picture with its
+ * word underneath, and the two are worth removing separately — taking the word
+ * away leaves a symbol to read, taking the symbol away leaves text to read, and
+ * they are different skills.
+ *
+ *   'blank'     — background colour only: no picture, no word.
+ *   'symbol'    — the picture stays, the word underneath is covered.
+ *   'word'      — the word stays, the picture above it is covered.
+ *   'alternate' — alternates symbol-only / word-only along the reading order.
+ *
+ * Named for what SURVIVES, not what is removed.
+ */
+export type ScaffoldMaskMode = 'blank' | 'symbol' | 'word' | 'alternate';
+
+/**
+ * Staged scaffold removal: progressively strip the tiles themselves back across
+ * numbered, cumulative practice levels to support recall and independent
+ * singing. Which tiles are affected at each level lives on
+ * SequenceStep.removalLevel; how much of an affected tile is taken away is the
+ * level's ScaffoldMaskMode. This holds the feature's configuration and the
+ * transient preview/assignment UI state.
  */
 export interface ScaffoldConfig {
     enabled: boolean;
     /** Number of configured levels (>=1). Levels are numbered 1..levelCount. */
     levelCount: number;
+    /**
+     * Mask mode per level — index 0 is level 1. Entries past the end (and files
+     * saved before mask modes existed) read as 'blank', the original all-or-
+     * nothing behaviour.
+     */
+    levelModes: ScaffoldMaskMode[];
+    /**
+     * Height of the word strip at the bottom of a tile, as a fraction of tile
+     * height. Decides where the 'symbol'/'word' modes cut. Boards vary, so it is
+     * adjustable; 0.3 suits a typical Widgit symbol-above-word tile.
+     */
+    wordBand: number;
     /**
      * The level currently "armed" for assignment at the Sync stage. 0 = no level
      * armed, so nav-strip taps keep their ordinary timeline-selection behaviour.
@@ -225,6 +277,16 @@ export interface ProjectSaveData {
     currentView?: string;
     /** Cross-page reading order. Absent in files saved before this feature. */
     globalSequence?: SequenceStep[];
+    /**
+     * The recorded sync, one entry per reading-order step, parallel to
+     * globalSequence. Timings live on the DERIVED flat tile list, not on the
+     * page tiles, so they have to be saved separately — page tiles carry
+     * startTime/endTime fields that nothing ever writes to, and a save built
+     * from those contains only zeros. Per occurrence, not per tile: a repeated
+     * chorus symbol is one tile sung at several different moments.
+     * Absent in files saved before this was fixed; those load untimed.
+     */
+    timings?: { st: number; et: number; dir?: string }[];
     /** Round loop section by tile index. Absent in older files. */
     round?: { start: number; end: number };
     pages: {

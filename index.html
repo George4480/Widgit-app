@@ -365,6 +365,14 @@
         .canvas-container {
             border: 1px solid #dadce0;
             border-radius: 4px;
+            /* Must never grow to fit an oversized canvas: it is the thing that
+               keeps a 1600px songboard from widening the whole document and
+               making the browser zoom the interface out to compensate. It also
+               has to stay measurable, since the canvas is fitted to its width. */
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
             overflow: auto;
             margin-bottom: 20px;
             background-color: #e0e0e0;
@@ -1445,6 +1453,16 @@
         }
 
         /* ---- Video-import crop editor ---- */
+        #crop-detected { position:absolute; inset:0; pointer-events:none; }
+        #crop-detected .detected-tile {
+            position:absolute; pointer-events:auto; cursor:pointer;
+            border:2px dashed rgba(22,163,74,.95); border-radius:6px;
+            background:rgba(22,163,74,.10); padding:0; margin:0;
+        }
+        #crop-detected .detected-tile:hover,
+        #crop-detected .detected-tile:focus-visible {
+            background:rgba(22,163,74,.24); border-style:solid;
+        }
         .crop-handle {
             position: absolute; width: 16px; height: 16px;
             background: #fff; border: 2px solid var(--primary);
@@ -1689,17 +1707,23 @@
             border-radius: 4px;
             z-index: 4;
         }
-        /* A tile hidden at the current preview level: dim + hatch so it reads as removed. */
-        .nav-symbol-item.scaffold-masked img { opacity: 0.18; }
+        /* A tile stripped back at the current preview level. The hatch covers the
+           part that is actually taken away, so the strip shows the same split as
+           the video: whole tile, the word band, or everything above it. */
         .nav-symbol-item.scaffold-masked::after {
             content: "";
             position: absolute;
-            inset: 6px;
+            left: 6px; right: 6px;
+            top: 6px; bottom: 6px;
             border-radius: 4px;
-            background: repeating-linear-gradient(45deg, rgba(120,120,140,0.28) 0 6px, rgba(120,120,140,0.12) 6px 12px);
+            background: repeating-linear-gradient(45deg, rgba(120,120,140,0.55) 0 6px, rgba(120,120,140,0.32) 6px 12px);
             pointer-events: none;
         }
+        .nav-symbol-item.scaffold-masked.mask-blank img { opacity: 0.18; }
+        .nav-symbol-item.scaffold-masked.mask-symbol::after { top: auto; height: 30%; }
+        .nav-symbol-item.scaffold-masked.mask-word::after { bottom: auto; height: 62%; }
         #scaffold-level-section .seg-group { margin-top: 4px; }
+        #scaffold-mode-buttons button, #scaffold-result-mode-buttons button { white-space: nowrap; }
 
         /* ---- Round/Canon trigger-point pickers (tap a tile directly) ---- */
         .trigger-strip {
@@ -1754,6 +1778,12 @@
         .grid-sensitivity-bar {
             display: flex;
             align-items: center;
+            /* Must be able to shrink and wrap: as a rigid row it held the whole
+               stage open wider than the screen, which pushed the document out
+               sideways just as an oversized canvas does. */
+            flex-wrap: wrap;
+            min-width: 0;
+            box-sizing: border-box;
             gap: 12px;
             padding: 12px 16px;
             margin-top: 14px;
@@ -1762,7 +1792,7 @@
             border-radius: var(--radius-lg, 10px);
         }
         .grid-sensitivity-bar label { font-size: 0.9rem; font-weight: 600; white-space: nowrap; color: var(--text); }
-        .grid-sensitivity-bar input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); }
+        .grid-sensitivity-bar input[type="range"] { flex: 1 1 120px; min-width: 0; width: 0; accent-color: var(--primary); }
         .grid-sensitivity-bar .gs-val { font-size: 0.8rem; color: var(--text-muted); min-width: 70px; text-align: right; }
 
 
@@ -2203,11 +2233,11 @@
             <label class="round-toggle" style="align-items:center;">
                 <input type="checkbox" id="scaffold-enabled">
                 <span><strong>🫥 Staged scaffold removal</strong>
-                    <span class="section-note" style="display:block; font-weight:400;">Gradually hide selected cues across practice levels to support recall and independent singing.</span>
+                    <span class="section-note" style="display:block; font-weight:400;">Strip the tiles back a stage at a time — words off, then pictures, then nothing but the tile — to support recall and independent singing.</span>
                 </span>
             </label>
             <div id="scaffold-body" style="display:none;">
-                <p class="scaffold-instr">Choose a level, then tap the tiles that should disappear from that level onwards.</p>
+                <p class="scaffold-instr">Choose a level, then tap the tiles it applies to. Set how far that level strips a tile back below.</p>
                 <div class="scaffold-row" id="scaffold-level-section">
                     <span class="scaffold-lbl">Assign level:</span>
                     <span id="scaffold-level-buttons" class="seg-group" role="group" aria-label="Scaffold assignment level"></span>
@@ -2216,6 +2246,17 @@
                 <div class="scaffold-row">
                     <span class="scaffold-lbl">Preview:</span>
                     <span id="scaffold-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                </div>
+                <div class="scaffold-row">
+                    <span class="scaffold-lbl">Level <span id="scaffold-mode-level">1</span> shows:</span>
+                    <span id="scaffold-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                </div>
+                <div class="scaffold-row" id="scaffold-band-row">
+                    <span class="scaffold-lbl">Word strip:</span>
+                    <input type="range" id="scaffold-word-band" min="15" max="50" step="1" value="30"
+                           aria-label="Height of the word strip at the bottom of a tile" style="flex:1 1 120px; width:0; min-width:80px;">
+                    <span id="scaffold-band-value" class="section-note" style="margin:0;"></span>
+                    <span class="section-note" style="margin:0; flex-basis:100%;">Where the word ends and the picture begins. Nudge it if the split lands in the wrong place on your board.</span>
                 </div>
                 <div class="scaffold-row">
                     <button id="scaffold-apply-matching" type="button" class="button secondary small" style="margin:0;" title="Apply the last-tapped tile's level to every other occurrence of the same symbol">Apply to matching occurrences</button>
@@ -2303,7 +2344,7 @@
                 <label class="round-toggle" style="align-items:center;">
                     <input type="checkbox" id="scaffold-result-enabled">
                     <span>Enable staged scaffold removal
-                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles disappear at each level back on the <strong>Synchronize</strong> step; set the level and export from here.</span>
+                        <span class="section-note" style="display:block; font-weight:400;">Choose which tiles each level applies to back on the <strong>Synchronize</strong> step; set the level, how far it strips them back, and export from here.</span>
                     </span>
                 </label>
                 <p id="scaffold-result-disabled" class="section-note" style="margin-left:0;">Turn this on to preview each practice level and export a progressive practice video.</p>
@@ -2311,6 +2352,15 @@
                     <div class="setting-item">
                         <label>Scaffold level <span class="section-note">what the preview and a normal export show</span></label>
                         <span id="scaffold-result-preview-buttons" class="seg-group" role="group" aria-label="Scaffold preview level"></span>
+                    </div>
+                    <div class="setting-item">
+                        <label>Level <span id="scaffold-result-mode-level">1</span> shows <span class="section-note">how far the tiles are stripped back at this level</span></label>
+                        <span id="scaffold-result-mode-buttons" class="seg-group" role="group" aria-label="What a stripped-back tile shows at this level"></span>
+                    </div>
+                    <div class="setting-item" id="scaffold-result-band-row">
+                        <label>Word strip <span id="scaffold-result-band-value" class="section-note"></span></label>
+                        <input type="range" id="scaffold-result-word-band" min="15" max="50" step="1" value="30" style="width:100%;"
+                               aria-label="Height of the word strip at the bottom of a tile">
                     </div>
                     <div class="setting-item">
                         <button id="btn-export-progressive" type="button" class="button" style="margin:0; background: var(--primary); color:#fff;">🎬 Export progressive practice video</button>
@@ -2466,6 +2516,21 @@
                     <div id="canon-pick-strip" class="trigger-strip" role="group" aria-label="Pick the entry tile for the chosen voice"></div>
                     <label style="font-weight:600; font-size:0.85rem; margin-top:10px; display:block;">2. Sings <span class="section-note">tap the first tile of its phrase, then the last — this is a separate choice from when it comes in</span></label>
                     <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+
+                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a short phrase the voices repeat so the canon finishes together</span></label>
+                    <div id="canon-loop-strip" class="trigger-strip" role="group" aria-label="Pick the tail phrase the voices repeat at the end"></div>
+                    <div class="scaffold-row" style="margin-top:6px;">
+                        <span style="font-weight:600; font-size:0.85rem;">Repeat it</span>
+                        <span class="seg-group" data-style="canonLoopRepeats" role="group" aria-label="How many times the leader repeats the ending loop">
+                            <button type="button" data-value="0" title="Work out the number needed for every voice to finish together">Auto</button>
+                            <button type="button" data-value="1">1&times;</button>
+                            <button type="button" data-value="2">2&times;</button>
+                            <button type="button" data-value="3">3&times;</button>
+                            <button type="button" data-value="4">4&times;</button>
+                        </span>
+                        <button id="btn-canon-loop-clear" type="button" class="button secondary small" style="margin:0; color:#c5221f;">Clear loop</button>
+                    </div>
+                    <p id="canon-loop-status" class="settings-note" role="status" style="margin:.35em 0 0;"></p>
                 </div>
                 <div id="canon-actions" class="scaffold-row" style="display:none;">
                     <button id="btn-canon-preview-entry" type="button" class="button secondary small" style="margin:0;" title="Jump the preview to just before voice 2 comes in">▶ Preview voice 2 coming in</button>
@@ -2506,6 +2571,13 @@
                 <button id="back-to-sync-from-result" class="button secondary" title="Go back to the synchronization step">⬅ Back</button>
             </div>
             <div class="bottom-group">
+                <span style="font-weight:600; font-size:0.8rem; color: var(--text-muted);">Quality</span>
+                <span class="seg-group" data-style="exportRes" role="group" aria-label="Exported video resolution">
+                    <button type="button" data-value="720" title="1280x720 — good on a whiteboard, smaller file">720p</button>
+                    <button type="button" data-value="1080" title="1920x1080 — sharpest, larger file and a longer render">1080p</button>
+                </span>
+            </div>
+            <div class="bottom-group">
                 <button id="download-full-mix" class="button" style="background-color: #34a853;" title="Download full mix video with audio and synchronized symbols">⬇ Full Video</button>
                 <button id="download-backing" class="button" style="background-color: #fbbc04; color: var(--text);" title="Download instrumental backing video with synchronized symbols">⬇ Backing Video</button>
                 <button id="btn-export-manifest" class="button" style="background-color: var(--primary-text); color: white;" title="Export song project manifest data">Export Manifest</button>
@@ -2543,15 +2615,25 @@
                      every captured frame to that same region so tiles are uniform. -->
                 <div id="video-crop-editor" style="margin: 6px 0 14px;">
                     <p style="margin:.2em 0; font-weight:600;">1 · Set the tile area <span style="font-weight:400; color:var(--text-muted); font-size:.85rem;">(optional)</span></p>
-                    <p style="margin:.2em 0 8px; font-size:.85rem; color:var(--text-muted);">Drag the box over <strong>one tile</strong> on the first frame, then “Apply to all frames”. Every captured frame is cropped to that same area, so the tiles come out the same size. Skip this to keep whole frames.</p>
+                    <p style="margin:.2em 0 8px; font-size:.85rem; color:var(--text-muted);">We look for the tiles on this frame the same way we do on a songboard, and outline what we find. <strong>Tap the tile you want</strong> — every captured frame is cropped to that same area. Step through a few frames to check it lines up, then “Apply to all frames”.</p>
                     <div id="video-crop-stage" style="position:relative; display:inline-block; max-width:100%; touch-action:none; user-select:none; line-height:0;">
-                        <img id="video-crop-img" style="max-width:100%; max-height:40vh; display:block; border-radius:8px;" alt="First captured frame">
+                        <img id="video-crop-img" style="max-width:100%; max-height:40vh; display:block; border-radius:8px;" alt="Captured frame">
+                        <div id="crop-detected"></div>
                         <div id="video-crop-box" style="position:absolute; border:2px solid var(--primary); box-shadow:0 0 0 9999px rgba(0,0,0,.4); box-sizing:border-box; cursor:move; display:none;">
                             <div class="crop-handle" data-h="nw"></div>
                             <div class="crop-handle" data-h="ne"></div>
                             <div class="crop-handle" data-h="sw"></div>
                             <div class="crop-handle" data-h="se"></div>
                         </div>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <button id="btn-crop-prev" class="button secondary small" style="margin:0;" title="Previous captured frame">◀</button>
+                        <span id="crop-frame-label" style="font-size:.8rem; color:var(--text-muted); min-width:11rem;"></span>
+                        <button id="btn-crop-next" class="button secondary small" style="margin:0;" title="Next captured frame">▶</button>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                        <label for="crop-sensitivity" style="font-size:.8rem; font-weight:600; color:var(--text-muted);">Detection sensitivity</label>
+                        <input type="range" id="crop-sensitivity" min="150" max="254" step="2" style="flex:1 1 140px; min-width:0;">
                     </div>
                     <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                         <button id="btn-crop-apply" class="button small" style="margin:0;">✂ Apply to all frames</button>

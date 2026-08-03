@@ -4,9 +4,13 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
-import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig } from "./src/types";
+import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig, ScaffoldMaskMode } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
-import { isMasked, tileMaskColor, drawContentMask, clearMaskColorCache } from "./src/scaffold";
+import {
+    isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
+    levelMaskMode, resolveMaskMode, clampWordBand,
+    WORD_BAND_MIN, WORD_BAND_MAX, WORD_BAND_DEFAULT,
+} from "./src/scaffold";
 
 // Vercel Web Analytics — collects anonymous page-view/visitor metrics once the
 // app is served from Vercel (no-op in local dev).
@@ -27,6 +31,11 @@ function defaultScaffold(): ScaffoldConfig {
     return {
         enabled: false,
         levelCount: 3,
+        // A default progression that means something musically: take the words
+        // away first (the picture still carries the meaning), then the pictures
+        // (the words still carry it), then the tile goes blank.
+        levelModes: ['symbol', 'word', 'blank', 'blank', 'blank', 'blank'],
+        wordBand: WORD_BAND_DEFAULT,
         selectedAssignmentLevel: 0,
         previewLevel: 0,
         exportMode: 'single',
@@ -36,11 +45,21 @@ function defaultScaffold(): ScaffoldConfig {
 // the field, or missing newer keys) keep sane values, and reset the transient
 // UI bits that should never carry across a load.
 function normalizeScaffold(saved: any): ScaffoldConfig {
-    const s = { ...defaultScaffold(), ...(saved && typeof saved === 'object' ? saved : {}) };
+    const hadScaffold = !!saved && typeof saved === 'object';
+    const s = { ...defaultScaffold(), ...(hadScaffold ? saved : {}) };
     s.levelCount = Math.max(1, Math.min(SCAFFOLD_MAX_LEVELS, Math.round(s.levelCount) || 3));
     s.previewLevel = Math.max(0, Math.min(s.levelCount, Math.round(s.previewLevel) || 0));
     s.selectedAssignmentLevel = 0; // never resume in an armed assignment mode
     if (s.exportMode !== 'progressive') s.exportMode = 'single';
+    // A project saved before mask modes existed blanked every masked tile. Keep
+    // it looking as it was left rather than silently applying the new default
+    // progression to somebody's finished work.
+    if (hadScaffold && !Array.isArray((saved as any).levelModes)) {
+        s.levelModes = Array(SCAFFOLD_MAX_LEVELS).fill('blank');
+    }
+    s.levelModes = Array.from({ length: SCAFFOLD_MAX_LEVELS },
+        (_, i) => levelMaskMode(s.levelModes, i + 1));
+    s.wordBand = clampWordBand(Number(s.wordBand));
     return s;
 }
 
@@ -117,7 +136,11 @@ const appState: AppState = {
         canonEntries: [2, 4, 6],
         canonStarts: [0, 0, 0],
         canonEnds: [-1, -1, -1],
+        canonLoopStart: -1,
+        canonLoopEnd: -1,
+        canonLoopRepeats: 0,   // 0 = auto
         canonCountdown: true,
+        exportRes: '720',
         canonCountInBeats: 4,
         sheetMode: false
     },
@@ -165,8 +188,35 @@ let dom = {} as any;
     pEnd: (v: number) => canonPhraseEnd(v),
     voiceEnd: (v: number) => canonVoiceEndTime(v),
     voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
+    loopReps: (v: number) => canonLoopRepeatsFor(v),
+    loopBounds: () => canonLoopBounds(),
+    maxOffset: () => canonMaxOffset(),
     leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
+};
+
+// Same idea for scaffold masking: which mode a level resolves to, and where the
+// mask actually lands on a tile. `sample` draws one mask onto a scratch canvas
+// over a known background and reports which rows it covered, so the split can be
+// asserted rather than eyeballed. Tests only — nothing in the app reads this.
+(window as any).__scaffoldProbe = {
+    modeAt: (level: number, ordinal: number) => scaffoldMaskModeAt(level, ordinal),
+    levelMode: (level: number) => levelMaskMode(appState.scaffold.levelModes, level),
+    sample: (mode: any, band: number, size = 100) => {
+        const cv = document.createElement('canvas');
+        cv.width = size; cv.height = size;
+        const cx = cv.getContext('2d') as CanvasRenderingContext2D;
+        cx.fillStyle = '#000000';
+        cx.fillRect(0, 0, size, size);
+        drawContentMask(cx, '#ffffff', 0, 0, size, size, mode, band);
+        const d = cx.getImageData(0, 0, size, size).data;
+        const rows: number[] = [];
+        for (let y = 0; y < size; y++) {
+            const i = (y * size + Math.floor(size / 2)) * 4;
+            if (d[i] > 200) rows.push(y);   // white => covered
+        }
+        return { first: rows.length ? rows[0] : -1, last: rows.length ? rows[rows.length - 1] : -1, count: rows.length };
+    },
 };
 
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
@@ -318,6 +368,11 @@ function init() {
             body: document.getElementById('scaffold-body'),
             levelButtons: document.getElementById('scaffold-level-buttons'),
             previewButtons: document.getElementById('scaffold-preview-buttons'),
+            modeButtons: document.getElementById('scaffold-mode-buttons'),
+            modeLevel: document.getElementById('scaffold-mode-level'),
+            bandRow: document.getElementById('scaffold-band-row'),
+            wordBand: document.getElementById('scaffold-word-band') as HTMLInputElement,
+            bandValue: document.getElementById('scaffold-band-value'),
             addLevel: document.getElementById('scaffold-add-level') as HTMLButtonElement,
             applyMatching: document.getElementById('scaffold-apply-matching'),
             clearLevel: document.getElementById('scaffold-clear-level'),
@@ -328,6 +383,11 @@ function init() {
             resultControls: document.getElementById('scaffold-result-controls'),
             resultDisabledNote: document.getElementById('scaffold-result-disabled'),
             resultPreviewButtons: document.getElementById('scaffold-result-preview-buttons'),
+            resultModeButtons: document.getElementById('scaffold-result-mode-buttons'),
+            resultModeLevel: document.getElementById('scaffold-result-mode-level'),
+            resultBandRow: document.getElementById('scaffold-result-band-row'),
+            resultWordBand: document.getElementById('scaffold-result-word-band') as HTMLInputElement,
+            resultBandValue: document.getElementById('scaffold-result-band-value'),
             btnProgressive: document.getElementById('btn-export-progressive'),
         },
         result: {
@@ -373,6 +433,8 @@ function init() {
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
             canonPhraseStrip: document.getElementById('canon-phrase-strip'),
+            canonLoopStrip: document.getElementById('canon-loop-strip'),
+            canonLoopStatus: document.getElementById('canon-loop-status'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
@@ -500,6 +562,20 @@ function setupEventListeners() {
     // Import from video
     const btnImportVideo = document.getElementById('btn-import-video');
     const inputVideo = document.getElementById('input-video-import') as HTMLInputElement;
+    const cropPrev = document.getElementById('btn-crop-prev');
+    const cropNext = document.getElementById('btn-crop-next');
+    const cropSens = document.getElementById('crop-sensitivity') as HTMLInputElement | null;
+    // Stepping frames keeps YOUR box and just re-detects, so you can check the
+    // same crop against several tiles before committing to it.
+    if (cropPrev) cropPrev.addEventListener('click', () => showCropFrame(_cropFrameIdx - 1, false));
+    if (cropNext) cropNext.addEventListener('click', () => showCropFrame(_cropFrameIdx + 1, false));
+    if (cropSens) {
+        cropSens.value = String(appState.gridConfig.contentThreshold);
+        cropSens.addEventListener('change', () => {
+            appState.gridConfig.contentThreshold = parseInt(cropSens.value, 10);
+            showCropFrame(_cropFrameIdx, true);   // re-detect and re-propose
+        });
+    }
     if (btnImportVideo && inputVideo) {
         btnImportVideo.addEventListener('click', () => inputVideo.click());
         inputVideo.addEventListener('change', (e) => {
@@ -695,6 +771,9 @@ function setupEventListeners() {
     if (dom.scaffold.applyMatching) dom.scaffold.applyMatching.addEventListener('click', applyScaffoldToMatching);
     if (dom.scaffold.clearLevel) dom.scaffold.clearLevel.addEventListener('click', clearScaffoldSelectedLevel);
     if (dom.scaffold.clearAll) dom.scaffold.clearAll.addEventListener('click', clearAllScaffold);
+    [dom.scaffold.wordBand, dom.scaffold.resultWordBand].forEach(el => {
+        if (el) el.addEventListener('input', () => setScaffoldWordBand(Number(el.value) / 100));
+    });
     if (dom.scaffold.btnProgressive) dom.scaffold.btnProgressive.addEventListener('click', () => confirmExport(() => renderProgressiveVideo()));
 
 
@@ -782,6 +861,10 @@ function setupEventListeners() {
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
         appState.styleConfig.sheetMode = segGet('displayMode') === 1;
+        // Export resolution only affects the rendered file, never the preview.
+        appState.styleConfig.canonLoopRepeats = segGet('canonLoopRepeats');
+        const res = segGet('exportRes');
+        if (res) appState.styleConfig.exportRes = String(res);
         // Enable/disable each feature's sub-controls to match its own toggle.
         // The round-gap slider is also disabled while a loop phrase is marked,
         // because the marked phrase's length drives the entry gap then — a live
@@ -843,6 +926,8 @@ function setupEventListeners() {
     // song, and clear the loop phrase picked in the round strip.
     if (dom.result.btnRoundPreviewEntry) dom.result.btnRoundPreviewEntry.addEventListener('click', () => previewVoiceEntry('round'));
     if (dom.result.btnCanonPreviewEntry) dom.result.btnCanonPreviewEntry.addEventListener('click', () => previewVoiceEntry('canon'));
+    const btnLoopClear = document.getElementById('btn-canon-loop-clear');
+    if (btnLoopClear) btnLoopClear.addEventListener('click', clearCanonLoop);
     if (dom.result.btnRoundPickClear) dom.result.btnRoundPickClear.addEventListener('click', () => {
         appState.round = { start: -1, end: -1 };
         afterTriggerPointChange();
@@ -1357,7 +1442,7 @@ async function processImageFile(file: File) {
 // project. All processing is local to the browser — nothing is uploaded.
 // ============================================================
 
-let _videoCandidates: { time: number; dataUrl: string }[] = [];
+let _videoCandidates: { time: number; dataUrl: string; content?: number }[] = [];
 let _videoAudioFile: File | null = null;
 // Tile crop defined on the first captured frame (normalized 0..1), applied to
 // every frame so the imported tiles come out uniform. Null = use whole frames.
@@ -1483,7 +1568,18 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
         return worst;
     };
 
-    const results: { time: number; dataUrl: string }[] = [];
+    // `content` = fraction of the frame that is not background. The title card is
+    // near zero; a frame with tiles on it is not. Computed from the downscaled
+    // probe we already have, so it costs nothing.
+    const contentRatio = (px: Uint8ClampedArray) => {
+        const bg = [px[0], px[1], px[2]];
+        let on = 0;
+        for (let i = 0; i < px.length; i += 4) {
+            if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 40) on++;
+        }
+        return on / (SW * SH);
+    };
+    const results: { time: number; dataUrl: string; content: number }[] = [];
     let lastKept: Uint8ClampedArray | null = null;
     let prevProbe: Uint8ClampedArray | null = null;
     let pending = 0;
@@ -1500,7 +1596,7 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
             // probes of sustained change so we never miss a fast/uneasy transition.
             if (motion <= SETTLED || pending >= 3) {
                 fctx.drawImage(video, 0, 0, full.width, full.height);
-                results.push({ time: t, dataUrl: full.toDataURL('image/png') });
+                results.push({ time: t, dataUrl: full.toDataURL('image/png'), content: contentRatio(cur) });
                 lastKept = cur.slice();
                 pending = 0;
                 setStatus(`Found ${results.length} tile${results.length === 1 ? '' : 's'}…`);
@@ -1527,11 +1623,81 @@ function renderVideoGrid() {
     _videoCandidates.forEach((c, i) => {
         const cell = document.createElement('label');
         cell.className = 'vframe';
+        // A near-empty capture is the title card or a fade, not a tile. Leave it
+        // unticked rather than making you spot it and untick it yourself.
+        const blank = (c.content ?? 1) < 0.02;
         cell.innerHTML =
-            `<input type="checkbox" data-idx="${i}" checked>` +
+            `<input type="checkbox" data-idx="${i}"${blank ? '' : ' checked'}>` +
             `<img src="${urls[i]}" alt="frame at ${c.time.toFixed(1)}s">` +
-            `<span class="vframe-time">${c.time.toFixed(1)}s</span>`;
+            `<span class="vframe-time">${c.time.toFixed(1)}s${blank ? ' · blank' : ''}</span>`;
         grid.appendChild(cell);
+    });
+}
+
+// Run the app's own tile detection over a captured video frame, exactly as it
+// runs over a PDF page, and return the boxes it finds as fractions of the frame.
+// This is the same code path and the same sensitivity setting the Refine Grid
+// stage uses, so what it finds here is what it would find there.
+function detectFrameTiles(img: HTMLImageElement): { x: number; y: number; w: number; h: number }[] {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!w || !h) return [];
+    const boxes = detectBoxes(imagePixels(img, w, h), w, h, appState.gridConfig.contentThreshold);
+    return boxes
+        // Ignore slivers and anything spanning almost the whole frame (a band
+        // wash or a divider rule rather than a tile).
+        .filter(b => b.width > w * 0.06 && b.height > h * 0.08 && b.width < w * 0.92)
+        .map(b => ({ x: b.x / w, y: b.y / h, w: b.width / w, h: b.height / h }));
+}
+
+// Best default among the detected tiles: the one nearest the centre of the
+// frame, breaking ties by area. In a conveyor that is the active tile; in a
+// canon it is whichever voice row sits closest to the middle, and the others are
+// one tap away.
+function bestTileBox(boxes: { x: number; y: number; w: number; h: number }[]) {
+    let best = null, bestScore = -Infinity;
+    for (const b of boxes) {
+        const dx = (b.x + b.w / 2) - 0.5, dy = (b.y + b.h / 2) - 0.5;
+        const score = b.w * b.h * 2 - Math.hypot(dx, dy);
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+
+// Which captured frame the crop editor is currently showing.
+let _cropFrameIdx = 0;
+
+function setCropBox(box: { x: number; y: number; w: number; h: number }, iw: number, ih: number) {
+    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
+    if (!cropBox) return;
+    cropBox.style.display = 'block';
+    cropBox.style.left = `${Math.round(box.x * iw)}px`;
+    cropBox.style.top = `${Math.round(box.y * ih)}px`;
+    cropBox.style.width = `${Math.round(box.w * iw)}px`;
+    cropBox.style.height = `${Math.round(box.h * ih)}px`;
+}
+
+// Draw an outline over every detected tile. Tapping one snaps the crop box to it.
+function renderDetectedTiles(boxes: { x: number; y: number; w: number; h: number }[], iw: number, ih: number) {
+    const layer = document.getElementById('crop-detected');
+    if (!layer) return;
+    layer.innerHTML = '';
+    boxes.forEach(b => {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'detected-tile';
+        el.title = 'Use this tile';
+        el.setAttribute('aria-label', 'Use this tile');
+        el.style.left = `${b.x * iw}px`;
+        el.style.top = `${b.y * ih}px`;
+        el.style.width = `${b.w * iw}px`;
+        el.style.height = `${b.h * ih}px`;
+        el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setCropBox(b, iw, ih);
+            const st = document.getElementById('crop-status');
+            if (st) st.textContent = 'Tile chosen. Check it on another frame, then apply.';
+        });
+        layer.appendChild(el);
     });
 }
 
@@ -1541,30 +1707,64 @@ function openVideoPicker() {
     const status = document.getElementById('crop-status');
     if (status) status.textContent = '';
 
-    // Load the first captured frame into the crop editor and drop a default box.
     const cropEditor = document.getElementById('video-crop-editor');
-    const cropImg = document.getElementById('video-crop-img') as HTMLImageElement | null;
-    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
-    if (cropEditor && cropImg && cropBox) {
+    if (cropEditor) {
+        cropEditor.style.display = _videoCandidates.length > 0 ? '' : 'none';
         if (_videoCandidates.length > 0) {
-            cropEditor.style.display = '';
-            cropImg.onload = () => {
-                const iw = cropImg.clientWidth, ih = cropImg.clientHeight;
-                const bw = iw * 0.5, bh = ih * 0.55;
-                cropBox.style.display = 'block';
-                cropBox.style.left = `${Math.round((iw - bw) / 2)}px`;
-                cropBox.style.top = `${Math.round((ih - bh) / 2)}px`;
-                cropBox.style.width = `${Math.round(bw)}px`;
-                cropBox.style.height = `${Math.round(bh)}px`;
-            };
-            cropImg.src = _videoCandidates[0].dataUrl;
-        } else {
-            cropEditor.style.display = 'none';
+            // Open on a frame that actually HAS a tile on it. The first capture is
+            // usually the title card — a flat colour with nothing to aim at, which
+            // left you positioning the box by guesswork.
+            _cropFrameIdx = 0;
+            showCropFrame(firstContentfulFrame(), true);
         }
     }
 
     renderVideoGrid();
     document.getElementById('video-picker-overlay')!.style.display = 'flex';
+}
+
+// Index of the first captured frame with real content on it. Falls back to the
+// first frame if every capture looks flat.
+function firstContentfulFrame(): number {
+    let best = 0, bestVal = -1;
+    for (let i = 0; i < _videoCandidates.length; i++) {
+        const c = _videoCandidates[i].content ?? 1;
+        if (c > 0.06) return i;            // first frame with real content wins
+        if (c > bestVal) { bestVal = c; best = i; }
+    }
+    return best;
+}
+
+// Put a captured frame in the crop editor. With `autoBox`, the tile region is
+// detected and the box placed on it; otherwise the current box is left alone so
+// you can step through frames and check your own box against several tiles.
+function showCropFrame(idx: number, autoBox: boolean) {
+    const cropImg = document.getElementById('video-crop-img') as HTMLImageElement | null;
+    const cropBox = document.getElementById('video-crop-box') as HTMLElement | null;
+    const cap = document.getElementById('crop-frame-label');
+    if (!cropImg || !cropBox || !_videoCandidates.length) return;
+    _cropFrameIdx = Math.max(0, Math.min(_videoCandidates.length - 1, idx));
+    const cand = _videoCandidates[_cropFrameIdx];
+    cropImg.onload = () => {
+        const iw = cropImg.clientWidth, ih = cropImg.clientHeight;
+        // Detect the tiles on this frame with the app's own detector and offer
+        // them as tappable outlines, so choosing one is a tap rather than an
+        // exercise in eyeballing a rectangle.
+        const found = detectFrameTiles(cropImg);
+        renderDetectedTiles(found, iw, ih);
+        if (autoBox) {
+            const box = bestTileBox(found) || { x: 0.25, y: 0.22, w: 0.5, h: 0.55 };
+            setCropBox(box, iw, ih);
+        }
+        const st = document.getElementById('crop-status');
+        if (st) {
+            st.textContent = found.length
+                ? `Found ${found.length} tile${found.length === 1 ? '' : 's'} on this frame — tap the one you want, or drag the box.`
+                : 'No tiles found on this frame — try another frame, or drag the box yourself.';
+        }
+        if (cap) cap.textContent = `Frame ${_cropFrameIdx + 1} of ${_videoCandidates.length} · ${cand.time.toFixed(1)}s`;
+    };
+    cropImg.src = cand.dataUrl;
 }
 
 // Crop a data URL to a normalized region, returning a new data URL.
@@ -2032,11 +2232,54 @@ function updateToolbarUI() {
     const count = appState.interaction.selectedIndices.size;
     dom.define.btnDelete.textContent = count > 0 ? `Delete Selected (${count})` : "Delete Selected";
 }
+// Scale that makes the songboard fit the width it has to live in.
+//
+// A rendered PDF page is commonly 1600px+ wide. Sizing the canvas straight off
+// page.width made the element that many CSS px across, which the container then
+// grew to fit, so the whole document overflowed sideways — and a phone responds
+// to a wide document by zooming out to fit it, shrinking the entire interface.
+// That is the "malformed display size": the app was not laid out wrongly, it was
+// being scaled down to accommodate one oversized canvas. The Order stage already
+// fits to its container (see setupOrderView); this brings Define into line.
+// Cached rather than recomputed on demand: drawCanvas and the pointer handlers
+// must use exactly the scale the canvas was sized with, or the drawing and the
+// hit-testing drift apart. Recomputing from clientWidth would also be circular,
+// because the canvas is itself part of what determines that width.
+let _defineFit = 1;
+function defineFitScale(): number {
+    return _defineFit;
+}
+
+// Total scale from page coordinates to canvas pixels: fit to the container, then
+// apply the user's zoom on top. Zoom still enlarges — the container scrolls.
+function defineScale(): number {
+    return defineFitScale() * appState.interaction.zoomLevel;
+}
+
 function resizeCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page) return;
-    dom.define.canvas.width = page.width * appState.interaction.zoomLevel;
-    dom.define.canvas.height = page.height * appState.interaction.zoomLevel;
+    const canvas = dom.define.canvas;
+    const container = dom.define.canvasContainer;
+    if (container && page.width) {
+        // Collapse the canvas AND its container before measuring, then read the
+        // space the parent actually has. Measuring the container directly is no
+        // good once it has already been propped open by an oversized canvas —
+        // it reports the inflated width, we fit to that, and the document stays
+        // too wide, which is what makes a phone zoom the whole interface out.
+        const prevCanvas = canvas.style.width;
+        const prevContainer = container.style.width;
+        canvas.style.width = '0px';
+        container.style.width = '0px';
+        const parent = container.parentElement as HTMLElement | null;
+        const avail = parent ? parent.clientWidth : container.clientWidth;
+        container.style.width = prevContainer;
+        canvas.style.width = prevCanvas;
+        if (avail > 0) _defineFit = avail / page.width;
+    }
+    const s = defineScale();
+    canvas.width = page.width * s;
+    canvas.height = page.height * s;
     drawCanvas();
 }
 function drawCanvas() {
@@ -2044,11 +2287,12 @@ function drawCanvas() {
     const page = appState.pages[appState.currentPageIndex];
     if (!page || !ctx) return;
     ctx.save();
-    ctx.scale(appState.interaction.zoomLevel, appState.interaction.zoomLevel);
+    const dScale = defineScale();
+    ctx.scale(dScale, dScale);
     ctx.clearRect(0, 0, page.width, page.height);
     ctx.drawImage(page.image, 0, 0);
     
-    ctx.lineWidth = 4 / appState.interaction.zoomLevel;
+    ctx.lineWidth = 4 / dScale;
     page.symbols.forEach((s: any, idx: number) => {
         // Render custom image if present
         if (s.customImage) {
@@ -2065,7 +2309,7 @@ function drawCanvas() {
 
         // Draw Resize Handle for selected
         if (appState.interaction.selectedIndices.has(idx)) {
-            const handleSize = 10 / appState.interaction.zoomLevel;
+            const handleSize = 10 / dScale;
             ctx.fillStyle = '#1a73e8';
             ctx.fillRect(s.x + s.width - handleSize/2, s.y + s.height - handleSize/2, handleSize, handleSize);
         }
@@ -2074,30 +2318,19 @@ function drawCanvas() {
     // Marquee
     if (appState.interaction.dragAction === 'marquee' && appState.interaction.isDragging) {
          const {marqueeStart: s, marqueeCurrent: c} = appState.interaction;
-         const x = Math.min(s.x, c.x) * appState.interaction.zoomLevel;
-         const y = Math.min(s.y, c.y) * appState.interaction.zoomLevel;
-         const w = Math.abs(c.x - s.x) * appState.interaction.zoomLevel;
-         const h = Math.abs(c.y - s.y) * appState.interaction.zoomLevel;
+         const x = Math.min(s.x, c.x) * dScale;
+         const y = Math.min(s.y, c.y) * dScale;
+         const w = Math.abs(c.x - s.x) * dScale;
+         const h = Math.abs(c.y - s.y) * dScale;
          ctx.save(); ctx.strokeStyle = '#1a73e8'; ctx.setLineDash([5, 5]); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
 }
-function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: boolean = true) {
-    const page = appState.pages[pageIndex];
-    if (!page) return;
-    page.symbols = []; // Clear previous
-    page.sequence = [];
-    pruneGlobalSequence(pageIndex, { clearPage: true });
-    invalidatePageThumbs(pageIndex);
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = page.width; tempCanvas.height = page.height;
-    const ctx = tempCanvas.getContext('2d');
-    ctx.drawImage(page.image, 0, 0);
-    const data = ctx.getImageData(0, 0, page.width, page.height).data;
-    const w = page.width; const h = page.height;
-    const threshold = appState.gridConfig.contentThreshold;
-
-    // Simplified Grid Logic
+// The tile detector, as a pure function over pixels. Extracted from
+// runGridDetection so the video import can run the SAME detection on a captured
+// frame that a PDF page gets — one algorithm, one sensitivity slider, one set of
+// behaviours to learn, instead of a separate crop-a-rectangle-by-eye flow.
+function detectBoxes(data: Uint8ClampedArray, w: number, h: number, threshold: number): SymbolTile[] {
+    const out: SymbolTile[] = [];
     let rows = [], inRow = false, startY = 0;
     for (let y = 0; y < h; y++) {
         let count = 0;
@@ -2119,10 +2352,32 @@ function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: b
                 if (data[idx] < threshold || data[idx+1] < threshold || data[idx+2] < threshold) count++;
             }
             if (count > (r.e-r.s)*0.002) { if(!inCol) { inCol=true; startX=x; } }
-            else { if(inCol) { inCol=false; if(x-startX > 20) page.symbols.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
+            else { if(inCol) { inCol=false; if(x-startX > 20) out.push({x:startX, y:r.s, width:x-startX, height:r.e-r.s}); } }
         }
-        if(inCol && w-startX>20) page.symbols.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
+        if(inCol && w-startX>20) out.push({x:startX, y:r.s, width:w-startX, height:r.e-r.s});
     });
+    return out;
+}
+
+// Pixels of any image, ready for detectBoxes.
+function imagePixels(img: HTMLImageElement | HTMLCanvasElement, w: number, h: number): Uint8ClampedArray {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.drawImage(img, 0, 0, w, h);
+    return g.getImageData(0, 0, w, h).data;
+}
+
+function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: boolean = true) {
+    const page = appState.pages[pageIndex];
+    if (!page) return;
+    page.symbols = []; // Clear previous
+    page.sequence = [];
+    pruneGlobalSequence(pageIndex, { clearPage: true });
+    invalidatePageThumbs(pageIndex);
+
+    const data = imagePixels(page.image, page.width, page.height);
+    page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
     if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
@@ -2134,7 +2389,7 @@ function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
     }
 
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
     
@@ -2201,7 +2456,7 @@ function handleDefineCanvasMove(e: MouseEvent | TouchEvent) {
     if (!appState.interaction.isDragging || appState.interaction.dragAction === 'none') return;
     
     const pos = getPointerPos(e, dom.define.canvas);
-    const scale = appState.interaction.zoomLevel;
+    const scale = defineScale();
     const x = pos.x / scale;
     const y = pos.y / scale;
     const page = appState.pages[appState.currentPageIndex];
@@ -3002,9 +3257,16 @@ function syncFlatRemovalLevels() {
     appState.symbols.forEach((s, i) => { s.removalLevel = seq[i]?.removalLevel; });
 }
 
+// What a masked tile shows at the given level, for the tile at reading-order
+// position `ordinal` (which only matters for the alternating mode).
+function scaffoldMaskModeAt(level: number, ordinal: number) {
+    return resolveMaskMode(levelMaskMode(appState.scaffold.levelModes, level), ordinal);
+}
+
 // Cover the just-drawn tile image with a background-coloured inset mask when the
-// occurrence is hidden at the active scaffold level. `img` is the tile crop
-// (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
+// occurrence is masked at the active scaffold level. How much gets covered — all
+// of it, the word, or the picture — is the level's mask mode. `img` is the tile
+// crop (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
 function maskTileIfHidden(
     ctx: CanvasRenderingContext2D,
     sym: SymbolTile | undefined,
@@ -3013,7 +3275,8 @@ function maskTileIfHidden(
     level: number,
 ) {
     if (!sym || !isMasked(sym.removalLevel, level)) return;
-    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh);
+    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh,
+        scaffoldMaskModeAt(level, sym.globalIndex ?? 0), appState.scaffold.wordBand);
 }
 
 function finishOrderingSymbols() {
@@ -3206,11 +3469,11 @@ function assignScaffoldLevel(flatIdx: number, level: number) {
     if (cur === level) {
         step.removalLevel = undefined;
         if (sym) sym.removalLevel = undefined;
-        announceScaffold(`Tile ${flatIdx + 1} is visible again.`);
+        announceScaffold(`Tile ${flatIdx + 1} is shown in full again.`);
     } else {
         step.removalLevel = level;
         if (sym) sym.removalLevel = level;
-        announceScaffold(`Tile ${flatIdx + 1} will hide from level ${level} onwards.`);
+        announceScaffold(`Tile ${flatIdx + 1} will show ${SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says} from level ${level} onwards.`);
     }
     scaffoldLastTile = flatIdx;
     saveHistoryState();
@@ -3289,6 +3552,56 @@ function addScaffoldLevel() {
     announceScaffold(`Added level ${sc.levelCount}.`);
 }
 
+// Which level the mask-mode picker is editing: the one you have armed for
+// assignment if any, otherwise the one you are previewing, otherwise level 1.
+// Either way it is the level you are currently looking at or working on.
+function scaffoldModeLevel(): number {
+    const sc = appState.scaffold;
+    return Math.min(sc.levelCount, sc.selectedAssignmentLevel || sc.previewLevel || 1);
+}
+
+const SCAFFOLD_MODE_LABELS: Record<ScaffoldMaskMode, { label: string; title: string; says: string }> = {
+    symbol: {
+        label: 'Picture only',
+        title: 'Cover the word, leave the picture — read the symbol',
+        says: 'the picture, with the word covered',
+    },
+    word: {
+        label: 'Word only',
+        title: 'Cover the picture, leave the word — read the text',
+        says: 'the word, with the picture covered',
+    },
+    alternate: {
+        label: 'Alternate',
+        title: 'Alternate picture-only and word-only along the song',
+        says: 'picture and word alternately along the song',
+    },
+    blank: {
+        label: 'Blank tile',
+        title: 'Cover both — the tile keeps its place and colour, nothing else',
+        says: 'nothing but the tile itself',
+    },
+};
+
+function setScaffoldLevelMode(level: number, mode: ScaffoldMaskMode) {
+    const sc = appState.scaffold;
+    if (level < 1 || level > sc.levelCount) return;
+    sc.levelModes[level - 1] = mode;
+    // Show what was just chosen — changing a level's look is pointless if you
+    // are still previewing a different level.
+    sc.previewLevel = level;
+    saveHistoryState();
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+    announceScaffold(`Level ${level} now shows ${SCAFFOLD_MODE_LABELS[mode].says}.`);
+}
+
+function setScaffoldWordBand(fraction: number) {
+    appState.scaffold.wordBand = clampWordBand(fraction);
+    renderScaffoldControls();
+    redrawScaffoldPreview();
+}
+
 // Set which level the preview/single-export shows. Shared by the Sync-stage
 // preview buttons and the Preview & Export scaffold-level control.
 function setScaffoldPreviewLevel(level: number) {
@@ -3316,17 +3629,20 @@ function updateNavStripScaffold() {
     const items = strip.querySelectorAll('.nav-symbol-item');
     items.forEach((item: HTMLElement, i: number) => {
         item.querySelectorAll('.scaffold-badge').forEach(b => b.remove());
-        item.classList.remove('scaffold-masked');
+        item.classList.remove('scaffold-masked', 'mask-blank', 'mask-symbol', 'mask-word');
         const lvl = appState.symbols[i]?.removalLevel || 0;
         if (sc.enabled && lvl > 0) {
             const b = document.createElement('div');
             b.className = 'scaffold-badge';
             b.textContent = 'L' + lvl;
-            b.title = `Hidden from level ${lvl} onwards`;
+            b.title = `Stripped back from level ${lvl} onwards`;
             b.setAttribute('aria-label', `Removal level ${lvl}`);
             item.appendChild(b);
         }
-        if (sc.enabled && isMasked(lvl, previewLevel)) item.classList.add('scaffold-masked');
+        if (sc.enabled && isMasked(lvl, previewLevel)) {
+            // Hatch the part the video actually takes away at this level.
+            item.classList.add('scaffold-masked', 'mask-' + scaffoldMaskModeAt(previewLevel, i));
+        }
     });
     updateScaffoldStatus();
 }
@@ -3336,10 +3652,14 @@ function updateScaffoldStatus() {
     if (!dom.scaffold.status) return;
     if (!sc.enabled) { dom.scaffold.status.textContent = ''; return; }
     const assigned = appState.symbols.filter(s => s.removalLevel).length;
-    if (sc.selectedAssignmentLevel > 0) {
-        dom.scaffold.status.textContent = `Assigning level ${sc.selectedAssignmentLevel}: tap tiles to hide them from level ${sc.selectedAssignmentLevel} onwards. ${assigned} tile(s) assigned so far.`;
+    const lvl = sc.selectedAssignmentLevel;
+    if (lvl > 0) {
+        const says = SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, lvl)].says;
+        dom.scaffold.status.textContent = `Assigning level ${lvl}: tap tiles to strip them back from level ${lvl} onwards, where they show ${says}. ${assigned} tile(s) assigned so far.`;
     } else {
-        const p = sc.previewLevel === 0 ? 'full support' : `level ${sc.previewLevel}`;
+        const p = sc.previewLevel === 0
+            ? 'full support'
+            : `level ${sc.previewLevel} — stripped tiles show ${SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, sc.previewLevel)].says}`;
         dom.scaffold.status.textContent = `${assigned} tile(s) assigned. Previewing ${p}. Choose a level above to start assigning.`;
     }
 }
@@ -3374,6 +3694,32 @@ function renderScaffoldControls() {
     // Preview level buttons — Result stage (same previewLevel).
     if (dom.scaffold.resultPreviewButtons) buildScaffoldPreviewButtons(dom.scaffold.resultPreviewButtons);
 
+    // How far the level being worked on strips a tile back, in both panels.
+    const modeLevel = scaffoldModeLevel();
+    if (dom.scaffold.modeButtons) buildScaffoldModeButtons(dom.scaffold.modeButtons, modeLevel);
+    if (dom.scaffold.resultModeButtons) buildScaffoldModeButtons(dom.scaffold.resultModeButtons, modeLevel);
+    [dom.scaffold.modeLevel, dom.scaffold.resultModeLevel].forEach(el => {
+        if (el) el.textContent = String(modeLevel);
+    });
+
+    // The word strip only decides anything when some level actually splits the
+    // tile, so it stays out of the way until one does.
+    const splits = sc.levelModes.some(m => m === 'symbol' || m === 'word' || m === 'alternate');
+    const bandPct = Math.round(clampWordBand(sc.wordBand) * 100);
+    [dom.scaffold.bandRow, dom.scaffold.resultBandRow].forEach(el => {
+        if (el) (el as HTMLElement).style.display = splits ? '' : 'none';
+    });
+    [dom.scaffold.wordBand, dom.scaffold.resultWordBand].forEach(el => {
+        if (el) {
+            el.min = String(Math.round(WORD_BAND_MIN * 100));
+            el.max = String(Math.round(WORD_BAND_MAX * 100));
+            if (Number(el.value) !== bandPct) el.value = String(bandPct);
+        }
+    });
+    [dom.scaffold.bandValue, dom.scaffold.resultBandValue].forEach(el => {
+        if (el) el.textContent = `bottom ${bandPct}% of the tile`;
+    });
+
     // Result-stage section: the feature can be switched on right here as well as
     // at the Sync stage, so the export screen is self-sufficient.
     if (dom.scaffold.resultEnabled) dom.scaffold.resultEnabled.checked = sc.enabled;
@@ -3399,6 +3745,23 @@ function buildScaffoldPreviewButtons(container: HTMLElement) {
     };
     mk(0, 'Full support');
     for (let n = 1; n <= sc.levelCount; n++) mk(n, 'Level ' + n);
+}
+
+function buildScaffoldModeButtons(container: HTMLElement, level: number) {
+    const current = levelMaskMode(appState.scaffold.levelModes, level);
+    container.innerHTML = '';
+    (['symbol', 'word', 'alternate', 'blank'] as ScaffoldMaskMode[]).forEach(mode => {
+        const meta = SCAFFOLD_MODE_LABELS[mode];
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = meta.label;
+        b.title = meta.title;
+        const on = current === mode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+        b.addEventListener('click', () => setScaffoldLevelMode(level, mode));
+        container.appendChild(b);
+    });
 }
 
 function drawSyncTimeline() {
@@ -3769,6 +4132,44 @@ function canonTileOffset(v: number): number {
     return canonEntryIndex(v) - canonPhraseStart(v);
 }
 
+// --- Canon tail loop ------------------------------------------------------
+// A canon that simply stops leaves each voice trailing off alone. The usual
+// resolution is a short tail phrase everyone repeats until the last voice has
+// caught up, so the piece ends together. Counted in tiles, like the rest of it.
+
+function canonLoopBounds(): { start: number; end: number; len: number } | null {
+    const c = appState.styleConfig;
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    const a = c.canonLoopStart ?? -1, b = c.canonLoopEnd ?? -1;
+    if (a < 0 || b < 0 || !appState.symbols.length) return null;
+    const start = Math.max(0, Math.min(maxIdx, a));
+    const end = Math.max(start, Math.min(maxIdx, b));
+    return { start, end, len: end - start + 1 };
+}
+
+// How far behind the LAST voice is — the gap the leader has to fill.
+function canonMaxOffset(): number {
+    const voices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+    let m = 0;
+    for (let v = 1; v < voices; v++) m = Math.max(m, canonTileOffset(v));
+    return m;
+}
+
+// How many times voice v repeats the tail phrase.
+//
+// This is not a free parameter. A voice N tiles behind needs exactly N tiles of
+// vamp from everyone ahead of it before it can catch up, so the leader repeats
+// ceil(maxOffset / loopLength) times and each following voice repeats
+// proportionally fewer — which lands every voice on its final tile at the same
+// moment. canonLoopRepeats overrides the leader's count; the others follow it.
+function canonLoopRepeatsFor(v: number): number {
+    const loop = canonLoopBounds();
+    if (!loop) return 0;
+    const set = appState.styleConfig.canonLoopRepeats || 0;
+    const leaderReps = set > 0 ? set : Math.ceil(canonMaxOffset() / loop.len);
+    return Math.max(0, leaderReps - Math.round(canonTileOffset(v) / loop.len));
+}
+
 // Song time at which the leader's line runs out.
 function canonLeadEndTime(): number {
     const syms = appState.symbols;
@@ -3808,7 +4209,32 @@ function canonVoiceTileAt(v: number, t: number): number {
     const syms = appState.symbols;
     if (!syms.length) return -1;
     const lastIdx = syms.length - 1;
-    const hold = (k: number) => v === 0 ? Math.min(k, lastIdx) : Math.min(k, canonPhraseEnd(v));
+    const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
+    const loop = canonLoopBounds();
+    const reps = loop ? canonLoopRepeatsFor(v) : 0;
+
+    // Once a voice has finished its phrase it either holds the last tile, or —
+    // if an ending loop is set — sings that phrase round again for its share of
+    // repeats, at the phrase's own recorded tile lengths. The leader needs this
+    // as much as anyone: activeIndexAt clamps at the final tile, so without a
+    // clock of its own the leader would simply stop while the others sang on.
+    const phraseEndT = canonPhraseEndTime(v);
+    if (t >= phraseEndT) {
+        if (!loop || reps <= 0) return pEnd;
+        const loopDur = canonLoopDuration();
+        if (loopDur <= 0) return pEnd;
+        const over = t - phraseEndT;
+        if (over >= reps * loopDur) return loop.end;     // ending is over: hold
+        let x = over % loopDur;
+        for (let i = loop.start; i <= loop.end; i++) {
+            const d = Math.max(0.02, (syms[i].endTime || 0) - (syms[i].startTime || 0));
+            if (x < d) return i;
+            x -= d;
+        }
+        return loop.end;
+    }
+
+    const hold = (k: number) => Math.min(k, pEnd);
     const off = canonTileOffset(v);
     const leadEndT = canonLeadEndTime();
     if (t <= leadEndT) return hold(activeIndexAt(t) - off);
@@ -3825,12 +4251,28 @@ function canonVoiceTileAt(v: number, t: number): number {
 // When voice v finishes its phrase, in absolute song time. Keeps an export
 // running until the last voice has actually stopped singing — for a late entry
 // that is well past the end of the leader's audio.
-function canonVoiceEndTime(v: number): number {
+// Total recorded length of the tail phrase, at its own tile durations.
+function canonLoopDuration(): number {
+    const loop = canonLoopBounds();
+    const syms = appState.symbols;
+    if (!loop || !syms.length) return 0;
+    let d = 0;
+    for (let i = loop.start; i <= loop.end; i++) {
+        const t = syms[i];
+        if (!t) continue;
+        d += Math.max(0.02, (t.endTime || 0) - (t.startTime || 0));
+    }
+    return d;
+}
+
+// Wall time at which voice v finishes the LAST TILE OF ITS PHRASE, before any
+// vamping. Everything about the ending is measured from here.
+function canonPhraseEndTime(v: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
     const lastIdx = syms.length - 1;
     const off = canonTileOffset(v);
-    const pEnd = canonPhraseEnd(v);
+    const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
     const idxAtEnd = canonTileAtLeadEnd(v);
     const tileEnd = (k: number) => syms[k] ? (syms[k].endTime || syms[k].startTime || 0) : 0;
     if (pEnd <= idxAtEnd) {
@@ -3841,6 +4283,12 @@ function canonVoiceEndTime(v: number): number {
     // Finishes in the tail, on its own rhythm — same anchor as canonVoiceTileAt.
     const anchorDst = syms[Math.max(0, Math.min(lastIdx, idxAtEnd))].startTime || 0;
     return (syms[lastIdx].startTime || 0) + (tileEnd(pEnd) - anchorDst);
+}
+
+// When voice v stops singing altogether: its phrase, plus its share of the
+// ending loop. This is what an export has to run to.
+function canonVoiceEndTime(v: number): number {
+    return canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -4096,6 +4544,8 @@ function syncStyleControls() {
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
     segSet('displayMode', c.sheetMode ? 1 : 0);
+    segSet('exportRes', parseInt(c.exportRes || '720', 10));
+    segSet('canonLoopRepeats', c.canonLoopRepeats || 0);
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
@@ -4137,6 +4587,15 @@ function normalizeCanonEntries() {
     // anywhere and sing any stretch of the line, so the only rules are "inside
     // the tile list" and "start no later than end". Files saved before phrases
     // existed have no arrays at all and default to the whole line from tile 1.
+    // Tail loop lives in the same tile coordinates and needs the same clamping.
+    const li = Math.max(0, appState.symbols.length - 1);
+    if (typeof c.canonLoopStart !== 'number') c.canonLoopStart = -1;
+    if (typeof c.canonLoopEnd !== 'number') c.canonLoopEnd = -1;
+    if (c.canonLoopStart >= 0) {
+        c.canonLoopStart = Math.min(li, Math.max(0, Math.round(c.canonLoopStart)));
+        if (c.canonLoopEnd >= 0) c.canonLoopEnd = Math.min(li, Math.max(c.canonLoopStart, Math.round(c.canonLoopEnd)));
+    } else { c.canonLoopEnd = -1; }
+    if (typeof c.canonLoopRepeats !== 'number' || c.canonLoopRepeats < 0) c.canonLoopRepeats = 0;
     if (!Array.isArray(c.canonStarts)) c.canonStarts = [0, 0, 0];
     if (!Array.isArray(c.canonEnds)) c.canonEnds = [-1, -1, -1];
     for (let i = 0; i < 3; i++) {
@@ -4213,6 +4672,7 @@ function renderTriggerStrips() {
     build(dom.result.roundPickStrip, pickRoundLoopTile, i => `Tile ${i + 1} — tap to mark the loop phrase`);
     build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set the chosen voice's entry`);
     build(dom.result.canonPhraseStrip, pickCanonPhraseTile, i => `Tile ${i + 1} — tap to set the phrase the chosen voice sings`);
+    build(dom.result.canonLoopStrip, pickCanonLoopTile, i => `Tile ${i + 1} — tap to set the ending loop`);
     refreshTriggerBadges();
 }
 
@@ -4269,6 +4729,30 @@ function pickCanonPhraseTile(i: number) {
     afterTriggerPointChange();
 }
 
+// Tap logic for the ending-loop strip: first tap sets the phrase start, a second
+// later tap sets its end. Same two-tap gesture as the round and phrase strips.
+let canonLoopPicking = false;
+function pickCanonLoopTile(i: number) {
+    const c = appState.styleConfig;
+    if (canonLoopPicking && c.canonLoopStart >= 0 && i > c.canonLoopStart) {
+        c.canonLoopEnd = i;
+        canonLoopPicking = false;
+    } else {
+        c.canonLoopStart = i;
+        c.canonLoopEnd = -1;
+        canonLoopPicking = true;
+    }
+    afterTriggerPointChange();
+}
+
+function clearCanonLoop() {
+    const c = appState.styleConfig;
+    c.canonLoopStart = -1;
+    c.canonLoopEnd = -1;
+    canonLoopPicking = false;
+    afterTriggerPointChange();
+}
+
 // Refresh everything that reflects the trigger points, after a pick/clear.
 function afterTriggerPointChange() {
     refreshTriggerBadges();
@@ -4320,6 +4804,26 @@ function refreshTriggerBadges() {
             }
         });
     }
+    // Ending-loop strip: one phrase shared by every voice, so it is not per-voice.
+    const loopStrip = dom.result.canonLoopStrip as HTMLElement | null;
+    if (loopStrip) {
+        const lb = canonLoopBounds();
+        loopStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+            el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
+            el.classList.remove('picked', 'loop-in');
+            if (!lb) return;
+            if (i === lb.start || i === lb.end) {
+                el.classList.add('picked');
+                const b = document.createElement('span');
+                b.className = 'trigger-badge';
+                b.textContent = i === lb.start ? '⟲ loop' : 'end';
+                el.appendChild(b);
+            } else if (i > lb.start && i < lb.end) {
+                el.classList.add('loop-in');
+            }
+        });
+    }
+
     // Phrase strip shows only the ARMED voice's phrase — overlaying every voice's
     // phrase would be unreadable, and you can only edit one at a time anyway.
     const phraseStrip = dom.result.canonPhraseStrip as HTMLElement | null;
@@ -4393,6 +4897,34 @@ function updateRoundCanonStatus() {
             cs.innerHTML = `🎯 ${parts.join('. ')}. Entries are kept in singing order automatically; each voice's phrase is set separately.`;
         }
     }
+
+    // Spell out the ending: how many times each voice repeats the tail phrase,
+    // and whether that actually lands them together. The count is derived from
+    // the tile offsets, so showing it is the only way to know what you will get.
+    const ls = dom.result.canonLoopStatus as HTMLElement | null;
+    if (ls) {
+        const loop = canonLoopBounds();
+        ls.style.display = cfg.canonEnabled ? 'block' : 'none';
+        if (!cfg.canonEnabled || !syms.length) { ls.innerHTML = ''; }
+        else if (!loop) {
+            ls.innerHTML = 'No ending loop set. Each voice will simply stop when it runs out of line, finishing one after another.';
+        } else {
+            const voices = Math.max(2, Math.min(4, cfg.canonVoices || 2));
+            const auto = !(cfg.canonLoopRepeats > 0);
+            const bits: string[] = [];
+            for (let v = 0; v < voices; v++) {
+                const r = canonLoopRepeatsFor(v);
+                bits.push(`<strong>Voice ${v + 1}</strong> ${r === 0 ? 'does not repeat' : `sings it <strong>${r}&times;</strong>`}`);
+            }
+            const maxOff = canonMaxOffset();
+            const exact = loop.len > 0 && maxOff % loop.len === 0;
+            ls.innerHTML = `⟲ Ending loop: tiles <strong>${loop.start + 1} → ${loop.end + 1}</strong> (${loop.len} tile${loop.len === 1 ? '' : 's'}). `
+                + `${bits.join(', ')}. ${auto ? 'Worked out' : 'Set by you'} from the last voice being <strong>${maxOff}</strong> tile${maxOff === 1 ? '' : 's'} behind`
+                + (exact
+                    ? ' — every voice runs out of music together.'
+                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly.`);
+        }
+    }
 }
 
 // Jump the preview to just before the first following voice comes in — with the
@@ -4423,7 +4955,7 @@ function previewVoiceEntry(kind: 'round' | 'canon') {
 }
 
 async function setupResultView() {
-    dom.result.canvas.width = 640; dom.result.canvas.height = 360;
+    dom.result.canvas.width = PREVIEW_SIZE.w; dom.result.canvas.height = PREVIEW_SIZE.h;
     dom.sync.audio.playbackRate = 1; // preview always plays at normal speed
     _bboxCache.clear(); // sheet-mode crop boxes recomputed for current tiles
     syncStyleControls();
@@ -4490,10 +5022,48 @@ function updatePreviewTransport() {
         dom.result.timeLabel.textContent = `${fmtClock(cur)} / ${fmtClock(dur)}`;
     }
 }
+// Every hard-coded pixel size in the render path is authored against a 360px-tall
+// frame. Multiplying them by this keeps the composition identical at any export
+// resolution — only the pixel count changes, not the layout. The on-screen
+// preview stays 360 tall, so k is 1 there and nothing about it moves.
+function frameScale(ctx: CanvasRenderingContext2D): number {
+    return (ctx.canvas.height || 360) / 360;
+}
+
+// The preview canvas stays small — it only has to be legible on this page. The
+// EXPORT is what ends up on a classroom whiteboard, so it renders at a real
+// resolution. Every drawn size is multiplied by frameScale, so the composition
+// at 720p and 1080p is identical to the preview, just with more pixels.
+const PREVIEW_SIZE = { w: 640, h: 360 };
+const EXPORT_SIZES: Record<string, { w: number; h: number; label: string }> = {
+    '720':  { w: 1280, h: 720,  label: '720p' },
+    '1080': { w: 1920, h: 1080, label: '1080p' },
+};
+function exportSize() {
+    return EXPORT_SIZES[appState.styleConfig.exportRes] || EXPORT_SIZES['720'];
+}
+
+// Swap the result canvas up to the export resolution for the duration of a
+// render, then put it back. Safe to do to the on-screen canvas because the
+// rendering overlay covers the page while a render is running. captureStream
+// must be taken AFTER this, so the track is created at the right size.
+function beginHiResRender(): { w: number; h: number } {
+    const size = exportSize();
+    dom.result.canvas.width = size.w;
+    dom.result.canvas.height = size.h;
+    return size;
+}
+function endHiResRender() {
+    dom.result.canvas.width = PREVIEW_SIZE.w;
+    dom.result.canvas.height = PREVIEW_SIZE.h;
+    drawPreviewFrame(dom.sync.audio.currentTime || 0);
+}
+
 function drawPreviewFrame(rawTime: number) {
     const ctx = dom.result.canvas.getContext('2d');
     const w = dom.result.canvas.width;
     const h = dom.result.canvas.height;
+    const k = frameScale(ctx);
     const cfg = appState.styleConfig;
     
     // Apply Latency (Global Correction)
@@ -4568,13 +5138,13 @@ function drawPreviewFrame(rawTime: number) {
         ctx.textBaseline = 'middle';
         
         // Title
-        ctx.font = 'bold 36px sans-serif';
-        ctx.fillText(appState.songTitle, w/2, h/2 - 20);
+        ctx.font = `bold ${36 * k}px sans-serif`;
+        ctx.fillText(appState.songTitle, w/2, h/2 - 20 * k);
         
         // Subtitle/Hint
-        ctx.font = '20px sans-serif';
+        ctx.font = `${20 * k}px sans-serif`;
         ctx.fillStyle = '#666';
-        ctx.fillText("Get Ready...", w/2, h/2 + 30);
+        ctx.fillText("Get Ready...", w/2, h/2 + 30 * k);
         
         ctx.restore();
     }
@@ -4586,11 +5156,11 @@ function drawPreviewFrame(rawTime: number) {
     const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
         if (!appState.preview.loadedImages.has(idx)) return;
         const img = appState.preview.loadedImages.get(idx);
-        const baseSize = 220;
+        const baseSize = 220 * k;
         const size = baseSize * scale;
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 5;
+        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
 
         const ratio = Math.min(size/img.width, size/img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
@@ -4620,7 +5190,7 @@ function drawPreviewFrame(rawTime: number) {
             if (start + i < appState.symbols.length) {
                 const s = cfg.nextScale * Math.pow(0.9, i-1);
                 const o = cfg.nextOpacity * Math.pow(0.8, i-1) * introFadeIn;
-                drawSym(start+i, cx + (i * cfg.spacing), s, o);
+                drawSym(start+i, cx + (i * cfg.spacing * k), s, o);
             }
         }
         
@@ -4632,10 +5202,10 @@ function drawPreviewFrame(rawTime: number) {
             const sym = appState.symbols[activeIndex];
             if (sym.direction) {
                 ctx.save();
-                ctx.font = 'italic 20px Georgia, serif';
+                ctx.font = `italic ${20 * k}px Georgia, serif`;
                 ctx.fillStyle = '#444';
                 ctx.textAlign = 'center';
-                ctx.fillText(sym.direction, cx, h - 30);
+                ctx.fillText(sym.direction, cx, h - 30 * k);
                 ctx.restore();
             }
 
@@ -4651,7 +5221,7 @@ function drawPreviewFrame(rawTime: number) {
             if (activeIndex - i >= 0) {
                 const s = cfg.prevScale * Math.pow(0.9, i-1);
                 const o = cfg.prevOpacity * Math.pow(0.8, i-1);
-                drawSym(activeIndex - i, cx - (i * cfg.spacing), s, o);
+                drawSym(activeIndex - i, cx - (i * cfg.spacing * k), s, o);
             }
         }
     }
@@ -4785,7 +5355,8 @@ function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             const mw = s.width * scale;
             const mh = s.height * scale;
             if (my + mh < 0 || my > h) return; // outside the visible window
-            drawContentMask(ctx, tileMaskColor(appState.preview.loadedImages.get(i), tileSourceKey(s)), mx, my, mw, mh);
+            drawContentMask(ctx, tileMaskColor(appState.preview.loadedImages.get(i), tileSourceKey(s)), mx, my, mw, mh,
+                scaffoldMaskModeAt(sheetLevel, i), appState.scaffold.wordBand);
         });
     }
 
@@ -4832,6 +5403,7 @@ const VOICE_NAMES = ['Group 1', 'Group 2', 'Group 3', 'Group 4'];
 // drawn in its own horizontal band, colour-coded, separated by divider lines.
 function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, gap: number, loopStartTime: number) {
     const bandH = h / voices;
+    const k = frameScale(ctx);
 
     for (let v = 0; v < voices; v++) {
         const tint = VOICE_COLORS[v % VOICE_COLORS.length];
@@ -4850,16 +5422,16 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
         // Group label pill on the left.
         ctx.save();
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold ${13 * k}px sans-serif`;
         ctx.textBaseline = 'middle';
         const label = VOICE_NAMES[v % VOICE_NAMES.length];
-        const lw = ctx.measureText(label).width + 18;
+        const lw = ctx.measureText(label).width + 18 * k;
         ctx.fillStyle = tint;
-        roundRect(ctx, 12, cy - 13, lw, 26, 13);
+        roundRect(ctx, 12 * k, cy - 13 * k, lw, 26 * k, 13 * k);
         ctx.fill();
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(label, 12 + lw / 2, cy + 1);
+        ctx.fillText(label, 12 * k + lw / 2, cy + 1);
         ctx.restore();
 
         // Has this voice started yet?
@@ -4880,17 +5452,17 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
                 const f = (elapsed - beatIdx * beatDur) / beatDur; // 0→1 within the beat
                 const pop = 1 + 0.28 * (1 - f);                  // pops as each beat lands
                 ctx.fillStyle = tint;
-                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92) * pop)}px sans-serif`;
+                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92 * k) * pop)}px sans-serif`;
                 ctx.globalAlpha = 0.4 + 0.6 * (1 - f);
                 ctx.fillText(String(n), w / 2, cy);
                 ctx.globalAlpha = 0.85;
                 ctx.fillStyle = tint;
-                ctx.font = 'bold 13px sans-serif';
-                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56));
+                ctx.font = `bold ${13 * k}px sans-serif`;
+                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56 * k));
             } else {
                 ctx.globalAlpha = 0.5;
                 ctx.fillStyle = tint;
-                ctx.font = 'italic 15px sans-serif';
+                ctx.font = `italic ${15 * k}px sans-serif`;
                 ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
             }
             ctx.restore();
@@ -4933,6 +5505,7 @@ function drawRoundFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 // last tile once done. `preroll` is the count-in run-up length in seconds.
 function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number, voices: number, preroll: number) {
     const bandH = h / voices;
+    const k = frameScale(ctx);
     const beats = Math.max(1, Math.min(8, appState.styleConfig.canonCountInBeats || 4));
 
     const syms = appState.symbols;
@@ -4958,16 +5531,16 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
         // Voice label pill on the left.
         ctx.save();
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = `bold ${13 * k}px sans-serif`;
         ctx.textBaseline = 'middle';
         const label = 'Voice ' + (v + 1);
-        const lw = ctx.measureText(label).width + 18;
+        const lw = ctx.measureText(label).width + 18 * k;
         ctx.fillStyle = tint;
-        roundRect(ctx, 12, cy - 13, lw, 26, 13);
+        roundRect(ctx, 12 * k, cy - 13 * k, lw, 26 * k, 13 * k);
         ctx.fill();
         ctx.fillStyle = '#fff';
         ctx.textAlign = 'center';
-        ctx.fillText(label, 12 + lw / 2, cy + 1);
+        ctx.fillText(label, 12 * k + lw / 2, cy + 1);
         ctx.restore();
 
         if (target < pStart) {
@@ -4985,17 +5558,17 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
                 const f = (elapsed - beatIdx * beatDur) / beatDur; // 0→1 within the beat
                 const pop = 1 + 0.28 * (1 - f);                  // pops as each beat lands
                 ctx.fillStyle = tint;
-                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92) * pop)}px sans-serif`;
+                ctx.font = `bold ${Math.round(Math.min(bandH * 0.6, 92 * k) * pop)}px sans-serif`;
                 ctx.globalAlpha = 0.4 + 0.6 * (1 - f);
                 ctx.fillText(String(n), w / 2, cy);
                 ctx.globalAlpha = 0.85;
                 ctx.fillStyle = tint;
-                ctx.font = 'bold 13px sans-serif';
-                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56));
+                ctx.font = `bold ${13 * k}px sans-serif`;
+                ctx.fillText('GET READY', w / 2, cy + Math.min(bandH * 0.36, 56 * k));
             } else {
                 ctx.globalAlpha = 0.5;
                 ctx.fillStyle = tint;
-                ctx.font = 'italic 15px sans-serif';
+                ctx.font = `italic ${15 * k}px sans-serif`;
                 ctx.fillText(v === 0 ? '♪ singing…' : 'coming in…', w / 2, cy);
             }
             ctx.restore();
@@ -5028,7 +5601,10 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
     const cfg = appState.styleConfig;
     const scaffoldLevel = currentScaffoldLevel();
-    const rowScale = Math.min(1, bandH / 240);
+    const k = frameScale(ctx);
+    // Cap against k, not 1, so the row grows with the frame instead of staying
+    // authored-size and shrinking relative to a larger export.
+    const rowScale = Math.min(k, bandH / 240);
     const baseSize = 200 * rowScale;
     const spacing = cfg.spacing * rowScale;
     const cx = w / 2;
@@ -5039,19 +5615,19 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
         const size = baseSize * scale;
         const ratio = Math.min(size / img.width, size / img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
-        const pad = active ? 12 : 8;
+        const pad = (active ? 12 : 8) * k;
         ctx.save();
         ctx.globalAlpha = opacity;
         // Colour-coded card behind the tile.
         ctx.fillStyle = tint;
         ctx.globalAlpha = opacity * (active ? 0.22 : 0.14);
-        roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+        roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12 * k);
         ctx.fill();
         if (active) {
             ctx.globalAlpha = opacity;
             ctx.strokeStyle = tint;
             ctx.lineWidth = 3;
-            roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12);
+            roundRect(ctx, x - dw / 2 - pad, cy - dh / 2 - pad, dw + pad * 2, dh + pad * 2, 12 * k);
             ctx.stroke();
         }
         ctx.globalAlpha = opacity;
@@ -5143,6 +5719,10 @@ async function renderVideo(mode: 'full' | 'backing') {
         return;
     }
 
+    const size = beginHiResRender();
+    if (dom.rendering.progressText) {
+        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
+    }
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     
@@ -5167,9 +5747,15 @@ async function renderVideo(mode: 'full' | 'backing') {
         // simple graphics content exports noticeably smaller. MP4 (H.264) is less
         // efficient, so keep it a little higher there to hold quality.
         const isMp4 = mime.includes("mp4");
-        const bitrate = isMp4 ? 2500000 : 1600000;
+        const bitrate = exportBitrate(isMp4);
         recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
-    } catch (e) { alert("Recording not supported or codec missing."); return; }
+    } catch (e) {
+        alert("Recording not supported or codec missing.");
+        dom.rendering.overlay.style.display = 'none';
+        endHiResRender();
+        audioCtx.close();
+        return;
+    }
     
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
@@ -5182,6 +5768,7 @@ async function renderVideo(mode: 'full' | 'backing') {
         a.href = url; a.download = `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
+        endHiResRender();     // put the preview canvas back to its own size
         audioCtx.close();
     };
 
@@ -5208,11 +5795,23 @@ function projectFileBase(): string {
 }
 
 // Pick a supported MediaRecorder mime + a bitrate for this content.
+// Bitrate for the chosen export size. The old flat 1.6/2.5 Mbps was tuned for a
+// 640x360 frame; spending the same bits on 4x (720p) or 9x (1080p) the pixels
+// would make a bigger export look WORSE than the small one. Scaled by pixel
+// count with a 0.75 exponent rather than linearly, because codecs get more
+// efficient at higher resolutions and this content is mostly flat colour.
+function exportBitrate(isMp4: boolean): number {
+    const base = isMp4 ? 2500000 : 1600000;
+    const size = exportSize();
+    const ratio = (size.w * size.h) / (PREVIEW_SIZE.w * PREVIEW_SIZE.h);
+    return Math.round(base * Math.pow(ratio, 0.75));
+}
+
 function pickRecorderMime(): { mime: string; bitrate: number } {
     const preferredTypes = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
     let mime = "video/webm";
     for (const t of preferredTypes) { if (MediaRecorder.isTypeSupported(t)) { mime = t; break; } }
-    return { mime, bitrate: mime.includes("mp4") ? 2500000 : 1600000 };
+    return { mime, bitrate: exportBitrate(mime.includes("mp4")) };
 }
 
 // A between-sections title card for the progressive practice video.
@@ -5226,12 +5825,18 @@ function drawScaffoldTitleCard(ctx: CanvasRenderingContext2D, w: number, h: numb
     ctx.globalAlpha = Math.max(0, Math.min(1, fade));
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const k = frameScale(ctx);
     ctx.fillStyle = '#333';
-    ctx.font = 'bold 40px sans-serif';
-    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18);
-    ctx.font = '20px sans-serif';
+    ctx.font = `bold ${40 * k}px sans-serif`;
+    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18 * k);
+    ctx.font = `${20 * k}px sans-serif`;
     ctx.fillStyle = '#666';
-    ctx.fillText(level === 0 ? 'All symbols visible' : 'Some symbols will now be hidden', w / 2, h / 2 + 26);
+    // Name what actually changes at this level, so a class watching the video
+    // knows what to expect before the song restarts.
+    const sub = level === 0
+        ? 'All symbols visible'
+        : 'Some tiles now show ' + SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says;
+    ctx.fillText(sub, w / 2, h / 2 + 26 * k);
     ctx.restore();
 }
 
@@ -5285,6 +5890,10 @@ async function renderProgressiveVideo() {
     const sectionDur = TITLE_DUR + perfDur;
     const total = sectionDur * levels.length;
 
+    const size = beginHiResRender();
+    if (dom.rendering.progressText) {
+        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
+    }
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
 
@@ -5292,7 +5901,7 @@ async function renderProgressiveVideo() {
     try {
         const { mime, bitrate } = pickRecorderMime();
         recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
-    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; audioCtx.close(); return; }
+    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; endHiResRender(); audioCtx.close(); return; }
 
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
@@ -5306,6 +5915,7 @@ async function renderProgressiveVideo() {
         a.href = url; a.download = `${projectFileBase()}_progressive.${ext}`;
         a.click();
         dom.rendering.overlay.style.display = 'none';
+        endHiResRender();     // put the preview canvas back to its own size
         audioCtx.close();
     };
 
@@ -5649,6 +6259,14 @@ async function saveProjectJson() {
         latencyOffset: appState.interaction.latencyOffset,
         currentView: appState.currentView,
         globalSequence: appState.globalSequence.map(s => ({ page: s.page, sym: s.sym, removalLevel: s.removalLevel })),
+        // The actual recording. Read from the flat list, which is the only place
+        // timings are ever written; the per-page tiles below keep their
+        // startTime/endTime fields for backward compatibility but are always 0.
+        timings: appState.symbols.map(s => ({
+            st: s.startTime || 0,
+            et: s.endTime || 0,
+            dir: s.direction || '',
+        })),
         round: { start: appState.round.start, end: appState.round.end },
         pages: savedPages
     };
@@ -5760,6 +6378,18 @@ function handleProjectLoadFile(e: Event) {
 
             // Rebuild Flat List
             rebuildGlobalSymbolsList();
+
+            // Put the recording back on it. Saved per occurrence and in reading
+            // order, so it lines up 1:1 with the list just rebuilt.
+            if (Array.isArray(data.timings)) {
+                appState.symbols.forEach((sym, i) => {
+                    const t = data.timings[i];
+                    if (!t) return;
+                    sym.startTime = t.st || 0;
+                    sym.endTime = t.et || 0;
+                    if (t.dir) sym.direction = t.dir;
+                });
+            }
             
             // Backup backgrounds
             (window as any)._originalPageBackgrounds = [...appState.pages];
