@@ -1,6 +1,3 @@
-import * as pdfjsLib from "pdfjs-dist";
-import { jsPDF } from "jspdf";
-import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
@@ -16,8 +13,21 @@ import {
 // app is served from Vercel (no-op in local dev).
 injectVercelAnalytics();
 
-// Set PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+// PDF.js, jsPDF and JSZip are the three heavyweights in here, and none of them
+// is needed to open the app: PDF.js only when a PDF is actually imported (not
+// for an image board or a reloaded project), and the other two only if you use
+// one of the two board-export buttons. Fetching them on first use keeps the
+// initial download to the app itself, which matters on a school connection.
+// The worker stays a static `?url` import — that compiles to a string, not code.
+let _pdfjs: typeof import("pdfjs-dist") | null = null;
+async function loadPdfjs() {
+    if (!_pdfjs) {
+        const lib = await import("pdfjs-dist");
+        lib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+        _pdfjs = lib;
+    }
+    return _pdfjs;
+}
 
 // Undo/Redo Stacks
 const undoStack: string[] = [];
@@ -1342,6 +1352,7 @@ async function downloadBoardPdf() {
     });
 
     const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const { jsPDF } = await import("jspdf");
     const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'px',
@@ -1359,6 +1370,7 @@ async function downloadBoardImages() {
         return;
     }
 
+    const { default: JSZip } = await import("jszip");
     const zip = new JSZip();
     
     page.symbols.forEach((sym: any, i: number) => {
@@ -1946,6 +1958,7 @@ function audioBufferToWav(buf: AudioBuffer): ArrayBuffer {
 
 async function processPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
+    const pdfjsLib = await loadPdfjs();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     
     for (let i = 1; i <= pdf.numPages; i++) {
