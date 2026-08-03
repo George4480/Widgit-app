@@ -117,6 +117,9 @@ const appState: AppState = {
         canonEntries: [2, 4, 6],
         canonStarts: [0, 0, 0],
         canonEnds: [-1, -1, -1],
+        canonLoopStart: -1,
+        canonLoopEnd: -1,
+        canonLoopRepeats: 0,   // 0 = auto
         canonCountdown: true,
         exportRes: '720',
         canonCountInBeats: 4,
@@ -166,6 +169,9 @@ let dom = {} as any;
     pEnd: (v: number) => canonPhraseEnd(v),
     voiceEnd: (v: number) => canonVoiceEndTime(v),
     voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
+    loopReps: (v: number) => canonLoopRepeatsFor(v),
+    loopBounds: () => canonLoopBounds(),
+    maxOffset: () => canonMaxOffset(),
     leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
 };
@@ -374,6 +380,8 @@ function init() {
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
             canonPhraseStrip: document.getElementById('canon-phrase-strip'),
+            canonLoopStrip: document.getElementById('canon-loop-strip'),
+            canonLoopStatus: document.getElementById('canon-loop-status'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
             canonCountinItem: document.getElementById('canon-countin-item'),
@@ -798,6 +806,7 @@ function setupEventListeners() {
         }
         appState.styleConfig.sheetMode = segGet('displayMode') === 1;
         // Export resolution only affects the rendered file, never the preview.
+        appState.styleConfig.canonLoopRepeats = segGet('canonLoopRepeats');
         const res = segGet('exportRes');
         if (res) appState.styleConfig.exportRes = String(res);
         // Enable/disable each feature's sub-controls to match its own toggle.
@@ -861,6 +870,8 @@ function setupEventListeners() {
     // song, and clear the loop phrase picked in the round strip.
     if (dom.result.btnRoundPreviewEntry) dom.result.btnRoundPreviewEntry.addEventListener('click', () => previewVoiceEntry('round'));
     if (dom.result.btnCanonPreviewEntry) dom.result.btnCanonPreviewEntry.addEventListener('click', () => previewVoiceEntry('canon'));
+    const btnLoopClear = document.getElementById('btn-canon-loop-clear');
+    if (btnLoopClear) btnLoopClear.addEventListener('click', clearCanonLoop);
     if (dom.result.btnRoundPickClear) dom.result.btnRoundPickClear.addEventListener('click', () => {
         appState.round = { start: -1, end: -1 };
         afterTriggerPointChange();
@@ -3957,6 +3968,44 @@ function canonTileOffset(v: number): number {
     return canonEntryIndex(v) - canonPhraseStart(v);
 }
 
+// --- Canon tail loop ------------------------------------------------------
+// A canon that simply stops leaves each voice trailing off alone. The usual
+// resolution is a short tail phrase everyone repeats until the last voice has
+// caught up, so the piece ends together. Counted in tiles, like the rest of it.
+
+function canonLoopBounds(): { start: number; end: number; len: number } | null {
+    const c = appState.styleConfig;
+    const maxIdx = Math.max(0, appState.symbols.length - 1);
+    const a = c.canonLoopStart ?? -1, b = c.canonLoopEnd ?? -1;
+    if (a < 0 || b < 0 || !appState.symbols.length) return null;
+    const start = Math.max(0, Math.min(maxIdx, a));
+    const end = Math.max(start, Math.min(maxIdx, b));
+    return { start, end, len: end - start + 1 };
+}
+
+// How far behind the LAST voice is — the gap the leader has to fill.
+function canonMaxOffset(): number {
+    const voices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+    let m = 0;
+    for (let v = 1; v < voices; v++) m = Math.max(m, canonTileOffset(v));
+    return m;
+}
+
+// How many times voice v repeats the tail phrase.
+//
+// This is not a free parameter. A voice N tiles behind needs exactly N tiles of
+// vamp from everyone ahead of it before it can catch up, so the leader repeats
+// ceil(maxOffset / loopLength) times and each following voice repeats
+// proportionally fewer — which lands every voice on its final tile at the same
+// moment. canonLoopRepeats overrides the leader's count; the others follow it.
+function canonLoopRepeatsFor(v: number): number {
+    const loop = canonLoopBounds();
+    if (!loop) return 0;
+    const set = appState.styleConfig.canonLoopRepeats || 0;
+    const leaderReps = set > 0 ? set : Math.ceil(canonMaxOffset() / loop.len);
+    return Math.max(0, leaderReps - Math.round(canonTileOffset(v) / loop.len));
+}
+
 // Song time at which the leader's line runs out.
 function canonLeadEndTime(): number {
     const syms = appState.symbols;
@@ -3996,7 +4045,32 @@ function canonVoiceTileAt(v: number, t: number): number {
     const syms = appState.symbols;
     if (!syms.length) return -1;
     const lastIdx = syms.length - 1;
-    const hold = (k: number) => v === 0 ? Math.min(k, lastIdx) : Math.min(k, canonPhraseEnd(v));
+    const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
+    const loop = canonLoopBounds();
+    const reps = loop ? canonLoopRepeatsFor(v) : 0;
+
+    // Once a voice has finished its phrase it either holds the last tile, or —
+    // if an ending loop is set — sings that phrase round again for its share of
+    // repeats, at the phrase's own recorded tile lengths. The leader needs this
+    // as much as anyone: activeIndexAt clamps at the final tile, so without a
+    // clock of its own the leader would simply stop while the others sang on.
+    const phraseEndT = canonPhraseEndTime(v);
+    if (t >= phraseEndT) {
+        if (!loop || reps <= 0) return pEnd;
+        const loopDur = canonLoopDuration();
+        if (loopDur <= 0) return pEnd;
+        const over = t - phraseEndT;
+        if (over >= reps * loopDur) return loop.end;     // ending is over: hold
+        let x = over % loopDur;
+        for (let i = loop.start; i <= loop.end; i++) {
+            const d = Math.max(0.02, (syms[i].endTime || 0) - (syms[i].startTime || 0));
+            if (x < d) return i;
+            x -= d;
+        }
+        return loop.end;
+    }
+
+    const hold = (k: number) => Math.min(k, pEnd);
     const off = canonTileOffset(v);
     const leadEndT = canonLeadEndTime();
     if (t <= leadEndT) return hold(activeIndexAt(t) - off);
@@ -4013,12 +4087,28 @@ function canonVoiceTileAt(v: number, t: number): number {
 // When voice v finishes its phrase, in absolute song time. Keeps an export
 // running until the last voice has actually stopped singing — for a late entry
 // that is well past the end of the leader's audio.
-function canonVoiceEndTime(v: number): number {
+// Total recorded length of the tail phrase, at its own tile durations.
+function canonLoopDuration(): number {
+    const loop = canonLoopBounds();
+    const syms = appState.symbols;
+    if (!loop || !syms.length) return 0;
+    let d = 0;
+    for (let i = loop.start; i <= loop.end; i++) {
+        const t = syms[i];
+        if (!t) continue;
+        d += Math.max(0.02, (t.endTime || 0) - (t.startTime || 0));
+    }
+    return d;
+}
+
+// Wall time at which voice v finishes the LAST TILE OF ITS PHRASE, before any
+// vamping. Everything about the ending is measured from here.
+function canonPhraseEndTime(v: number): number {
     const syms = appState.symbols;
     if (!syms.length) return 0;
     const lastIdx = syms.length - 1;
     const off = canonTileOffset(v);
-    const pEnd = canonPhraseEnd(v);
+    const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
     const idxAtEnd = canonTileAtLeadEnd(v);
     const tileEnd = (k: number) => syms[k] ? (syms[k].endTime || syms[k].startTime || 0) : 0;
     if (pEnd <= idxAtEnd) {
@@ -4029,6 +4119,12 @@ function canonVoiceEndTime(v: number): number {
     // Finishes in the tail, on its own rhythm — same anchor as canonVoiceTileAt.
     const anchorDst = syms[Math.max(0, Math.min(lastIdx, idxAtEnd))].startTime || 0;
     return (syms[lastIdx].startTime || 0) + (tileEnd(pEnd) - anchorDst);
+}
+
+// When voice v stops singing altogether: its phrase, plus its share of the
+// ending loop. This is what an export has to run to.
+function canonVoiceEndTime(v: number): number {
+    return canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -4285,6 +4381,7 @@ function syncStyleControls() {
     segSet('prevCount', c.prevCount);
     segSet('displayMode', c.sheetMode ? 1 : 0);
     segSet('exportRes', parseInt(c.exportRes || '720', 10));
+    segSet('canonLoopRepeats', c.canonLoopRepeats || 0);
     document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
@@ -4326,6 +4423,15 @@ function normalizeCanonEntries() {
     // anywhere and sing any stretch of the line, so the only rules are "inside
     // the tile list" and "start no later than end". Files saved before phrases
     // existed have no arrays at all and default to the whole line from tile 1.
+    // Tail loop lives in the same tile coordinates and needs the same clamping.
+    const li = Math.max(0, appState.symbols.length - 1);
+    if (typeof c.canonLoopStart !== 'number') c.canonLoopStart = -1;
+    if (typeof c.canonLoopEnd !== 'number') c.canonLoopEnd = -1;
+    if (c.canonLoopStart >= 0) {
+        c.canonLoopStart = Math.min(li, Math.max(0, Math.round(c.canonLoopStart)));
+        if (c.canonLoopEnd >= 0) c.canonLoopEnd = Math.min(li, Math.max(c.canonLoopStart, Math.round(c.canonLoopEnd)));
+    } else { c.canonLoopEnd = -1; }
+    if (typeof c.canonLoopRepeats !== 'number' || c.canonLoopRepeats < 0) c.canonLoopRepeats = 0;
     if (!Array.isArray(c.canonStarts)) c.canonStarts = [0, 0, 0];
     if (!Array.isArray(c.canonEnds)) c.canonEnds = [-1, -1, -1];
     for (let i = 0; i < 3; i++) {
@@ -4402,6 +4508,7 @@ function renderTriggerStrips() {
     build(dom.result.roundPickStrip, pickRoundLoopTile, i => `Tile ${i + 1} — tap to mark the loop phrase`);
     build(dom.result.canonPickStrip, pickCanonEntryTile, i => `Tile ${i + 1} — tap to set the chosen voice's entry`);
     build(dom.result.canonPhraseStrip, pickCanonPhraseTile, i => `Tile ${i + 1} — tap to set the phrase the chosen voice sings`);
+    build(dom.result.canonLoopStrip, pickCanonLoopTile, i => `Tile ${i + 1} — tap to set the ending loop`);
     refreshTriggerBadges();
 }
 
@@ -4458,6 +4565,30 @@ function pickCanonPhraseTile(i: number) {
     afterTriggerPointChange();
 }
 
+// Tap logic for the ending-loop strip: first tap sets the phrase start, a second
+// later tap sets its end. Same two-tap gesture as the round and phrase strips.
+let canonLoopPicking = false;
+function pickCanonLoopTile(i: number) {
+    const c = appState.styleConfig;
+    if (canonLoopPicking && c.canonLoopStart >= 0 && i > c.canonLoopStart) {
+        c.canonLoopEnd = i;
+        canonLoopPicking = false;
+    } else {
+        c.canonLoopStart = i;
+        c.canonLoopEnd = -1;
+        canonLoopPicking = true;
+    }
+    afterTriggerPointChange();
+}
+
+function clearCanonLoop() {
+    const c = appState.styleConfig;
+    c.canonLoopStart = -1;
+    c.canonLoopEnd = -1;
+    canonLoopPicking = false;
+    afterTriggerPointChange();
+}
+
 // Refresh everything that reflects the trigger points, after a pick/clear.
 function afterTriggerPointChange() {
     refreshTriggerBadges();
@@ -4509,6 +4640,26 @@ function refreshTriggerBadges() {
             }
         });
     }
+    // Ending-loop strip: one phrase shared by every voice, so it is not per-voice.
+    const loopStrip = dom.result.canonLoopStrip as HTMLElement | null;
+    if (loopStrip) {
+        const lb = canonLoopBounds();
+        loopStrip.querySelectorAll('.trigger-tile').forEach((el: HTMLElement, i: number) => {
+            el.querySelectorAll('.trigger-badge').forEach(b => b.remove());
+            el.classList.remove('picked', 'loop-in');
+            if (!lb) return;
+            if (i === lb.start || i === lb.end) {
+                el.classList.add('picked');
+                const b = document.createElement('span');
+                b.className = 'trigger-badge';
+                b.textContent = i === lb.start ? '⟲ loop' : 'end';
+                el.appendChild(b);
+            } else if (i > lb.start && i < lb.end) {
+                el.classList.add('loop-in');
+            }
+        });
+    }
+
     // Phrase strip shows only the ARMED voice's phrase — overlaying every voice's
     // phrase would be unreadable, and you can only edit one at a time anyway.
     const phraseStrip = dom.result.canonPhraseStrip as HTMLElement | null;
@@ -4580,6 +4731,34 @@ function updateRoundCanonStatus() {
                 parts.push(`<strong>Voice ${v + 1}</strong> comes in at tile <strong>${tile}</strong> (~${at.toFixed(1)}s) and ${sings}`);
             }
             cs.innerHTML = `🎯 ${parts.join('. ')}. Entries are kept in singing order automatically; each voice's phrase is set separately.`;
+        }
+    }
+
+    // Spell out the ending: how many times each voice repeats the tail phrase,
+    // and whether that actually lands them together. The count is derived from
+    // the tile offsets, so showing it is the only way to know what you will get.
+    const ls = dom.result.canonLoopStatus as HTMLElement | null;
+    if (ls) {
+        const loop = canonLoopBounds();
+        ls.style.display = cfg.canonEnabled ? 'block' : 'none';
+        if (!cfg.canonEnabled || !syms.length) { ls.innerHTML = ''; }
+        else if (!loop) {
+            ls.innerHTML = 'No ending loop set. Each voice will simply stop when it runs out of line, finishing one after another.';
+        } else {
+            const voices = Math.max(2, Math.min(4, cfg.canonVoices || 2));
+            const auto = !(cfg.canonLoopRepeats > 0);
+            const bits: string[] = [];
+            for (let v = 0; v < voices; v++) {
+                const r = canonLoopRepeatsFor(v);
+                bits.push(`<strong>Voice ${v + 1}</strong> ${r === 0 ? 'does not repeat' : `sings it <strong>${r}&times;</strong>`}`);
+            }
+            const maxOff = canonMaxOffset();
+            const exact = loop.len > 0 && maxOff % loop.len === 0;
+            ls.innerHTML = `⟲ Ending loop: tiles <strong>${loop.start + 1} → ${loop.end + 1}</strong> (${loop.len} tile${loop.len === 1 ? '' : 's'}). `
+                + `${bits.join(', ')}. ${auto ? 'Worked out' : 'Set by you'} from the last voice being <strong>${maxOff}</strong> tile${maxOff === 1 ? '' : 's'} behind`
+                + (exact
+                    ? ' — every voice runs out of music together.'
+                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly.`);
         }
     }
 }

@@ -98,6 +98,22 @@ export interface StyleConfig {
      * -1 means sing on to the end of the song, which is the default.
      */
     canonEnds: number[];
+    /**
+     * Tail loop: a short phrase the voices repeat at the end so a canon can
+     * finish in unison instead of each voice simply stopping when it runs out
+     * of line. 0-based tile indices into the reading order; -1 = no loop.
+     */
+    canonLoopStart: number;
+    canonLoopEnd: number;
+    /**
+     * How many times the LEADER repeats that phrase. 0 = work it out
+     * automatically, which is almost always what you want: a voice N tiles
+     * behind needs exactly N tiles of vamp to catch up, so the count follows
+     * from the tile offsets and the loop length rather than being guessed.
+     * Following voices repeat proportionally fewer times, so every voice runs
+     * out of music at the same moment.
+     */
+    canonLoopRepeats: number;
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
     /**

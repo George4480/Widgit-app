@@ -2490,6 +2490,21 @@
                     <div id="canon-pick-strip" class="trigger-strip" role="group" aria-label="Pick the entry tile for the chosen voice"></div>
                     <label style="font-weight:600; font-size:0.85rem; margin-top:10px; display:block;">2. Sings <span class="section-note">tap the first tile of its phrase, then the last — this is a separate choice from when it comes in</span></label>
                     <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+
+                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a short phrase the voices repeat so the canon finishes together</span></label>
+                    <div id="canon-loop-strip" class="trigger-strip" role="group" aria-label="Pick the tail phrase the voices repeat at the end"></div>
+                    <div class="scaffold-row" style="margin-top:6px;">
+                        <span style="font-weight:600; font-size:0.85rem;">Repeat it</span>
+                        <span class="seg-group" data-style="canonLoopRepeats" role="group" aria-label="How many times the leader repeats the ending loop">
+                            <button type="button" data-value="0" title="Work out the number needed for every voice to finish together">Auto</button>
+                            <button type="button" data-value="1">1&times;</button>
+                            <button type="button" data-value="2">2&times;</button>
+                            <button type="button" data-value="3">3&times;</button>
+                            <button type="button" data-value="4">4&times;</button>
+                        </span>
+                        <button id="btn-canon-loop-clear" type="button" class="button secondary small" style="margin:0; color:#c5221f;">Clear loop</button>
+                    </div>
+                    <p id="canon-loop-status" class="settings-note" role="status" style="margin:.35em 0 0;"></p>
                 </div>
                 <div id="canon-actions" class="scaffold-row" style="display:none;">
                     <button id="btn-canon-preview-entry" type="button" class="button secondary small" style="margin:0;" title="Jump the preview to just before voice 2 comes in">▶ Preview voice 2 coming in</button>
