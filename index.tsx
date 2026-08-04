@@ -163,7 +163,8 @@ const appState: AppState = {
         canonCountdown: true,
         exportRes: '720',
         canonCountInBeats: 4,
-        sheetMode: false
+        sheetMode: false,
+        presentationMode: 'conveyor'
     },
     scaffold: defaultScaffold(),
     interaction: {
@@ -297,6 +298,9 @@ let dom = {} as any;
         im.src = dataUrl;
     }),
     reconstructFullPage: (candidates: any, apply?: boolean) => reconstructFullPageProject(candidates, !!apply),
+    // Presentation-mode helpers, exposed for tests to check the layout logic
+    // directly rather than only inferring it from rendered pixels.
+    phraseLines: () => computePhraseLines(),
 };
 
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
@@ -981,7 +985,8 @@ function setupEventListeners() {
             (dom.result.canonCountinItem as HTMLElement).style.opacity = appState.styleConfig.canonCountdown ? '1' : '0.45';
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
-        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
+        appState.styleConfig.presentationMode = PRESENTATION_MODES[segGet('displayMode')] || 'conveyor';
+        appState.styleConfig.sheetMode = appState.styleConfig.presentationMode === 'sheet';
         // Export resolution only affects the rendered file, never the preview.
         appState.styleConfig.canonLoopRepeats = segGet('canonLoopRepeats');
         const res = segGet('exportRes');
@@ -1004,7 +1009,7 @@ function setupEventListeners() {
         updateCanonEntryUI();
         updateRoundCanonStatus();
         // Hide conveyor-only settings when following the sheet.
-        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
+        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.presentationMode !== 'conveyor');
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
 
@@ -5235,10 +5240,14 @@ function syncStyleControls() {
     segSet('canonVoices', c.canonVoices || 2);
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
-    segSet('displayMode', c.sheetMode ? 1 : 0);
+    segSet('displayMode', Math.max(0, PRESENTATION_MODES.indexOf(c.presentationMode)));
     segSet('exportRes', parseInt(c.exportRes || '720', 10));
     segSet('canonLoopRepeats', c.canonLoopRepeats || 0);
-    document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
+    // Conveyor-only settings (Main tile, Next/Previous tiles, Extra cues) only
+    // make sense for the conveyor itself — every other presentation mode owns
+    // its whole frame the way Follow-the-sheet always did, so the same class
+    // that used to mean "sheet mode" now means "any full-frame mode".
+    document.querySelector('#result-view details')?.classList.toggle('sheet-active', c.presentationMode !== 'conveyor');
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
@@ -5261,6 +5270,21 @@ function normalizeRoundConfig() {
     if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
     c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
+}
+
+const PRESENTATION_MODES = ['conveyor', 'sheet', 'spotlight', 'phraseLine', 'nowNext', 'vertical'] as const;
+
+// A project saved before presentationMode existed only ever had the
+// sheetMode boolean; anything else not in the known list (a future version's
+// mode this build doesn't understand, or garbage) falls back to the plain
+// conveyor rather than silently picking an arbitrary mode. sheetMode is kept
+// in sync afterwards purely for the field's own sake — nothing live reads it.
+function normalizePresentationMode() {
+    const c = appState.styleConfig;
+    if (!(PRESENTATION_MODES as readonly string[]).includes(c.presentationMode)) {
+        c.presentationMode = c.sheetMode ? 'sheet' : 'conveyor';
+    }
+    c.sheetMode = c.presentationMode === 'sheet';
 }
 
 // Clamp the stored canon entries to the available tiles and keep them in
@@ -5796,11 +5820,16 @@ function drawPreviewFrame(rawTime: number) {
     // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
 
-    // "Follow the sheet" mode shows the whole songsheet with a glowing
-    // highlight that scrolls down — a full-frame alternative to the conveyor.
-    if (cfg.sheetMode && appState.symbols.length > 0) {
-        drawSheetFrame(ctx, w, h, time);
-        return;
+    // Full-frame presentation modes — alternatives to the conveyor that own the
+    // whole picture themselves, the same way Follow-the-sheet always has.
+    if (cfg.presentationMode !== 'conveyor' && appState.symbols.length > 0) {
+        switch (cfg.presentationMode) {
+            case 'sheet': drawSheetFrame(ctx, w, h, time); return;
+            case 'spotlight': drawSpotlightFrame(ctx, w, h, time, firstStart); return;
+            case 'phraseLine': drawPhraseLineFrame(ctx, w, h, time, firstStart); return;
+            case 'nowNext': drawNowNextFrame(ctx, w, h, time, firstStart); return;
+            case 'vertical': drawVerticalConveyorFrame(ctx, w, h, time, firstStart); return;
+        }
     }
 
     // Canon: each following voice is fired at its own chosen point and sings the
@@ -6056,6 +6085,215 @@ function pageContentBox(pageIdx: number) {
     };
     _bboxCache.set(pageIdx, box);
     return box;
+}
+
+// ---- Full-frame presentation modes (Spotlight, Phrase line, Now/Next, Vertical) --
+//
+// Four alternatives to the conveyor, each showing the tiles a different way but
+// sharing one drawing primitive and one intro-fade curve so they read as
+// variations on the same app rather than four disconnected demos.
+
+// Same fade every conveyor-family mode uses for the moment before the song
+// starts: hidden until the last second, then rising to full opacity right as
+// the first tile begins. Shared so "how the video opens" feels consistent
+// across modes even though what it opens ONTO differs.
+function introFadeAt(time: number, firstStart: number): number {
+    if (time >= firstStart) return 1;
+    const timeUntilStart = firstStart - time;
+    return timeUntilStart > 1.0 ? 0 : 1.0 - timeUntilStart;
+}
+
+// One image, centred at (cx,cy), at most `size` px on its long side, with the
+// same card-and-ring treatment the conveyor's "Active card and ring" option
+// uses — so a ring always means the same thing everywhere in the app, not a
+// different visual language per mode.
+function drawModeTile(
+    ctx: CanvasRenderingContext2D, idx: number, cx: number, cy: number,
+    maxW: number, maxH: number, opacity: number, ring: boolean, scaffoldLevel: number, k: number,
+) {
+    if (!appState.preview.loadedImages.has(idx) || opacity <= 0) return;
+    const img = appState.preview.loadedImages.get(idx)!;
+    const sym = appState.symbols[idx];
+    const ratio = Math.min(maxW / img.width, maxH / img.height);
+    const dw = img.width * ratio, dh = img.height * ratio;
+    const dx = cx - dw / 2, dy = cy - dh / 2;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    if (ring) {
+        const pad = 12 * k;
+        ctx.save();
+        ctx.globalAlpha = opacity * 0.22;
+        ctx.fillStyle = CONVEYOR_ACCENT;
+        roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+        ctx.fill();
+        ctx.globalAlpha = opacity;
+        ctx.strokeStyle = CONVEYOR_ACCENT;
+        ctx.lineWidth = 3 * k;
+        roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+        ctx.stroke();
+        ctx.restore();
+    }
+    ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
+    ctx.drawImage(img, dx, dy, dw, dh);
+    maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+    ctx.restore();
+}
+
+// The active tile, or the intro fade-in of tile 0 before the song starts, or
+// nothing. Every mode below starts with this same three-way branch — factored
+// out so each mode's own function is just its own layout.
+function activeOrIntro(time: number, firstStart: number): { idx: number; opacity: number } | null {
+    const idx = activeIndexAt(time);
+    if (idx !== -1) return { idx, opacity: 1 };
+    if (appState.symbols.length === 0) return null;
+    const opacity = introFadeAt(time, firstStart);
+    return opacity > 0 ? { idx: 0, opacity } : null;
+}
+
+// Spotlight: one symbol, as large as the frame allows, nothing else on screen.
+// For learners who cannot filter out neighbouring tiles, or who need the
+// largest possible image — the cheapest mode to build and probably the most
+// useful for a child who finds the conveyor busy.
+function drawSpotlightFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    // Bound width and height independently, not by a single square side — on
+    // a 16:9 frame a symbol whose own aspect ratio is wide should be able to
+    // use most of the frame's width rather than being capped by its height.
+    drawModeTile(ctx, cur.idx, w / 2, h / 2, w * 0.82, h * 0.86, cur.opacity, true, currentScaffoldLevel(), k);
+}
+
+// Group the flat symbol list into "lines": maximal runs of consecutive
+// reading-order steps sitting on the same physical row of the same page — the
+// shape a real songboard actually reads in, not just a rolling window. A step
+// starts a new line whenever the page changes or its own y jumps by more than
+// half a tile's height from the line's current row. Source tile x/y/height are
+// already carried onto the flat entries (buildFlatSymbolFor spreads them),
+// so this needs no extra data.
+function computePhraseLines(): number[][] {
+    const syms = appState.symbols;
+    const lines: number[][] = [];
+    let cur: number[] = [];
+    let curPage = -1, curY = -1, curH = 0;
+    for (let i = 0; i < syms.length; i++) {
+        const s = syms[i];
+        const page = s.pageIndex ?? 0;
+        const y = s.y ?? 0, symH = s.height || 1;
+        const sameRow = cur.length > 0 && page === curPage && Math.abs(y - curY) < curH * 0.5;
+        if (!sameRow) { if (cur.length) lines.push(cur); cur = []; curPage = page; curY = y; curH = symH; }
+        cur.push(i);
+    }
+    if (cur.length) lines.push(cur);
+    return lines;
+}
+
+// Phrase line: the current physical row of the songboard laid out as a row,
+// read left to right, each symbol lighting as it's sung, then the line slides
+// away and the next arrives. Shows the shape of a phrase rather than a rolling
+// window — how a songboard actually reads.
+function drawPhraseLineFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+    const lines = computePhraseLines();
+    const line = lines.find(l => l.includes(cur.idx)) || lines[0] || [cur.idx];
+
+    // Slide the whole line in from the right the moment it becomes current.
+    // Skipped under reduced motion — the line simply appears in place.
+    const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const lineStartTime = appState.symbols[line[0]]?.startTime || 0;
+    const sinceLineStart = Math.max(0, time - lineStartTime);
+    const slideIn = reduceMotion ? 0 : Math.max(0, 1 - Math.min(1, sinceLineStart / 0.4));
+    const ease = slideIn * slideIn;   // ease-out feel, not a linear slide
+
+    const n = line.length;
+    // Reserve extra width per tile (+1.4 rather than a bare fit) and add a
+    // flat margin to the gap: the active tile draws 1.12x scale plus a ring
+    // pad and a drop shadow that both bleed a few px past its own box, and
+    // without this room it can visually collide with its neighbour.
+    const tileSize = Math.min(w / (n + 1.4), h * 0.42);
+    const gap = tileSize * 1.12 + 20 * k;
+    const x0 = w / 2 - (n - 1) * gap / 2 + ease * w * 0.5;
+    line.forEach((symIdx, pos) => {
+        const on = symIdx === cur.idx;
+        const opacity = cur.opacity * (1 - ease * 0.7) * (on ? 1 : 0.55);
+        const s = tileSize * (on ? 1.12 : 0.9);
+        drawModeTile(ctx, symIdx, x0 + pos * gap, h * 0.54, s, s, opacity, on, scaffoldLevel, k);
+    });
+}
+
+// Now / Next: a large NOW panel and a small NEXT panel, captioned. The
+// conveyor leaves "which one is current" implicit in scale and position; this
+// states it outright — familiar to anyone using now-and-next boards elsewhere
+// in the school day.
+function drawNowNextFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+
+    ctx.save();
+    ctx.globalAlpha = cur.opacity;
+    ctx.fillStyle = 'rgba(20,20,40,.5)';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${13 * k}px sans-serif`;
+    ctx.fillText('NOW', w * 0.34, h * 0.12);
+    ctx.fillText('NEXT', w * 0.74, h * 0.12);
+    ctx.strokeStyle = 'rgba(20,20,40,.15)'; ctx.lineWidth = 1 * k;
+    ctx.beginPath(); ctx.moveTo(w * 0.56, h * 0.1); ctx.lineTo(w * 0.56, h * 0.92); ctx.stroke();
+    ctx.restore();
+
+    const nowSize = Math.min(w * 0.44, h * 0.62);
+    drawModeTile(ctx, cur.idx, w * 0.34, h * 0.56, nowSize, nowSize, cur.opacity, true, scaffoldLevel, k);
+    const nextIdx = cur.idx + 1;
+    if (nextIdx < appState.symbols.length) {
+        drawModeTile(ctx, nextIdx, w * 0.76, h * 0.56, nowSize * 0.62, nowSize * 0.62, cur.opacity * 0.8, false, scaffoldLevel, k);
+    }
+}
+
+// Vertical conveyor: the same conveyor maths with the axes swapped, symbols
+// rising past a fixed mark instead of sliding across one. Some learners track
+// vertical motion more reliably than horizontal, and it fits a portrait screen
+// or a tablet stood on end — neither of which the horizontal layout serves.
+function drawVerticalConveyorFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+    const size = Math.min(h * 0.30, w * 0.6);
+    const yMark = h * 0.52;
+
+    const activeIdx = activeIndexAt(time);
+    if (activeIdx === -1) {
+        const opacity = introFadeAt(time, firstStart);
+        if (opacity > 0 && appState.symbols.length > 0) {
+            drawModeTile(ctx, 0, w / 2, yMark, size, size, opacity, true, scaffoldLevel, k);
+        }
+        return;
+    }
+
+    const sym = appState.symbols[activeIdx];
+    const dur = Math.max(0.05, (sym.endTime || 0) - (sym.startTime || 0));
+    const frac = Math.max(0, Math.min(1, (time - (sym.startTime || 0)) / dur));
+    const gap = size * 1.15;
+    const off = frac * gap;
+    for (let d = -2; d <= 2; d++) {
+        const j = activeIdx + d;
+        if (j < 0 || j >= appState.symbols.length) continue;
+        const y = yMark + d * gap - off;
+        if (y < -size || y > h + size) continue;
+        const on = d === 0 && frac < 0.98;
+        const s = size * (on ? 1.15 : 0.92);
+        drawModeTile(ctx, j, w / 2, y, s, s, on ? 1 : 0.4, on, scaffoldLevel, k);
+    }
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(79,70,229,.35)';
+    ctx.setLineDash([6 * k, 5 * k]); ctx.lineWidth = 2 * k;
+    ctx.beginPath(); ctx.moveTo(w * 0.12, yMark); ctx.lineTo(w * 0.88, yMark); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
 }
 
 // "Follow the sheet": draw the current page cropped to its content, glow-
@@ -7360,8 +7598,19 @@ function handleProjectLoadFile(e: Event) {
                 (dom.upload.titleInput as HTMLInputElement).value = appState.songTitle;
             }
             appState.mode = data.mode || "karaoke";
+            // A file saved before presentationMode existed has only sheetMode;
+            // spreading it over the current defaults leaves presentationMode
+            // at its default 'conveyor', which is itself a valid mode and so
+            // would look "already set" to normalizePresentationMode() below.
+            // Detect that case from the raw save data, before the merge hides it.
+            const hadPresentationMode = !!data.styleConfig &&
+                Object.prototype.hasOwnProperty.call(data.styleConfig, 'presentationMode');
             if (data.styleConfig) appState.styleConfig = { ...appState.styleConfig, ...data.styleConfig };
+            if (data.styleConfig && !hadPresentationMode) {
+                appState.styleConfig.presentationMode = appState.styleConfig.sheetMode ? 'sheet' : 'conveyor';
+            }
             normalizeRoundConfig();
+            normalizePresentationMode();
             if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
             // Staged scaffold removal: merge over defaults so pre-feature files
             // load with it disabled. Fresh board → drop stale detected colours.
@@ -7637,6 +7886,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         // fields (e.g. prevCount) keep their defaults.
         appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
         normalizeRoundConfig();
+        normalizePresentationMode();
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;
         appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];

@@ -1661,8 +1661,11 @@
         }
         #round-settings[aria-disabled="true"] .seg-group button,
         #canon-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
-        .seg-group.seg-wide { display: flex; width: 100%; }
-        .seg-group.seg-wide button { flex: 1 1 0; white-space: normal; line-height: 1.25; }
+        /* flex-wrap: six presentation-mode buttons no longer fit one row without
+           being squeezed illegible; wrapping keeps each button's label readable
+           at the cost of a taller control on narrow panels. */
+        .seg-group.seg-wide { display: flex; flex-wrap: wrap; width: 100%; }
+        .seg-group.seg-wide button { flex: 1 1 150px; white-space: normal; line-height: 1.25; }
         /* Conveyor-only settings collapse away in follow-the-sheet mode. */
         details.sheet-active [data-hide-in-sheet] { display: none; }
 
@@ -2353,8 +2356,12 @@
                     <div class="seg-group seg-wide" data-style="displayMode" aria-label="Presentation style">
                         <button type="button" data-value="0">Conveyor — tiles slide across</button>
                         <button type="button" data-value="1">Follow the sheet — highlight &amp; scroll</button>
+                        <button type="button" data-value="2">Spotlight — one symbol, full size</button>
+                        <button type="button" data-value="3">Phrase line — the current row, left to right</button>
+                        <button type="button" data-value="4">Now / Next — two panels</button>
+                        <button type="button" data-value="5">Vertical — rising past a mark</button>
                     </div>
-                    <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one. Follow-the-sheet shows the whole songsheet, glows the current tile, and scrolls down as it plays.</p>
+                    <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one; Follow-the-sheet shows the whole songsheet and scrolls down as it plays. Spotlight, Phrase line, Now/Next and Vertical are full-frame alternatives — each shows the tiles a different way, but only one at a time.</p>
                 </div>
             </div>
 

@@ -131,10 +131,29 @@ export interface StyleConfig {
      * load as '720'.
      */
     exportRes: string;
-    // "Follow the sheet" mode: show the whole songsheet (cropped to the tiles,
-    // excluding header/footer logos), glow-highlight the current tile, and
-    // scroll down continuously as the song progresses. Alternative to conveyor.
+    /**
+     * @deprecated Superseded by presentationMode ('sheet'). Kept only so a
+     * project saved before presentationMode existed can be migrated —
+     * normalizePresentationMode() reads it once, then presentationMode is the
+     * only field anything else looks at. Do not use in new logic.
+     */
     sheetMode: boolean;
+    /**
+     * How the symbols are shown. 'conveyor' is the original tiles-slide-across
+     * view; the rest are full-frame alternatives, mutually exclusive with it and
+     * with each other:
+     *   'sheet'      — the whole songsheet, current tile glow-highlighted, that
+     *                  scrolls down as the song plays ("Follow the sheet").
+     *   'spotlight'  — one symbol, as large as the frame allows, nothing else.
+     *   'phraseLine' — the current physical row of the songboard as a line,
+     *                  lighting up left to right as it's sung.
+     *   'nowNext'    — a large NOW panel and a smaller NEXT panel, captioned.
+     *   'vertical'   — the conveyor turned ninety degrees: symbols rise past a
+     *                  fixed mark instead of sliding across one.
+     * Absent in projects saved before it existed; normalizePresentationMode()
+     * derives it from the legacy sheetMode boolean on load.
+     */
+    presentationMode: 'conveyor' | 'sheet' | 'spotlight' | 'phraseLine' | 'nowNext' | 'vertical';
 }
 
 /**
