@@ -135,7 +135,12 @@ const appState: AppState = {
         nextCount: 2,
         nextScale: 0.7,
         nextOpacity: 0.7,
-        spacing: 200,
+        // Tightened from 200 so that, combined with CONVEYOR_ANCHOR moving the
+        // active tile off-centre, both configured "next" tiles (nextCount: 2)
+        // fit fully in frame rather than the second one drawing off-canvas.
+        // Existing saved projects keep whatever spacing they already have —
+        // this only changes what a NEW project starts with.
+        spacing: 150,
         prevCount: 1,
         prevScale: 0.7,
         prevOpacity: 0.4,
@@ -5340,6 +5345,29 @@ function frameScale(ctx: CanvasRenderingContext2D): number {
     return (ctx.canvas.height || 360) / 360;
 }
 
+/**
+ * Where the active tile sits, as a fraction of frame width — left of centre
+ * rather than dead centre. Reading runs left to right, and what's coming next
+ * matters more to a singer than what's already been sung, so the conveyor
+ * should give the "next" side more room than the "previous" side, not split
+ * the frame evenly between them.
+ *
+ * The number itself came from measuring, not guessing: with the default
+ * spacing and tile counts (1 previous, 2 next), centring the active tile
+ * already left the frame full — the FIRST next tile's right edge sat at
+ * x=601 of 640, so the SECOND next tile (spacing*2 further out) was already
+ * being drawn entirely off-canvas even before anything moved. There was no
+ * anchor position that fit "1 previous + 2 next, all fully visible" without
+ * also tightening the default spacing (200 -> 150, below). With that done,
+ * 0.355..0.423 of the frame width is the exact range where the leftmost
+ * pixel of the previous tile and the rightmost pixel of the second next tile
+ * both land inside the canvas; 0.39 sits in the middle of it, leaving a
+ * comfortable ~20px margin on both edges (at 640x360) rather than touching
+ * either one. Scales correctly at any export size because it's a fraction of
+ * frame width, not a fixed pixel offset.
+ */
+const CONVEYOR_ANCHOR = 0.39;
+
 // The preview canvas stays small — it only has to be legible on this page. The
 // EXPORT is what ends up on a classroom whiteboard, so it renders at a real
 // resolution. Every drawn size is multiplied by frameScale, so the composition
@@ -5481,7 +5509,8 @@ function drawPreviewFrame(rawTime: number) {
         ctx.restore();
     };
 
-    const cx = w/2;
+    // Off-centre, not w/2 — see CONVEYOR_ANCHOR for why.
+    const cx = w * CONVEYOR_ANCHOR;
     // Draw Next
     if (activeIndex !== -1 || time < firstStart) {
         const start = activeIndex === -1 ? 0 : activeIndex;
