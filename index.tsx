@@ -1,11 +1,11 @@
-import * as pdfjsLib from "pdfjs-dist";
-import { jsPDF } from "jspdf";
-import JSZip from "jszip";
 import { saveAs } from "file-saver";
 // @ts-ignore
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?url";
 import { SymbolTile, ProjectPage, AppState, ProjectSaveData, SequenceStep, ScaffoldConfig, ScaffoldMaskMode } from "./src/types";
 import { inject as injectVercelAnalytics } from "@vercel/analytics";
+import {
+    hasWebCodecs, pickVideoCodec, calibrateEncoder, renderFast, FastRenderCancelled,
+} from "./src/render";
 import {
     isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
     levelMaskMode, resolveMaskMode, clampWordBand,
@@ -16,8 +16,21 @@ import {
 // app is served from Vercel (no-op in local dev).
 injectVercelAnalytics();
 
-// Set PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+// PDF.js, jsPDF and JSZip are the three heavyweights in here, and none of them
+// is needed to open the app: PDF.js only when a PDF is actually imported (not
+// for an image board or a reloaded project), and the other two only if you use
+// one of the two board-export buttons. Fetching them on first use keeps the
+// initial download to the app itself, which matters on a school connection.
+// The worker stays a static `?url` import — that compiles to a string, not code.
+let _pdfjs: typeof import("pdfjs-dist") | null = null;
+async function loadPdfjs() {
+    if (!_pdfjs) {
+        const lib = await import("pdfjs-dist");
+        lib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+        _pdfjs = lib;
+    }
+    return _pdfjs;
+}
 
 // Undo/Redo Stacks
 const undoStack: string[] = [];
@@ -122,7 +135,12 @@ const appState: AppState = {
         nextCount: 2,
         nextScale: 0.7,
         nextOpacity: 0.7,
-        spacing: 200,
+        // Tightened from 200 so that, combined with CONVEYOR_ANCHOR moving the
+        // active tile off-centre, both configured "next" tiles (nextCount: 2)
+        // fit fully in frame rather than the second one drawing off-canvas.
+        // Existing saved projects keep whatever spacing they already have —
+        // this only changes what a NEW project starts with.
+        spacing: 150,
         prevCount: 1,
         prevScale: 0.7,
         prevOpacity: 0.4,
@@ -217,6 +235,48 @@ let dom = {} as any;
         }
         return { first: rows.length ? rows[0] : -1, last: rows.length ? rows[rows.length - 1] : -1, count: rows.length };
     },
+};
+
+// Video-import tile finding. `tilesOn` runs the real detector over an image so a
+// test can assert what a canon frame yields without driving the whole import UI;
+// the rest are the pure helpers underneath. Tests only.
+(window as any).__importProbe = {
+    tilesOn: (dataUrl: string) => new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => resolve(detectFrameTiles(im));
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    }),
+    dropContainers: (boxes: any) => dropContainerBoxes(boxes),
+    // Each stage of the frame detector, for diagnosing which one loses a tile.
+    stages: (dataUrl: string) => new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => {
+            const nw = im.naturalWidth, nh = im.naturalHeight;
+            const w = Math.min(nw, FRAME_DETECT_W), h = Math.max(1, Math.round(nh * (w / nw)));
+            const px = imagePixels(im, w, h);
+            const mask = frameInkMask(px, w, h);
+            let ink = 0;
+            for (let i = 0; i < mask.length; i += 4) if (mask[i] < 128) ink++;
+            const rawBoxes = detectBoxes(mask, w, h, 128);
+            const split = splitStackedBoxes(mask, w, h, rawBoxes);
+            const cv = document.createElement('canvas');
+            cv.width = w; cv.height = h;
+            cv.getContext('2d')!.putImageData(new ImageData(mask, w, h), 0, 0);
+            resolve({
+                size: [w, h], inkFraction: +(ink / (w * h)).toFixed(3),
+                rawBoxes: rawBoxes.map(b => [b.x, b.y, b.width, b.height]),
+                afterSplit: split.map(b => [b.x, b.y, b.width, b.height]),
+                maskUrl: cv.toDataURL('image/png'),
+            });
+        };
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    }),
+    match: (boxes: any, reference: any, previous: any) => matchFrameBox(boxes, reference, previous),
+    // Paint one preview frame at time t and hand back the canvas as a PNG, so a
+    // test can feed the app's own canon rendering straight into the detector.
+    frameAt: (t: number) => { drawPreviewFrame(t); return dom.result.canvas.toDataURL('image/png'); },
 };
 
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
@@ -389,6 +449,9 @@ function init() {
             resultWordBand: document.getElementById('scaffold-result-word-band') as HTMLInputElement,
             resultBandValue: document.getElementById('scaffold-result-band-value'),
             btnProgressive: document.getElementById('btn-export-progressive'),
+            stagePicker: document.getElementById('stage-export-picker'),
+            stageExportNote: document.getElementById('stage-export-note'),
+            btnExportStages: document.getElementById('btn-export-stages'),
         },
         result: {
             canvas: document.getElementById('preview-canvas') as HTMLCanvasElement,
@@ -445,7 +508,11 @@ function init() {
         },
         rendering: {
             overlay: document.getElementById('rendering-overlay'),
-            progressText: document.getElementById('rendering-progress-text')
+            progressText: document.getElementById('rendering-progress-text'),
+            title: document.getElementById('rendering-title'),
+            progressBar: document.getElementById('rendering-progress-bar'),
+            eta: document.getElementById('rendering-eta'),
+            btnCancel: document.getElementById('btn-cancel-render'),
         },
         loadingMessage: document.getElementById('loading-message'),
         errorBox: document.getElementById('error-box')
@@ -775,6 +842,11 @@ function setupEventListeners() {
         if (el) el.addEventListener('input', () => setScaffoldWordBand(Number(el.value) / 100));
     });
     if (dom.scaffold.btnProgressive) dom.scaffold.btnProgressive.addEventListener('click', () => confirmExport(() => renderProgressiveVideo()));
+    if (dom.scaffold.btnExportStages) dom.scaffold.btnExportStages.addEventListener('click', () => confirmExport(() => renderStageVideos()));
+    if (dom.rendering.btnCancel) dom.rendering.btnCancel.addEventListener('click', () => {
+        if (renderAbort) renderAbort.abort();
+        if (dom.rendering.title) dom.rendering.title.textContent = 'Cancelling…';
+    });
 
 
     // --- Result View ---
@@ -1342,6 +1414,7 @@ async function downloadBoardPdf() {
     });
 
     const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const { jsPDF } = await import("jspdf");
     const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'px',
@@ -1359,6 +1432,7 @@ async function downloadBoardImages() {
         return;
     }
 
+    const { default: JSZip } = await import("jszip");
     const zip = new JSZip();
     
     page.symbols.forEach((sym: any, i: number) => {
@@ -1638,26 +1712,217 @@ function renderVideoGrid() {
 // runs over a PDF page, and return the boxes it finds as fractions of the frame.
 // This is the same code path and the same sensitivity setting the Refine Grid
 // stage uses, so what it finds here is what it would find there.
-function detectFrameTiles(img: HTMLImageElement): { x: number; y: number; w: number; h: number }[] {
-    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    if (!w || !h) return [];
-    const boxes = detectBoxes(imagePixels(img, w, h), w, h, appState.gridConfig.contentThreshold);
-    return boxes
-        // Ignore slivers and anything spanning almost the whole frame (a band
-        // wash or a divider rule rather than a tile).
-        .filter(b => b.width > w * 0.06 && b.height > h * 0.08 && b.width < w * 0.92)
+type FrameBox = { x: number; y: number; w: number; h: number };
+
+// Detection runs on a downscaled copy: boxes come back as fractions either way,
+// and doing ~60 frames at full resolution is seconds of frozen UI for no gain.
+const FRAME_DETECT_W = 560;
+
+/**
+ * Turn a video frame into a black-on-white ink mask, measured against the
+ * background it actually has rather than an absolute brightness.
+ *
+ * detectBoxes asks "is this pixel darker than `threshold`?", which suits a
+ * songboard scanned on white paper. A rendered video frame has whatever
+ * background colour the teacher chose — the default alone is #f0f8ff, whose red
+ * channel is below the default threshold, so EVERY pixel reads as ink and the
+ * whole frame comes back as one box. A canon makes it worse by washing a tint
+ * behind each voice row.
+ *
+ * Taking the median of each row as that row's background fixes both: a band wash
+ * becomes the local background and cancels out, leaving only the tiles standing
+ * proud of it.
+ */
+/**
+ * How far a pixel must sit from the background to count as ink.
+ *
+ * Measured by sweeping a rendered conveyor frame and a canon frame: below ~40
+ * the soft drop shadow under each tile counts as ink and bridges the gaps, so
+ * neighbouring tiles weld into one box; above ~70 pale tiles start dropping out.
+ * Between 50 and 65 both frames segment exactly right — a conveyor into its
+ * three visible tiles, a canon into two voice rows of four. This sits in the
+ * middle of that range.
+ */
+const FRAME_INK_MARGIN = 57;
+
+function frameInkMask(data: Uint8ClampedArray, w: number, h: number, margin = FRAME_INK_MARGIN): Uint8ClampedArray {
+    // Background from a ring around the frame edge. Every layout the app renders
+    // — conveyor, canon rows, spotlight, now/next — insets its tiles, so the
+    // border is background. Taking the median across the whole ring shrugs off
+    // the odd label pill or tile that strays into it.
+    //
+    // (Sampling per row instead looks tempting and is wrong: on any row where the
+    // tiles cover more than half the width, the row median IS a tile, and the
+    // mask comes out inverted — background as ink, tiles as holes.)
+    const samples: number[][] = [[], [], []];
+    const band = Math.max(2, Math.round(Math.min(w, h) * 0.04));
+    const push = (x: number, y: number) => {
+        const i = (y * w + x) * 4;
+        samples[0].push(data[i]); samples[1].push(data[i + 1]); samples[2].push(data[i + 2]);
+    };
+    for (let y = 0; y < band; y++) for (let x = 0; x < w; x += 3) { push(x, y); push(x, h - 1 - y); }
+    for (let x = 0; x < band; x++) for (let y = 0; y < h; y += 3) { push(x, y); push(w - 1 - x, y); }
+    const bg = samples.map(s => { s.sort((a, b) => a - b); return s[s.length >> 1] ?? 255; });
+
+    const out = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h * 4; i += 4) {
+        const d = Math.max(Math.abs(data[i] - bg[0]), Math.abs(data[i + 1] - bg[1]), Math.abs(data[i + 2] - bg[2]));
+        // A canon washes a faint tint behind each voice row; the margin has to
+        // clear that without losing a pale tile.
+        const v = d > margin ? 0 : 255;
+        out[i] = v; out[i + 1] = v; out[i + 2] = v; out[i + 3] = 255;
+    }
+    return out;
+}
+
+/**
+ * Split any box that holds two tiles stacked on top of each other.
+ *
+ * detectBoxes segments rows across the WHOLE frame first, so two vertically
+ * adjacent tiles separated by a thin rule land in one band — which is exactly
+ * how a canon frame is laid out: voice 1's active tile sits directly above voice
+ * 2's, parted by a dashed divider. Re-scanning rows using only the columns
+ * inside a box gets the gap back, because a horizontal dashed line is nearly
+ * nothing within one tile's width.
+ */
+function splitStackedBoxes(mask: Uint8ClampedArray, w: number, h: number, boxes: SymbolTile[]): SymbolTile[] {
+    const out: SymbolTile[] = [];
+    for (const b of boxes) {
+        const x0 = Math.max(0, Math.round(b.x)), x1 = Math.min(w, Math.round(b.x + b.width));
+        const y0 = Math.max(0, Math.round(b.y)), y1 = Math.min(h, Math.round(b.y + b.height));
+        const span = Math.max(1, x1 - x0);
+        const bands: { s: number; e: number }[] = [];
+        let inBand = false, start = 0;
+        for (let y = y0; y < y1; y++) {
+            let ink = 0;
+            for (let x = x0; x < x1; x++) if (mask[(y * w + x) * 4] < 128) ink++;
+            // A real tile row fills a good part of its own width; a divider rule
+            // crossing the box contributes almost nothing at this scale.
+            if (ink > span * 0.12) { if (!inBand) { inBand = true; start = y; } }
+            else if (inBand) { inBand = false; if (y - start > h * 0.04) bands.push({ s: start, e: y }); }
+        }
+        if (inBand && y1 - start > h * 0.04) bands.push({ s: start, e: y1 });
+        if (bands.length < 2) { out.push(b); continue; }
+        for (const band of bands) out.push({ x: b.x, y: band.s, width: b.width, height: band.e - band.s });
+    }
+    return out;
+}
+
+/**
+ * Segment an ink mask into boxes: horizontal bands, then columns within each.
+ *
+ * Deliberately NOT detectBoxes. That one starts a band from about two inked
+ * pixels in a scanline, which is right for a scanned page of line art and far
+ * too eager on a rendered frame, where a dashed divider or a drop shadow is
+ * enough to join everything together. These thresholds want a real share of the
+ * width before they believe in a row.
+ */
+function segmentFrameMask(mask: Uint8ClampedArray, w: number, h: number): SymbolTile[] {
+    const inked = (x: number, y: number) => mask[(y * w + x) * 4] < 128 ? 1 : 0;
+    const bands: { s: number; e: number }[] = [];
+    let inBand = false, start = 0;
+    for (let y = 0; y < h; y++) {
+        let c = 0;
+        for (let x = 0; x < w; x++) c += inked(x, y);
+        if (c > w * 0.05) { if (!inBand) { inBand = true; start = y; } }
+        else if (inBand) { inBand = false; if (y - start > h * 0.05) bands.push({ s: start, e: y }); }
+    }
+    if (inBand && h - start > h * 0.05) bands.push({ s: start, e: h });
+
+    const out: SymbolTile[] = [];
+    for (const band of bands) {
+        const bh = band.e - band.s;
+        let inCol = false, cs = 0;
+        for (let x = 0; x < w; x++) {
+            let c = 0;
+            for (let y = band.s; y < band.e; y++) c += inked(x, y);
+            if (c > bh * 0.25) { if (!inCol) { inCol = true; cs = x; } }
+            else if (inCol) { inCol = false; if (x - cs > w * 0.03) out.push({ x: cs, y: band.s, width: x - cs, height: bh }); }
+        }
+        if (inCol && w - cs > w * 0.03) out.push({ x: cs, y: band.s, width: w - cs, height: bh });
+    }
+    return out;
+}
+
+function detectFrameTiles(img: HTMLImageElement): FrameBox[] {
+    const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
+    if (!nw || !nh) return [];
+    const w = Math.min(nw, FRAME_DETECT_W);
+    const h = Math.max(1, Math.round(nh * (w / nw)));
+    const mask = frameInkMask(imagePixels(img, w, h), w, h);
+    const raw = splitStackedBoxes(mask, w, h, segmentFrameMask(mask, w, h));
+    const boxes = raw
+        // Ignore slivers, and anything spanning almost the whole frame in either
+        // direction — that is a band wash or a divider rule, never a tile. The
+        // height guard is what rejects the box wrapping both voices of a canon.
+        .filter(b => b.width > w * 0.06 && b.height > h * 0.08
+                  && b.width < w * 0.92 && b.height < h * 0.9)
         .map(b => ({ x: b.x / w, y: b.y / h, w: b.width / w, h: b.height / h }));
+    return dropContainerBoxes(boxes);
+}
+
+/**
+ * Throw away any box that wholly contains another one.
+ *
+ * The row pass in detectBoxes treats a scanline as "ink" from about two pixels,
+ * so a canon's dashed divider or a voice-label pill is enough to weld separate
+ * rows into one band. The band then comes back as a box wrapping several real
+ * tiles, and cropping to it yields the tile-inside-a-tile pictures a canon
+ * section produces today. A tile never contains another tile, so a container is
+ * always the wrong answer — keep the innermost boxes.
+ */
+function dropContainerBoxes(boxes: FrameBox[]): FrameBox[] {
+    if (boxes.length < 2) return boxes;
+    const pad = 0.01;   // tolerance, in frame fractions, for near-coincident edges
+    const contains = (a: FrameBox, b: FrameBox) =>
+        a.x <= b.x + pad && a.y <= b.y + pad &&
+        a.x + a.w >= b.x + b.w - pad && a.y + a.h >= b.y + b.h - pad &&
+        a.w * a.h > b.w * b.h * 1.2;   // strictly bigger, not just rounding noise
+    const kept = boxes.filter(a => !boxes.some(b => b !== a && contains(a, b)));
+    return kept.length ? kept : boxes;
 }
 
 // Best default among the detected tiles: the one nearest the centre of the
 // frame, breaking ties by area. In a conveyor that is the active tile; in a
 // canon it is whichever voice row sits closest to the middle, and the others are
 // one tap away.
-function bestTileBox(boxes: { x: number; y: number; w: number; h: number }[]) {
+function bestTileBox(boxes: FrameBox[]) {
     let best = null, bestScore = -Infinity;
     for (const b of boxes) {
         const dx = (b.x + b.w / 2) - 0.5, dy = (b.y + b.h / 2) - 0.5;
         const score = b.w * b.h * 2 - Math.hypot(dx, dy);
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+
+/**
+ * Which box on THIS frame corresponds to the tile the user picked.
+ *
+ * Scored on shape first, then position: a video whose layout changes partway —
+ * a canon section splitting one row of tiles into two voice rows — moves the
+ * tile without resizing it much, so size similarity is the more reliable signal.
+ * `previous` pulls the choice towards last frame's answer, which is what keeps
+ * the crop locked to ONE voice through a canon instead of flipping between two
+ * near-identical rows.
+ */
+function matchFrameBox(boxes: FrameBox[], reference: FrameBox, previous: FrameBox | null): FrameBox | null {
+    if (!boxes.length) return null;
+    const mid = (b: FrameBox) => [b.x + b.w / 2, b.y + b.h / 2];
+    const [rx, ry] = mid(reference);
+    let best: FrameBox | null = null, bestScore = -Infinity;
+    for (const b of boxes) {
+        const [bx, by] = mid(b);
+        // 1 when the box is the same shape as the reference, falling off with
+        // relative difference in each dimension.
+        const shape = 1 - Math.min(1, (Math.abs(b.w - reference.w) / Math.max(0.01, reference.w)
+                                     + Math.abs(b.h - reference.h) / Math.max(0.01, reference.h)) / 2);
+        const near = 1 - Math.min(1, Math.hypot(bx - rx, by - ry));
+        let score = shape * 2 + near;
+        if (previous) {
+            const [px, py] = mid(previous);
+            score += (1 - Math.min(1, Math.hypot(bx - px, by - py))) * 1.5;
+        }
         if (score > bestScore) { bestScore = score; best = b; }
     }
     return best;
@@ -1783,7 +2048,32 @@ function cropDataUrl(dataUrl: string, crop: { x: number; y: number; w: number; h
     });
 }
 
-// Apply the crop box (as drawn on the first frame) to every captured frame.
+/** Decode a data URL to an image, for detection. */
+function loadDataUrlImage(dataUrl: string): Promise<HTMLImageElement | null> {
+    return new Promise(resolve => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    });
+}
+
+/**
+ * Crop every captured frame to the tile the user picked — finding that tile on
+ * each frame rather than stamping one rectangle over all of them.
+ *
+ * A fixed rectangle only works while the video's layout holds still. It does not:
+ * a See Song recording puts one row of tiles on screen, then a canon section
+ * splits into two voice rows and the tile moves. The old behaviour cropped every
+ * later frame to wherever the tile used to be, which is what produced the
+ * tile-inside-a-tile pictures from the canon section onwards.
+ *
+ * Each frame is detected independently and matched against the chosen box, with
+ * a pull towards the previous frame's answer so the crop stays locked to one
+ * voice instead of alternating between two near-identical rows. Frames where
+ * nothing is found fall back to the fixed rectangle, which is no worse than
+ * before.
+ */
 async function applyVideoCrop() {
     const box = document.getElementById('video-crop-box') as HTMLElement | null;
     const img = document.getElementById('video-crop-img') as HTMLImageElement | null;
@@ -1791,16 +2081,38 @@ async function applyVideoCrop() {
     if (!box || !img || box.style.display === 'none') return;
     const iw = img.clientWidth, ih = img.clientHeight;
     if (!iw || !ih) return;
-    const crop = {
+    const reference: FrameBox = {
         x: Math.max(0, box.offsetLeft / iw),
         y: Math.max(0, box.offsetTop / ih),
         w: Math.min(1, box.offsetWidth / iw),
         h: Math.min(1, box.offsetHeight / ih),
     };
-    if (status) status.textContent = 'Cropping…';
-    _videoCroppedUrls = await Promise.all(_videoCandidates.map(c => cropDataUrl(c.dataUrl, crop)));
+
+    const total = _videoCandidates.length;
+    const urls: string[] = [];
+    let tracked = 0;
+    let previous: FrameBox | null = null;
+    for (let i = 0; i < total; i++) {
+        if (status) status.textContent = `Finding the tile on frame ${i + 1} of ${total}…`;
+        const cand = _videoCandidates[i];
+        let crop = reference;
+        const im = await loadDataUrlImage(cand.dataUrl);
+        if (im) {
+            const match = matchFrameBox(detectFrameTiles(im), reference, previous);
+            if (match) { crop = match; previous = match; tracked++; }
+        }
+        urls.push(await cropDataUrl(cand.dataUrl, crop));
+        // Let the status text actually paint between frames.
+        if ((i & 3) === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    _videoCroppedUrls = urls;
     renderVideoGrid();
-    if (status) status.textContent = `Cropped ${_videoCroppedUrls.length} frame${_videoCroppedUrls.length === 1 ? '' : 's'} to the tile area.`;
+    if (status) {
+        const missed = total - tracked;
+        status.textContent = `Cropped ${total} frame${total === 1 ? '' : 's'}. `
+            + `Found the tile on ${tracked}`
+            + (missed ? `, and used your box for the other ${missed}.` : ' of them.');
+    }
 }
 
 function resetVideoCrop() {
@@ -1946,6 +2258,7 @@ function audioBufferToWav(buf: AudioBuffer): ArrayBuffer {
 
 async function processPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
+    const pdfjsLib = await loadPdfjs();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -3473,7 +3786,7 @@ function assignScaffoldLevel(flatIdx: number, level: number) {
     } else {
         step.removalLevel = level;
         if (sym) sym.removalLevel = level;
-        announceScaffold(`Tile ${flatIdx + 1} will show ${SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says} from level ${level} onwards.`);
+        announceScaffold(`Tile ${flatIdx + 1} will show ${SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says} from stage ${level} onwards.`);
     }
     scaffoldLastTile = flatIdx;
     saveHistoryState();
@@ -3502,20 +3815,20 @@ function applyScaffoldToMatching() {
     updateNavStripScaffold();
     redrawScaffoldPreview();
     announceScaffold(level
-        ? `Level ${level} applied to ${n} matching occurrence(s) of this symbol.`
+        ? `Stage ${level} applied to ${n} matching occurrence(s) of this symbol.`
         : `Cleared ${n} matching occurrence(s) of this symbol.`);
 }
 
 function clearScaffoldSelectedLevel() {
     const lvl = appState.scaffold.selectedAssignmentLevel;
-    if (!lvl) { announceScaffold('Choose a level first, then use “Clear selected level”.'); return; }
+    if (!lvl) { announceScaffold('Choose a stage first, then use “Clear selected stage”.'); return; }
     let n = 0;
     appState.globalSequence.forEach(st => { if (st.removalLevel === lvl) { st.removalLevel = undefined; n++; } });
     syncFlatRemovalLevels();
     saveHistoryState();
     updateNavStripScaffold();
     redrawScaffoldPreview();
-    announceScaffold(`Cleared ${n} tile(s) from level ${lvl}.`);
+    announceScaffold(`Cleared ${n} tile(s) from stage ${lvl}.`);
 }
 
 function clearAllScaffold() {
@@ -3549,7 +3862,7 @@ function addScaffoldLevel() {
     sc.levelCount++;
     saveHistoryState();
     renderScaffoldControls();
-    announceScaffold(`Added level ${sc.levelCount}.`);
+    announceScaffold(`Added stage ${sc.levelCount}.`);
 }
 
 // Which level the mask-mode picker is editing: the one you have armed for
@@ -3593,7 +3906,7 @@ function setScaffoldLevelMode(level: number, mode: ScaffoldMaskMode) {
     saveHistoryState();
     renderScaffoldControls();
     redrawScaffoldPreview();
-    announceScaffold(`Level ${level} now shows ${SCAFFOLD_MODE_LABELS[mode].says}.`);
+    announceScaffold(`Stage ${level} now shows ${SCAFFOLD_MODE_LABELS[mode].says}.`);
 }
 
 function setScaffoldWordBand(fraction: number) {
@@ -3634,9 +3947,9 @@ function updateNavStripScaffold() {
         if (sc.enabled && lvl > 0) {
             const b = document.createElement('div');
             b.className = 'scaffold-badge';
-            b.textContent = 'L' + lvl;
-            b.title = `Stripped back from level ${lvl} onwards`;
-            b.setAttribute('aria-label', `Removal level ${lvl}`);
+            b.textContent = 'S' + lvl;
+            b.title = `Stripped back from stage ${lvl} onwards`;
+            b.setAttribute('aria-label', `Removal stage ${lvl}`);
             item.appendChild(b);
         }
         if (sc.enabled && isMasked(lvl, previewLevel)) {
@@ -3655,12 +3968,12 @@ function updateScaffoldStatus() {
     const lvl = sc.selectedAssignmentLevel;
     if (lvl > 0) {
         const says = SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, lvl)].says;
-        dom.scaffold.status.textContent = `Assigning level ${lvl}: tap tiles to strip them back from level ${lvl} onwards, where they show ${says}. ${assigned} tile(s) assigned so far.`;
+        dom.scaffold.status.textContent = `Assigning stage ${lvl}: tap tiles to strip them back from stage ${lvl} onwards, where they show ${says}. ${assigned} tile(s) assigned so far.`;
     } else {
         const p = sc.previewLevel === 0
             ? 'full support'
-            : `level ${sc.previewLevel} — stripped tiles show ${SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, sc.previewLevel)].says}`;
-        dom.scaffold.status.textContent = `${assigned} tile(s) assigned. Previewing ${p}. Choose a level above to start assigning.`;
+            : `stage ${sc.previewLevel} — stripped tiles show ${SCAFFOLD_MODE_LABELS[levelMaskMode(sc.levelModes, sc.previewLevel)].says}`;
+        dom.scaffold.status.textContent = `${assigned} tile(s) assigned. Previewing ${p}. Choose a stage above to start assigning.`;
     }
 }
 
@@ -3679,7 +3992,7 @@ function renderScaffoldControls() {
             const b = document.createElement('button');
             b.type = 'button';
             b.textContent = String(n);
-            b.setAttribute('aria-label', `Assign level ${n}`);
+            b.setAttribute('aria-label', `Assign stage ${n}`);
             const on = sc.selectedAssignmentLevel === n;
             b.classList.toggle('active', on);
             b.setAttribute('aria-pressed', String(on));
@@ -3726,6 +4039,8 @@ function renderScaffoldControls() {
     if (dom.scaffold.resultDisabledNote) dom.scaffold.resultDisabledNote.style.display = sc.enabled ? 'none' : 'block';
     if (dom.scaffold.resultControls) (dom.scaffold.resultControls as HTMLElement).style.display = sc.enabled ? '' : 'none';
     if (dom.scaffold.btnProgressive) (dom.scaffold.btnProgressive as HTMLButtonElement).disabled = !sc.enabled;
+    if (dom.scaffold.btnExportStages) (dom.scaffold.btnExportStages as HTMLButtonElement).disabled = !sc.enabled;
+    renderStagePicker();
 
     updateNavStripScaffold();
 }
@@ -3744,7 +4059,7 @@ function buildScaffoldPreviewButtons(container: HTMLElement) {
         container.appendChild(b);
     };
     mk(0, 'Full support');
-    for (let n = 1; n <= sc.levelCount; n++) mk(n, 'Level ' + n);
+    for (let n = 1; n <= sc.levelCount; n++) mk(n, 'Stage ' + n);
 }
 
 function buildScaffoldModeButtons(container: HTMLElement, level: number) {
@@ -5030,6 +5345,29 @@ function frameScale(ctx: CanvasRenderingContext2D): number {
     return (ctx.canvas.height || 360) / 360;
 }
 
+/**
+ * Where the active tile sits, as a fraction of frame width — left of centre
+ * rather than dead centre. Reading runs left to right, and what's coming next
+ * matters more to a singer than what's already been sung, so the conveyor
+ * should give the "next" side more room than the "previous" side, not split
+ * the frame evenly between them.
+ *
+ * The number itself came from measuring, not guessing: with the default
+ * spacing and tile counts (1 previous, 2 next), centring the active tile
+ * already left the frame full — the FIRST next tile's right edge sat at
+ * x=601 of 640, so the SECOND next tile (spacing*2 further out) was already
+ * being drawn entirely off-canvas even before anything moved. There was no
+ * anchor position that fit "1 previous + 2 next, all fully visible" without
+ * also tightening the default spacing (200 -> 150, below). With that done,
+ * 0.355..0.423 of the frame width is the exact range where the leftmost
+ * pixel of the previous tile and the rightmost pixel of the second next tile
+ * both land inside the canvas; 0.39 sits in the middle of it, leaving a
+ * comfortable ~20px margin on both edges (at 640x360) rather than touching
+ * either one. Scales correctly at any export size because it's a fraction of
+ * frame width, not a fixed pixel offset.
+ */
+const CONVEYOR_ANCHOR = 0.39;
+
 // The preview canvas stays small — it only has to be legible on this page. The
 // EXPORT is what ends up on a classroom whiteboard, so it renders at a real
 // resolution. Every drawn size is multiplied by frameScale, so the composition
@@ -5171,7 +5509,8 @@ function drawPreviewFrame(rawTime: number) {
         ctx.restore();
     };
 
-    const cx = w/2;
+    // Off-centre, not w/2 — see CONVEYOR_ANCHOR for why.
+    const cx = w * CONVEYOR_ANCHOR;
     // Draw Next
     if (activeIndex !== -1 || time < firstStart) {
         const start = activeIndex === -1 ? 0 : activeIndex;
@@ -5655,134 +5994,404 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
 }
 
 // --- Video Rendering ---
-async function renderVideo(mode: 'full' | 'backing') {
-    if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
-    // A normal export renders the single scaffold level currently previewed
-    // (currentScaffoldLevel() reads scaffold.previewLevel; full support when off).
-    appState.scaffold.exportMode = 'single';
-    scaffoldRenderLevelOverride = null;
-    dom.rendering.overlay.style.display = 'flex';
-    dom.rendering.progressText.textContent = "Initializing...";
-    pausePreview();
-    dom.sync.audio.currentTime = 0;
 
-    const audioCtx = new AudioContext();
-    const dest = audioCtx.createMediaStreamDestination();
-    
-    // Setup Audio Sources — play exactly ONE track per export. The Full video is
-    // the complete mix (the 'vocal' / main track); the Backing video is the
-    // instrumental ('backing') track. Mixing both would play any shared audio
-    // twice — e.g. a full mix plus its own instrumental — which comes out as a
-    // doubled, echoing track (the two also start a beat apart after separate
-    // decode delays).
+// The render overlay: a bar, a percentage, a time estimate and a working Cancel.
+// A practice-video batch can run for minutes, so "is this worth waiting for?"
+// has to be answerable from the screen.
+let renderAbort: AbortController | null = null;
+function beginRenderUI(title: string) {
+    renderAbort = new AbortController();
+    dom.rendering.overlay.style.display = 'flex';
+    if (dom.rendering.title) dom.rendering.title.textContent = title;
+    dom.rendering.progressText.textContent = 'Initializing…';
+    setRenderProgress(0, '');
+    return renderAbort.signal;
+}
+function endRenderUI() {
+    dom.rendering.overlay.style.display = 'none';
+    renderAbort = null;
+}
+let _lastProgressPct = -1;
+function setRenderProgress(frac: number, eta: string) {
+    const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+    // The text only changes 100 times over the whole render; writing it every
+    // frame is a layout pass competing with the render it is measuring.
+    if (pct !== _lastProgressPct) {
+        _lastProgressPct = pct;
+        dom.rendering.progressText.textContent = pct + '%';
+        if (dom.rendering.progressBar) (dom.rendering.progressBar as HTMLElement).style.width = pct + '%';
+    }
+    if (dom.rendering.eta && dom.rendering.eta.textContent !== eta) dom.rendering.eta.textContent = eta;
+}
+function etaText(elapsedMs: number, frac: number): string {
+    if (frac <= 0.02) return '';
+    const remain = Math.round((elapsedMs / frac - elapsedMs) / 1000);
+    if (remain < 1) return 'Almost done…';
+    if (remain < 60) return `About ${remain}s left`;
+    return `About ${Math.round(remain / 60)} min left`;
+}
+
+/** Raised when the user presses Cancel. Callers unwind quietly. */
+class RenderCancelled extends Error {
+    constructor() { super('Render cancelled'); this.name = 'RenderCancelled'; }
+}
+
+// Decode the one track an export plays and work out how long the video runs.
+// Exactly ONE track per export: the Full video is the complete mix (the 'vocal' /
+// main track), the Backing video is the instrumental. Mixing both plays any
+// shared audio twice, which comes out doubled and echoing.
+async function exportAudioAndDuration(audioCtx: BaseAudioContext, mode: 'full' | 'backing') {
     let dur = 0;
+    let buffer: AudioBuffer | null = null;
     const track = mode === 'full'
         ? (appState.files.audioVocal || appState.files.audioBacking)
         : appState.files.audioBacking;
     if (track) {
-        const b = await track.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
-        const s = audioCtx.createBufferSource(); s.buffer = b; s.connect(dest); s.start(0);
-        dur = Math.max(dur, b.duration);
+        buffer = await track.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
+        dur = Math.max(dur, buffer.duration);
     }
-
-    // The video must always span the whole synced song and show the tiles — even
-    // for a backing render when there is no separate instrumental track. Vocal and
-    // backing stems are the same length and tiles are timed off the vocal sync, so
-    // when the mode's own audio didn't set a length, fall back to the vocal track's
-    // duration (decoded for length only, not mixed into a backing render).
+    // The video must span the whole synced song even for a backing render with no
+    // separate instrumental. Stems are the same length and tiles are timed off the
+    // vocal sync, so fall back to the vocal's duration (for length only).
     if (dur === 0 && appState.files.audioVocal) {
         try {
             const vb = await appState.files.audioVocal.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab));
             dur = Math.max(dur, vb.duration);
         } catch (e) { console.warn('Could not decode vocal track for duration:', e); }
     }
-    // Always cover the full tile timeline (plus a short tail) so the last tile
-    // isn't cut and the tiles render regardless of the audio situation.
+    return { buffer, dur: Math.max(dur, tileTimelineDuration()) };
+}
+
+// How long the tiles need, independent of any audio: the last tile's end plus a
+// short tail, extended past the leader for a canon's following voices — each
+// fires at its entry tile and only then sings its phrase, so the video has to
+// outlast the leader or the later voices are cut off mid-phrase.
+function tileTimelineDuration(): number {
     const syms = appState.symbols;
-    if (syms.length) {
-        const last = syms[syms.length - 1];
-        dur = Math.max(dur, (last.endTime || last.startTime || 0) + 1.5);
+    if (!syms.length) return 0;
+    const last = syms[syms.length - 1];
+    let dur = (last.endTime || last.startTime || 0) + 1.5;
+    if (appState.styleConfig.canonEnabled) {
+        const voices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+        for (let v = 1; v < voices; v++) dur = Math.max(dur, canonVoiceEndTime(v) + 1.5);
     }
-    // A canon is still going after the leader has stopped: each following voice
-    // fires at its entry tile and only then sings its phrase. Without this the
-    // render ends with the leader and the later voices are cut off mid-phrase.
-    if (syms.length && appState.styleConfig.canonEnabled) {
-        const canonVoices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
-        for (let v = 1; v < canonVoices; v++) {
-            dur = Math.max(dur, canonVoiceEndTime(v) + 1.5);
-        }
-    }
-    if (dur <= 0) {
-        alert('Nothing to render yet — add an audio track or sync some tiles first.');
-        dom.rendering.overlay.style.display = 'none';
-        audioCtx.close();
-        return;
-    }
+    return dur;
+}
 
-    const size = beginHiResRender();
-    if (dom.rendering.progressText) {
-        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
-    }
-    const canvasStream = dom.result.canvas.captureStream(30);
-    const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    
-    let recorder;
+async function renderVideo(mode: 'full' | 'backing') {
+    if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
+    // A normal export renders the single scaffold stage currently previewed
+    // (currentScaffoldLevel() reads scaffold.previewLevel; full support when off).
+    appState.scaffold.exportMode = 'single';
+    scaffoldRenderLevelOverride = null;
+
+    await runRenderBatch('Rendering video…', async (ctx) => {
+        const probe = new AudioContext();
+        const { buffer, dur } = await exportAudioAndDuration(probe, mode);
+        probe.close();
+        if (dur <= 0) throw new Error('Nothing to render yet — add an audio track or sync some tiles first.');
+        const job = await renderJob({
+            mode, stage: null, dur, audioBuffer: buffer, signal: ctx.signal,
+            onProgress: ctx.progress,
+        });
+        downloadBlob(job.blob, `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${job.ext}`);
+    });
+}
+
+/** Hand a finished blob to the browser as a download, then release the URL. */
+function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    a.click();
+    // Give the download a moment to latch on before dropping the URL — the old
+    // code never revoked at all, leaking the whole video for the session.
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+// Everything an export shares: the overlay, cancellation, error reporting and
+// putting the preview canvas back however it ends.
+async function runRenderBatch(
+    title: string,
+    work: (ctx: { signal: AbortSignal; progress: (frac: number, eta?: string) => void }) => Promise<void>,
+) {
+    const signal = beginRenderUI(title);
+    pausePreview();
+    dom.sync.audio.currentTime = 0;
+    const started = Date.now();
+    const progress = (frac: number) => setRenderProgress(frac, etaText(Date.now() - started, frac));
     try {
-        // Prefer WebM/VP9: far better compression efficiency for this content
-        // (symbols over mostly-flat backgrounds), which means smaller files and
-        // clean re-import in the same browsers. Fall back to MP4 for Safari,
-        // whose MediaRecorder can only produce MP4.
-        const preferredTypes = [
-            "video/webm;codecs=vp9",
-            "video/webm;codecs=vp8",
-            "video/webm",
-            "video/mp4",
-        ];
-        let mime = "video/webm";
-        for (const t of preferredTypes) {
-            if (MediaRecorder.isTypeSupported(t)) { mime = t; break; }
+        await work({ signal, progress });
+    } catch (e: any) {
+        if (!(e instanceof RenderCancelled)) {
+            console.error('Render failed:', e);
+            alert(e && e.message ? e.message : 'The render failed. Please try again.');
+        }
+    } finally {
+        endHiResRender();     // put the preview canvas back to its own size
+        endRenderUI();
+    }
+}
+
+/**
+ * Render one video through MediaRecorder and resolve with the finished file.
+ *
+ * Real-time by construction: MediaRecorder samples a canvas stream as it is
+ * painted, and the loop's clock is the audio hardware clock, so this can only
+ * ever run at 1x. It stays as the fallback for browsers without WebCodecs.
+ */
+function renderJobRealtime(opts: {
+    mode: 'full' | 'backing';
+    stage: number | null;          // scaffold stage to draw; null = whatever is previewed
+    dur: number;
+    audioBuffer: AudioBuffer | null;
+    signal: AbortSignal;
+    onProgress: (frac: number) => void;
+}): Promise<{ blob: Blob; ext: string }> {
+    return new Promise((resolve, reject) => {
+        const audioCtx = new AudioContext();
+        const dest = audioCtx.createMediaStreamDestination();
+
+        beginHiResRender();
+        const canvasStream = dom.result.canvas.captureStream(30);
+        const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+
+        let recorder: MediaRecorder;
+        try {
+            const { mime, bitrate } = pickRecorderMime();
+            recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
+        } catch (e) {
+            audioCtx.close();
+            reject(new Error('Recording not supported or codec missing.'));
+            return;
         }
 
-        // VP9's efficiency lets us drop the bitrate without visible loss, so the
-        // simple graphics content exports noticeably smaller. MP4 (H.264) is less
-        // efficient, so keep it a little higher there to hold quality.
-        const isMp4 = mime.includes("mp4");
-        const bitrate = exportBitrate(isMp4);
-        recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
+        const cleanup = () => {
+            canvasStream.getTracks().forEach(t => t.stop());
+            audioCtx.close();
+        };
+        const chunks: BlobPart[] = [];
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        // A mid-render encoder failure used to produce a silently truncated file.
+        recorder.onerror = (e: any) => {
+            cleanup();
+            reject(new Error('The video encoder stopped partway through: ' + (e?.error?.message || 'unknown error')));
+        };
+        recorder.onstop = () => {
+            cleanup();
+            if (opts.signal.aborted) { reject(new RenderCancelled()); return; }
+            const type = recorder.mimeType || 'video/webm';
+            resolve({ blob: new Blob(chunks, { type }), ext: type.includes('mp4') ? 'mp4' : 'webm' });
+        };
+
+        scaffoldRenderLevelOverride = opts.stage;
+        recorder.start();
+        const startT = audioCtx.currentTime;
+        // Start the audio only now. Starting it before the recorder existed left
+        // it running through the canvas resize, captureStream and the (~40 ms)
+        // MediaRecorder constructor, so the finished video lagged its own audio.
+        if (opts.audioBuffer) {
+            const s = audioCtx.createBufferSource();
+            s.buffer = opts.audioBuffer; s.connect(dest); s.start(0);
+        }
+        const renderLoop = () => {
+            if (opts.signal.aborted) { recorder.stop(); return; }
+            const t = audioCtx.currentTime - startT;
+            if (t >= opts.dur) { recorder.stop(); return; }
+            drawPreviewFrame(t);
+            opts.onProgress(t / opts.dur);
+            requestAnimationFrame(renderLoop);
+        };
+        renderLoop();
+    });
+}
+
+// Whether the WebCodecs path is worth using at the current export size, decided
+// once per session by measuring. Null = not yet asked.
+let _fastPathChoice: { key: string; codec: string | null } | null = null;
+
+/**
+ * Decide between the deterministic WebCodecs renderer and the real-time
+ * MediaRecorder one — by measuring this machine, not by assuming.
+ *
+ * Encode speed varies enormously with hardware support: software VP9 measured
+ * 2.85x real time at 720p but 0.81x at 1080p, i.e. SLOWER than simply recording
+ * in real time. A machine with a hardware encoder flips that. Since there is no
+ * way to ask, a short calibration burst answers it, and anything that does not
+ * beat real time falls back. The export can therefore never come out slower
+ * than it was before this existed.
+ */
+async function chooseFastCodec(size: { w: number; h: number }, bitrate: number, durationSec: number): Promise<string | null> {
+    const key = `${size.w}x${size.h}`;
+    if (_fastPathChoice && _fastPathChoice.key === key) return _fastPathChoice.codec;
+    let codec: string | null = null;
+    try {
+        if (hasWebCodecs()) {
+            const picked = await pickVideoCodec(size, bitrate);
+            if (picked) {
+                // Calibrate on the real frames at the real size — the canvas is
+                // already switched over by the caller.
+                const msPerFrame = await calibrateEncoder({
+                    size, codec: picked, bitrate, canvas: dom.result.canvas,
+                    drawFrame: (t) => drawPreviewFrame(t), durationSec,
+                });
+                const realtimeBudget = 1000 / 30;   // one frame's worth of wall clock at 30fps
+                // Require a clear margin, not a photo finish. Measurement carries
+                // noise, and a path that only ties is not worth the risk when the
+                // alternative is the one that has always worked.
+                codec = msPerFrame < realtimeBudget * 0.7 ? picked : null;
+                console.info(`[render] ${key} ${picked}: ${msPerFrame.toFixed(1)} ms/frame ` +
+                    `(~${(realtimeBudget / msPerFrame).toFixed(2)}x real time) → ` +
+                    (codec ? 'fast path' : 'falling back to real-time recording'));
+            }
+        }
     } catch (e) {
-        alert("Recording not supported or codec missing.");
-        dom.rendering.overlay.style.display = 'none';
-        endHiResRender();
-        audioCtx.close();
+        console.warn('[render] calibration failed, using the real-time path:', e);
+        codec = null;
+    }
+    _fastPathChoice = { key, codec };
+    return codec;
+}
+
+/**
+ * Render one video, choosing how. Every caller goes through here rather than
+ * calling a renderer directly, so the choice is made in one place.
+ */
+async function renderJob(opts: Parameters<typeof renderJobRealtime>[0]): Promise<{ blob: Blob; ext: string }> {
+    const size = exportSize();
+    const bitrate = exportBitrate(false);
+    const restoreLevel = scaffoldRenderLevelOverride;
+
+    // Switch the canvas to export size and select the stage BEFORE calibrating,
+    // so the measurement draws exactly the frames the render will draw.
+    beginHiResRender();
+    scaffoldRenderLevelOverride = opts.stage;
+    const codec = await chooseFastCodec(size, bitrate, opts.dur);
+    if (!codec) { scaffoldRenderLevelOverride = restoreLevel; return renderJobRealtime(opts); }
+
+    try {
+        const blob = await renderFast({
+            size, fps: 30, durationSec: opts.dur, bitrate,
+            canvas: dom.result.canvas,
+            drawFrame: (t) => drawPreviewFrame(t),
+            audioBuffer: opts.audioBuffer,
+            onProgress: opts.onProgress,
+            signal: opts.signal,
+        });
+        return { blob, ext: 'webm' };
+    } catch (e) {
+        if (e instanceof FastRenderCancelled) throw new RenderCancelled();
+        // A fast render that breaks should cost the teacher a slower export, not
+        // the export. Take the proven path and stop offering the fast one.
+        console.warn('[render] fast path failed, falling back to real-time recording:', e);
+        _fastPathChoice = { key: `${size.w}x${size.h}`, codec: null };
+        scaffoldRenderLevelOverride = restoreLevel;
+        return renderJobRealtime(opts);
+    }
+}
+
+// ---- Practice videos: one file per stage --------------------------------
+
+/** Stages currently ticked in the export picker. 0 = full support. */
+function selectedExportStages(): number[] {
+    const picker = dom.scaffold.stagePicker;
+    if (!picker) return [0];
+    const boxes = [...picker.querySelectorAll('input[type=checkbox]')] as HTMLInputElement[];
+    return boxes.filter(b => b.checked).map(b => Number(b.value));
+}
+
+function stageFileLabel(stage: number): string {
+    return stage === 0 ? 'Full support' : `Stage ${stage}`;
+}
+
+// Build the tick-boxes for which stages get their own video, and keep the note
+// underneath honest about what pressing the button will produce.
+function renderStagePicker() {
+    const picker = dom.scaffold.stagePicker;
+    if (!picker) return;
+    const sc = appState.scaffold;
+    const previous = new Map<number, boolean>();
+    (([...picker.querySelectorAll('input[type=checkbox]')] as HTMLInputElement[]))
+        .forEach(b => previous.set(Number(b.value), b.checked));
+
+    picker.innerHTML = '';
+    for (let n = 0; n <= sc.levelCount; n++) {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = String(n);
+        box.checked = previous.has(n) ? !!previous.get(n) : true;   // everything on by default
+        box.addEventListener('change', updateStageExportNote);
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(stageFileLabel(n)));
+        picker.appendChild(label);
+    }
+    updateStageExportNote();
+}
+
+function updateStageExportNote() {
+    const note = dom.scaffold.stageExportNote;
+    const btn = dom.scaffold.btnExportStages as HTMLButtonElement | null;
+    if (!note) return;
+    const stages = selectedExportStages();
+    if (btn) btn.disabled = stages.length === 0;
+    if (stages.length === 0) {
+        note.textContent = 'Tick at least one stage to export.';
         return;
     }
-    
-    const chunks: BlobPart[] = [];
-    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onstop = () => {
-        const type = recorder.mimeType || "video/webm";
-        const ext = type.includes("mp4") ? "mp4" : "webm";
-        const blob = new Blob(chunks, { type: type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${ext}`;
-        a.click();
-        dom.rendering.overlay.style.display = 'none';
-        endHiResRender();     // put the preview canvas back to its own size
-        audioCtx.close();
-    };
+    const each = Math.round(tileTimelineDuration());
+    const mins = Math.max(1, Math.round((stages.length * each) / 60));
+    note.textContent = stages.length === 1
+        ? `One video: “${projectFileBase()} - ${stageFileLabel(stages[0])}”.`
+        : `${stages.length} videos in a single ZIP — ${stages.map(stageFileLabel).join(', ')}. Each is the full song, so allow roughly ${mins} min.`;
+}
 
-    recorder.start();
-    const startT = audioCtx.currentTime;
-    function renderLoop() {
-        const t = audioCtx.currentTime - startT;
-        if (t >= dur) { recorder.stop(); return; }
-        // Use t directly (latency offset handles inside drawPreviewFrame logic)
-        drawPreviewFrame(t);
-        dom.rendering.progressText.textContent = Math.round((t/dur)*100) + "%";
-        requestAnimationFrame(renderLoop);
-    }
-    renderLoop();
+/**
+ * Render each ticked stage to its own video. A single long video means hunting
+ * for a timestamp mid-lesson; one file per stage is one you press play on.
+ * More than one file comes back as a ZIP so it is still a single download.
+ */
+async function renderStageVideos() {
+    if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
+    const stages = selectedExportStages();
+    if (!stages.length) { alert('Tick at least one stage to export.'); return; }
+    appState.scaffold.exportMode = 'progressive';
+
+    await runRenderBatch('Rendering practice videos…', async (ctx) => {
+        const probe = new AudioContext();
+        const { buffer, dur } = await exportAudioAndDuration(probe, 'full');
+        probe.close();
+        if (dur <= 0) throw new Error('Nothing to render yet — add an audio track or sync some tiles first.');
+
+        const files: { name: string; blob: Blob }[] = [];
+        for (let i = 0; i < stages.length; i++) {
+            const stage = stages[i];
+            if (dom.rendering.title) {
+                dom.rendering.title.textContent =
+                    `Rendering ${stageFileLabel(stage)} (${i + 1} of ${stages.length})…`;
+            }
+            const job = await renderJob({
+                mode: 'full', stage, dur, audioBuffer: buffer, signal: ctx.signal,
+                // Each stage is one slice of the whole batch's progress.
+                onProgress: (f) => ctx.progress((i + f) / stages.length),
+            });
+            files.push({ name: `${projectFileBase()} - ${stageFileLabel(stage)}.${job.ext}`, blob: job.blob });
+        }
+
+        if (files.length === 1) {
+            downloadBlob(files[0].blob, files[0].name);
+            return;
+        }
+        if (dom.rendering.title) dom.rendering.title.textContent = 'Packaging the videos…';
+        const { default: JSZip } = await import("jszip");
+        const zip = new JSZip();
+        // STORE, not DEFLATE: video is already compressed, so deflating it is a
+        // long pass over hundreds of megabytes that saves nothing.
+        files.forEach(f => zip.file(f.name, f.blob, { compression: 'STORE' }));
+        const bundle = await zip.generateAsync({ type: 'blob', compression: 'STORE' },
+            (m) => setRenderProgress(m.percent / 100, 'Packaging…'));
+        downloadBlob(bundle, `${projectFileBase()} - practice videos.zip`);
+    });
 }
 
 // A filesystem-safe base for download names, derived from the project/song name
@@ -5828,7 +6437,7 @@ function drawScaffoldTitleCard(ctx: CanvasRenderingContext2D, w: number, h: numb
     const k = frameScale(ctx);
     ctx.fillStyle = '#333';
     ctx.font = `bold ${40 * k}px sans-serif`;
-    ctx.fillText(level === 0 ? 'Full support' : `Level ${level}`, w / 2, h / 2 - 18 * k);
+    ctx.fillText(level === 0 ? 'Full support' : `Stage ${level}`, w / 2, h / 2 - 18 * k);
     ctx.font = `${20 * k}px sans-serif`;
     ctx.fillStyle = '#666';
     // Name what actually changes at this level, so a class watching the video
@@ -5872,13 +6481,10 @@ async function renderProgressiveVideo() {
     }
 
     // One performance's length: the audio, but always at least the full tile
-    // timeline plus a short tail so the last tile isn't clipped.
-    let perfDur = buffer ? buffer.duration : 0;
-    const syms = appState.symbols;
-    if (syms.length) {
-        const last = syms[syms.length - 1];
-        perfDur = Math.max(perfDur, (last.endTime || last.startTime || 0) + 1.5);
-    }
+    // timeline plus a short tail so the last tile isn't clipped. tileTimelineDuration
+    // also carries a canon's following voices past the leader — this export used to
+    // stop with the leader and cut the later voices off mid-phrase.
+    const perfDur = Math.max(buffer ? buffer.duration : 0, tileTimelineDuration());
     if (perfDur <= 0) {
         alert('Nothing to render yet — add an audio track or sync some tiles first.');
         dom.rendering.overlay.style.display = 'none';
@@ -5946,7 +6552,7 @@ async function renderProgressiveVideo() {
             scaffoldRenderLevelOverride = lvl;      // mask cumulative to this level
             drawPreviewFrame(localT - TITLE_DUR);   // audio for this section also starts at 0
         }
-        const label = lvl === 0 ? 'Full support' : `Level ${lvl}`;
+        const label = lvl === 0 ? 'Full support' : `Stage ${lvl}`;
         dom.rendering.progressText.textContent = `${label} · ${Math.round((t / total) * 100)}%`;
         requestAnimationFrame(renderLoop);
     }
