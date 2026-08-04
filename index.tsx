@@ -144,6 +144,9 @@ const appState: AppState = {
         prevCount: 1,
         prevScale: 0.7,
         prevOpacity: 0.4,
+        durationFill: false,
+        activeCard: false,
+        beatPulse: false,
         roundEnabled: false,
         roundVoices: 2,
         roundGap: 4,
@@ -160,7 +163,8 @@ const appState: AppState = {
         canonCountdown: true,
         exportRes: '720',
         canonCountInBeats: 4,
-        sheetMode: false
+        sheetMode: false,
+        presentationMode: 'conveyor'
     },
     scaffold: defaultScaffold(),
     interaction: {
@@ -277,6 +281,26 @@ let dom = {} as any;
     // Paint one preview frame at time t and hand back the canvas as a PNG, so a
     // test can feed the app's own canon rendering straight into the detector.
     frameAt: (t: number) => { drawPreviewFrame(t); return dom.result.canvas.toDataURL('image/png'); },
+    // Full-page video reconstruction: exposed piece by piece so a test can
+    // check detection, clustering and highlight-scoring independently before
+    // trusting the whole pipeline.
+    looksFullPage: (boxes: any) => looksLikeFullPageBoard(boxes),
+    countRows: (boxes: any) => countDistinctRows(boxes),
+    clusterRegions: (frameBoxes: any) => clusterBoardRegions(frameBoxes),
+    scoreRegions: (dataUrl: string, regions: any) => new Promise((resolve) => {
+        const im = new Image();
+        im.onload = () => {
+            const nw = im.naturalWidth, nh = im.naturalHeight;
+            const w = Math.min(nw, FRAME_DETECT_W), h = Math.max(1, Math.round(nh * (w / nw)));
+            resolve(scoreFrameRegions(imagePixels(im, w, h), w, h, regions));
+        };
+        im.onerror = () => resolve(null);
+        im.src = dataUrl;
+    }),
+    reconstructFullPage: (candidates: any, apply?: boolean) => reconstructFullPageProject(candidates, !!apply),
+    // Presentation-mode helpers, exposed for tests to check the layout logic
+    // directly rather than only inferring it from rendered pixels.
+    phraseLines: () => computePhraseLines(),
 };
 
 // Allow hover-to-reveal affordances only on a device with NO touch at all.
@@ -477,6 +501,9 @@ function init() {
             stylePrevScale: document.getElementById('style-prev-scale'),
             stylePrevOpacity: document.getElementById('style-prev-opacity'),
             styleSpacing: document.getElementById('style-spacing'),
+            styleDurationFill: document.getElementById('style-duration-fill'),
+            styleActiveCard: document.getElementById('style-active-card'),
+            styleBeatPulse: document.getElementById('style-beat-pulse'),
             // Round feature (equal spacing, loops to a unison finish).
             styleRoundEnabled: document.getElementById('style-round-enabled'),
             styleRoundGap: document.getElementById('style-round-gap'),
@@ -655,6 +682,29 @@ function setupEventListeners() {
         document.getElementById('video-picker-overlay')!.style.display = 'none';
     });
     document.getElementById('btn-video-create')?.addEventListener('click', createProjectFromVideoFrames);
+    document.getElementById('btn-fullpage-manual')?.addEventListener('click', () => {
+        document.getElementById('fullpage-picker-overlay')!.style.display = 'none';
+        openManualVideoPicker();
+    });
+    document.getElementById('btn-fullpage-reconstruct')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-fullpage-reconstruct') as HTMLButtonElement;
+        const manualBtn = document.getElementById('btn-fullpage-manual') as HTMLButtonElement;
+        btn.disabled = true; manualBtn.disabled = true;
+        btn.textContent = 'Reconstructing…';
+        try {
+            const result = await reconstructFullPageProject(_videoCandidates, true);
+            if (!result) {
+                alert("Couldn't work out the board from this video after all. Falling back to picking tiles by hand.");
+                document.getElementById('fullpage-picker-overlay')!.style.display = 'none';
+                openManualVideoPicker();
+                return;
+            }
+            document.getElementById('fullpage-picker-overlay')!.style.display = 'none';
+        } finally {
+            btn.disabled = false; manualBtn.disabled = false;
+            btn.textContent = 'Reconstruct automatically';
+        }
+    });
     // Tile-crop editor in the video picker.
     setupVideoCropEditor();
     document.getElementById('btn-crop-apply')?.addEventListener('click', applyVideoCrop);
@@ -910,6 +960,9 @@ function setupEventListeners() {
         appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
         appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
+        appState.styleConfig.durationFill = (dom.result.styleDurationFill as HTMLInputElement).checked;
+        appState.styleConfig.activeCard = (dom.result.styleActiveCard as HTMLInputElement).checked;
+        appState.styleConfig.beatPulse = (dom.result.styleBeatPulse as HTMLInputElement).checked;
         // Round feature.
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
@@ -932,7 +985,8 @@ function setupEventListeners() {
             (dom.result.canonCountinItem as HTMLElement).style.opacity = appState.styleConfig.canonCountdown ? '1' : '0.45';
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
-        appState.styleConfig.sheetMode = segGet('displayMode') === 1;
+        appState.styleConfig.presentationMode = PRESENTATION_MODES[segGet('displayMode')] || 'conveyor';
+        appState.styleConfig.sheetMode = appState.styleConfig.presentationMode === 'sheet';
         // Export resolution only affects the rendered file, never the preview.
         appState.styleConfig.canonLoopRepeats = segGet('canonLoopRepeats');
         const res = segGet('exportRes');
@@ -955,7 +1009,7 @@ function setupEventListeners() {
         updateCanonEntryUI();
         updateRoundCanonStatus();
         // Hide conveyor-only settings when following the sheet.
-        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.sheetMode);
+        document.querySelector('#result-view details')?.classList.toggle('sheet-active', appState.styleConfig.presentationMode !== 'conveyor');
         if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime);
     };
 
@@ -977,6 +1031,9 @@ function setupEventListeners() {
     dom.result.stylePrevScale.addEventListener('input', updateStyle);
     dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
+    dom.result.styleDurationFill.addEventListener('change', updateStyle);
+    dom.result.styleActiveCard.addEventListener('change', updateStyle);
+    dom.result.styleBeatPulse.addEventListener('change', updateStyle);
     // Round and Canon are two different forms; only one can drive the video at a
     // time, so turning one on turns the other off.
     dom.result.styleRoundEnabled.addEventListener('change', () => {
@@ -1550,9 +1607,11 @@ async function handleVideoImport(file: File) {
         setStatus('Looking for tiles…');
         _videoCandidates = await sampleSceneFrames(video, duration, setStatus);
 
+        // --- 3. Work out which import flow this capture needs ---
+        setStatus('Checking the layout…');
         URL.revokeObjectURL(url);
+        await openVideoPicker();
         overlay.style.display = 'none';
-        openVideoPicker();
     } catch (e: any) {
         overlay.style.display = 'none';
         alert('Video import failed: ' + (e?.message || e));
@@ -1608,7 +1667,19 @@ function captureAudioRealtime(file: File): Promise<File> {
 // only when it differs from the last kept tile, so each distinct tile lands once.
 async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setStatus: (t: string) => void) {
     const step = Math.max(0.15, Math.min(0.3, duration / 500));   // finer probing
-    const SW = 48, SH = 27;
+    // Probe resolution and block grid. Measured directly against a real full-page
+    // recording (a static board where only a thin highlight ring moves between
+    // tiles): at the original 48x27 probe with a 6x4 block grid, the ring's whole
+    // effect on its containing block averaged out to as little as 7.9 — UNDER
+    // NEW_TILE below, so most tile-to-tile transitions were silently missed and a
+    // 10s capture with ~20 real transitions kept only 3 frames. A finer block grid
+    // (16x9, so a small localised change occupies more of the block it falls in
+    // rather than being diluted across a big one) raised that same signal to 13.8+
+    // — a real margin above the threshold — while a genuine conveyor-video capture
+    // (export_720.webm, this session's own rendered output) produced the exact
+    // same 5 captures at the exact same timestamps as before, so this costs
+    // conveyor videos nothing.
+    const SW = 64, SH = 36;
     const small = document.createElement('canvas'); small.width = SW; small.height = SH;
     const sctx = small.getContext('2d', { willReadFrequently: true })!;
     const full = document.createElement('canvas');
@@ -1622,9 +1693,10 @@ async function sampleSceneFrames(video: HTMLVideoElement, duration: number, setS
     });
 
     // Largest per-block mean channel difference between two downscaled frames — a
-    // change confined to one region (a swapped tile) scores high even though the
-    // rest of the frame is unchanged.
-    const GX = 6, GY = 4, BW = SW / GX, BH = SH / GY;
+    // change confined to one region (a swapped tile, or a highlight ring moving on
+    // an otherwise-static board) scores high even though the rest of the frame is
+    // unchanged.
+    const GX = 16, GY = 9, BW = SW / GX, BH = SH / GY;
     const blockMaxDiff = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
         let worst = 0;
         for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
@@ -1745,15 +1817,17 @@ const FRAME_DETECT_W = 560;
  */
 const FRAME_INK_MARGIN = 57;
 
-function frameInkMask(data: Uint8ClampedArray, w: number, h: number, margin = FRAME_INK_MARGIN): Uint8ClampedArray {
-    // Background from a ring around the frame edge. Every layout the app renders
-    // — conveyor, canon rows, spotlight, now/next — insets its tiles, so the
-    // border is background. Taking the median across the whole ring shrugs off
-    // the odd label pill or tile that strays into it.
-    //
-    // (Sampling per row instead looks tempting and is wrong: on any row where the
-    // tiles cover more than half the width, the row median IS a tile, and the
-    // mask comes out inverted — background as ink, tiles as holes.)
+/**
+ * The frame's own background colour, from a ring around its edge. Every layout
+ * the app renders — conveyor, canon rows, spotlight, now/next — insets its
+ * tiles, so the border is background. Taking the median across the whole ring
+ * shrugs off the odd label pill or tile that strays into it.
+ *
+ * (Sampling per row instead looks tempting and is wrong: on any row where the
+ * tiles cover more than half the width, the row median IS a tile, and a mask
+ * built from it comes out inverted — background as ink, tiles as holes.)
+ */
+function sampleFrameBackground(data: Uint8ClampedArray, w: number, h: number): number[] {
     const samples: number[][] = [[], [], []];
     const band = Math.max(2, Math.round(Math.min(w, h) * 0.04));
     const push = (x: number, y: number) => {
@@ -1762,8 +1836,11 @@ function frameInkMask(data: Uint8ClampedArray, w: number, h: number, margin = FR
     };
     for (let y = 0; y < band; y++) for (let x = 0; x < w; x += 3) { push(x, y); push(x, h - 1 - y); }
     for (let x = 0; x < band; x++) for (let y = 0; y < h; y += 3) { push(x, y); push(w - 1 - x, y); }
-    const bg = samples.map(s => { s.sort((a, b) => a - b); return s[s.length >> 1] ?? 255; });
+    return samples.map(s => { s.sort((a, b) => a - b); return s[s.length >> 1] ?? 255; });
+}
 
+function frameInkMask(data: Uint8ClampedArray, w: number, h: number, margin = FRAME_INK_MARGIN): Uint8ClampedArray {
+    const bg = sampleFrameBackground(data, w, h);
     const out = new Uint8ClampedArray(w * h * 4);
     for (let i = 0; i < w * h * 4; i += 4) {
         const d = Math.max(Math.abs(data[i] - bg[0]), Math.abs(data[i + 1] - bg[1]), Math.abs(data[i + 2] - bg[2]));
@@ -1928,6 +2005,116 @@ function matchFrameBox(boxes: FrameBox[], reference: FrameBox, previous: FrameBo
     return best;
 }
 
+// ---- Full-page video import: the whole board on screen, a highlight moving --
+//
+// A "conveyor" video shows 1-3 large tiles occupying most of the frame, and the
+// existing crop-one-region-and-repeat-per-frame flow suits that. Some videos
+// instead keep the ENTIRE songboard on screen throughout and only move a
+// highlight ring between tiles — a screen recording of a real board being sung
+// through, for instance. Cropping to one small region and applying it to every
+// captured frame is the wrong model there: the board never changes at that
+// location except when the highlight happens to be passing through it, so
+// every crop comes out a near-duplicate of the same one tile. What's actually
+// wanted is the opposite of cropping — detect every tile ONCE, then use the
+// highlight's position each frame to reconstruct the reading order and timing
+// automatically, the way the Sync stage would if you tapped along by hand.
+
+const FULL_PAGE_MIN_TILES = 6;
+
+// How many distinct horizontal rows a set of boxes falls into. The structural
+// tell that separates a full board from a conveyor: drawSym always vertically
+// centres every tile on the same line, so a conveyor's next/prev spread — even
+// at its widest, 1 previous + 4 next — is always ONE row. A real board is laid
+// out in several. Walking boxes in vertical order and starting a new row
+// whenever the gap from the current row exceeds most of a tile's height is
+// simpler and more robust here than pairwise clustering.
+function countDistinctRows(boxes: FrameBox[]): number {
+    if (!boxes.length) return 0;
+    const items = boxes.map(b => ({ cy: b.y + b.h / 2, h: b.h })).sort((a, b) => a.cy - b.cy);
+    let rows = 1, rowCy = items[0].cy, rowH = items[0].h;
+    for (let i = 1; i < items.length; i++) {
+        if (items[i].cy - rowCy > rowH * 0.6) { rows++; rowCy = items[i].cy; rowH = items[i].h; }
+        else { rowCy = (rowCy + items[i].cy) / 2; rowH = Math.max(rowH, items[i].h); }
+    }
+    return rows;
+}
+
+function looksLikeFullPageBoard(boxes: FrameBox[]): boolean {
+    return boxes.length >= FULL_PAGE_MIN_TILES && countDistinctRows(boxes) >= 2;
+}
+
+function iou(a: FrameBox, b: FrameBox): number {
+    const x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y);
+    const x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h);
+    const inter = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+    const union = a.w * a.h + b.w * b.h - inter;
+    return union > 0 ? inter / union : 0;
+}
+
+function medianBox(boxes: FrameBox[]): FrameBox {
+    const med = (vals: number[]) => { const s = vals.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    return { x: med(boxes.map(b => b.x)), y: med(boxes.map(b => b.y)), w: med(boxes.map(b => b.w)), h: med(boxes.map(b => b.h)) };
+}
+
+/**
+ * Union the tile boxes detected across several sampled frames into one stable
+ * board layout.
+ *
+ * A single frame's detection can be thrown off by whichever tile happens to be
+ * glowing at that instant — the glow can nudge a measured edge outward, or
+ * bridge into a neighbour. Pooling several frames means each region only needs
+ * to be detected cleanly on SOME of them, not on the one frame that happened to
+ * be checked. A region seen on too few frames is more likely a one-off
+ * detection glitch than a real tile, so it's dropped rather than kept as noise.
+ */
+function clusterBoardRegions(frameBoxes: FrameBox[][]): FrameBox[] {
+    const groups: { ref: FrameBox; members: FrameBox[] }[] = [];
+    for (const boxes of frameBoxes) {
+        for (const b of boxes) {
+            const g = groups.find(g => iou(g.ref, b) > 0.35);
+            if (g) { g.members.push(b); g.ref = medianBox(g.members); }
+            else groups.push({ ref: b, members: [b] });
+        }
+    }
+    const minVotes = Math.max(2, Math.ceil(frameBoxes.length * 0.3));
+    return groups.filter(g => g.members.length >= minVotes).map(g => medianBox(g.members));
+}
+
+/**
+ * How "highlighted" one region looks in one frame: samples a thin ring just
+ * outside its box — the same inset a glow sits in, see the sheet-mode glow in
+ * `drawSheetFrame` — and scores it by how far those pixels stray from the
+ * frame's own background AND how saturated they are. Weighting by saturation
+ * is what separates a real highlight ring from plain dark ink or a border
+ * line: a glow is usually a vivid, saturated colour, while text and borders
+ * sit close to black or grey and gain little from this bonus.
+ */
+function regionHighlightScore(px: Uint8ClampedArray, w: number, h: number, bg: number[], region: FrameBox): number {
+    const rx0 = Math.round((region.x) * w), ry0 = Math.round((region.y) * h);
+    const rx1 = Math.round((region.x + region.w) * w), ry1 = Math.round((region.y + region.h) * h);
+    const ring = Math.max(1, Math.round(0.012 * Math.min(w, h)));
+    let sum = 0, n = 0;
+    const sample = (x: number, y: number) => {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        const i = (y * w + x) * 4;
+        const r = px[i], g = px[i + 1], b = px[i + 2];
+        const dist = Math.max(Math.abs(r - bg[0]), Math.abs(g - bg[1]), Math.abs(b - bg[2]));
+        const maxc = Math.max(r, g, b), minc = Math.min(r, g, b);
+        const sat = maxc > 0 ? (maxc - minc) / maxc : 0;
+        sum += dist * (0.5 + 0.5 * sat);
+        n++;
+    };
+    for (let x = rx0; x <= rx1; x += 2) for (let t = 1; t <= ring; t++) { sample(x, ry0 - t); sample(x, ry1 + t); }
+    for (let y = ry0; y <= ry1; y += 2) for (let t = 1; t <= ring; t++) { sample(rx0 - t, y); sample(rx1 + t, y); }
+    return n > 0 ? sum / n : 0;
+}
+
+/** Decode a frame and score every region's highlight-ness against it in one pass. */
+function scoreFrameRegions(px: Uint8ClampedArray, w: number, h: number, regions: FrameBox[]): number[] {
+    const bg = sampleFrameBackground(px, w, h);
+    return regions.map(r => regionHighlightScore(px, w, h, bg, r));
+}
+
 // Which captured frame the crop editor is currently showing.
 let _cropFrameIdx = 0;
 
@@ -1966,7 +2153,47 @@ function renderDetectedTiles(boxes: { x: number; y: number; w: number; h: number
     });
 }
 
-function openVideoPicker() {
+/**
+ * Decide which import flow fits this capture: reconstruct automatically for a
+ * full-page board, or fall through to the existing crop-one-tile-and-pick flow
+ * for a conveyor-style capture. Checked across a spread of frames rather than
+ * just the first, since one frame alone can be atypical — a title card, a
+ * moment mid-transition — and shouldn't decide the whole import.
+ */
+async function openVideoPicker() {
+    if (_videoCandidates.length >= FULL_PAGE_MIN_TILES && await looksLikeFullPageCapture()) {
+        const analysis = await reconstructFullPageProject(_videoCandidates, false);
+        if (analysis && analysis.stepCount > 0) {
+            const note = document.getElementById('fullpage-analysis');
+            if (note) {
+                note.textContent = `Found ${analysis.regionCount} tile${analysis.regionCount === 1 ? '' : 's'} on the board `
+                    + `and worked out ${analysis.stepCount} step${analysis.stepCount === 1 ? '' : 's'} `
+                    + `across ${analysis.totalSpan.toFixed(0)}s of video.`;
+            }
+            document.getElementById('fullpage-picker-overlay')!.style.display = 'flex';
+            return;
+        }
+        // Detected a board shape but couldn't derive a sensible sequence from
+        // it (e.g. no highlight signal at all) — the manual flow is the
+        // honest fallback rather than a dead end.
+    }
+    openManualVideoPicker();
+}
+
+// Sample a spread of captured frames and vote on whether this looks like a
+// full board rather than checking only the first one.
+async function looksLikeFullPageCapture(): Promise<boolean> {
+    const n = Math.min(_videoCandidates.length, 6);
+    const idx = Array.from({ length: n }, (_, i) => Math.floor((i * (_videoCandidates.length - 1)) / Math.max(1, n - 1)));
+    let votes = 0;
+    for (const i of idx) {
+        const im = await loadDataUrlImage(_videoCandidates[i].dataUrl);
+        if (im && looksLikeFullPageBoard(detectFrameTiles(im))) votes++;
+    }
+    return votes >= Math.ceil(n * 0.5);
+}
+
+function openManualVideoPicker() {
     // Fresh crop each import.
     _videoCroppedUrls = null;
     const status = document.getElementById('crop-status');
@@ -2120,6 +2347,158 @@ function resetVideoCrop() {
     const status = document.getElementById('crop-status');
     if (status) status.textContent = 'Using whole frames.';
     renderVideoGrid();
+}
+
+// Tuned by rendering the app's own full-page-with-highlight output and
+// measuring real scores, the same way FRAME_INK_MARGIN was tuned: below this a
+// frame with no real highlight (the title card, a settling moment) can win on
+// noise alone; the margin over the runner-up guards against two adjacent
+// regions scoring near-identically, which a plain top-1 pick would flip
+// between frame to frame.
+const HIGHLIGHT_MIN_SCORE = 6;
+const HIGHLIGHT_MARGIN = 1.15;
+
+/**
+ * Reconstruct a project from a full-page video: detect the board's tiles once,
+ * then use each captured frame's highlight to derive both the reading order
+ * and the timing automatically — the two things a hand-cropped, one-frame-one-
+ * tile import can never give you for this kind of source, because the source
+ * itself never changes except for where the highlight is.
+ *
+ * `apply: false` runs detection and scoring only and returns the analysis,
+ * without touching app state — used to test the pipeline directly against
+ * hand-built or rendered fixtures. `apply: true` installs the result exactly
+ * like `createProjectFromVideoFrames` does, then lands in Sync rather than
+ * Define/Order, since the reading order and timing are already known —
+ * `setupSyncView`'s existing "timings already recorded" branch opens straight
+ * into review/fine-tune mode rather than leaving the reconstruction
+ * unreviewable.
+ */
+async function reconstructFullPageProject(
+    candidates: { time: number; dataUrl: string }[],
+    apply: boolean,
+): Promise<{ regionCount: number; stepCount: number; totalSpan: number } | null> {
+    if (candidates.length < 2) return null;
+    const images = await Promise.all(candidates.map(c => loadDataUrlImage(c.dataUrl)));
+
+    // 1) Detect tile boxes on a spread of frames and union them into one stable
+    // board layout — not just one frame, since whichever tile is glowing at
+    // that instant is the one most likely to be mis-detected right there.
+    const sampleCount = Math.min(candidates.length, 12);
+    const sampleIdx = Array.from({ length: sampleCount },
+        (_, i) => Math.floor((i * (candidates.length - 1)) / Math.max(1, sampleCount - 1)));
+    const perFrameBoxes = sampleIdx.map(i => images[i] ? detectFrameTiles(images[i]!) : []);
+    const regions = clusterBoardRegions(perFrameBoxes);
+    if (regions.length < FULL_PAGE_MIN_TILES) return null;
+
+    // 2) Score every candidate frame against every region. Per region, also
+    // remember whichever frame scored LOWEST for it — the cleanest source for
+    // that tile's own crop, since a frame where a tile IS highlighted has the
+    // glow baked into its own thumbnail.
+    const perFrameScores: number[][] = [];
+    const cleanestFrame: number[] = regions.map(() => 0);
+    const cleanestScore: number[] = regions.map(() => Infinity);
+    for (let i = 0; i < candidates.length; i++) {
+        const im = images[i];
+        if (!im) { perFrameScores.push(regions.map(() => 0)); continue; }
+        const nw = im.naturalWidth || im.width, nh = im.naturalHeight || im.height;
+        const fw = Math.min(nw, FRAME_DETECT_W), fh = Math.max(1, Math.round(nh * (fw / nw)));
+        const scores = scoreFrameRegions(imagePixels(im, fw, fh), fw, fh, regions);
+        perFrameScores.push(scores);
+        scores.forEach((s, ri) => { if (s < cleanestScore[ri]) { cleanestScore[ri] = s; cleanestFrame[ri] = i; } });
+    }
+
+    // 3) Which region wins each frame, and how confidently. A frame with no
+    // real highlight yet (the very start, a settling moment) is skipped rather
+    // than forced onto whichever region scored highest on noise alone.
+    const winners = perFrameScores.map(scores => {
+        let best = -1, bestScore = -Infinity, secondScore = -Infinity;
+        scores.forEach((s, i) => {
+            if (s > bestScore) { secondScore = bestScore; bestScore = s; best = i; }
+            else if (s > secondScore) secondScore = s;
+        });
+        const confident = bestScore > HIGHLIGHT_MIN_SCORE && bestScore > secondScore * HIGHLIGHT_MARGIN;
+        return confident ? best : -1;
+    });
+
+    // 4) Collapse consecutive frames pointing at the same region into one
+    // reading-order step — a pulsing highlight can trigger several captures
+    // for a tile that's only sung once — using the first frame's timestamp as
+    // the step's start and the next distinct step's start as its end.
+    const steps: { region: number; startTime: number }[] = [];
+    for (let i = 0; i < winners.length; i++) {
+        if (winners[i] === -1) continue;
+        if (steps.length && steps[steps.length - 1].region === winners[i]) continue;
+        steps.push({ region: winners[i], startTime: candidates[i].time });
+    }
+    if (steps.length === 0) return null;
+
+    const totalSpan = candidates[candidates.length - 1].time - candidates[0].time;
+    const medianStepGap = (() => {
+        const gaps: number[] = [];
+        for (let i = 1; i < steps.length; i++) gaps.push(steps[i].startTime - steps[i - 1].startTime);
+        if (!gaps.length) return 1.5;
+        gaps.sort((a, b) => a - b);
+        return gaps[Math.floor(gaps.length / 2)];
+    })();
+
+    if (!apply) return { regionCount: regions.length, stepCount: steps.length, totalSpan };
+
+    // 5) Crop each region's cleanest image, lay them out as a normal board
+    // page (same synthetic-grid convention as createProjectFromVideoFrames),
+    // and stamp the derived reading order + timing.
+    const regionUrls = await Promise.all(regions.map((region, ri) => cropDataUrl(candidates[cleanestFrame[ri]].dataUrl, region)));
+    const cropped = await Promise.all(regionUrls.map(u => loadDataUrlImage(u)));
+
+    const cols = Math.min(5, regions.length);
+    const tileSize = 180, gap = 16, pad = 16;
+    const rows = Math.ceil(regions.length / cols);
+    const width = pad * 2 + cols * tileSize + (cols - 1) * gap;
+    const height = pad * 2 + rows * tileSize + (rows - 1) * gap;
+    const bg = document.createElement('canvas'); bg.width = width; bg.height = height;
+    const bctx = bg.getContext('2d')!; bctx.fillStyle = '#ffffff'; bctx.fillRect(0, 0, width, height);
+    const bgImg = new Image();
+    await new Promise<void>(res => { bgImg.onload = () => res(); bgImg.src = bg.toDataURL(); });
+
+    const pageSymbols = cropped.map((im, i) => {
+        const r = Math.floor(i / cols), c = i % cols;
+        return {
+            x: pad + c * (tileSize + gap), y: pad + r * (tileSize + gap),
+            width: tileSize, height: tileSize, customImage: im,
+        };
+    });
+
+    appState.mode = 'karaoke';
+    appState.pages = [{ image: bgImg, width, height, symbols: pageSymbols as SymbolTile[], sequence: [] }];
+    appState.currentPageIndex = 0;
+    appState.globalSequence = steps.map(s => ({ page: 0, sym: s.region }));
+
+    if (_videoAudioFile) {
+        appState.files.audioVocal = _videoAudioFile;
+        const aurl = createLocalUrl(_videoAudioFile);
+        dom.sync.audio.src = aurl;
+        if (dom.order.audio) dom.order.audio.src = aurl;
+        try {
+            const actx = new AudioContext();
+            appState.audioBuffer = await actx.decodeAudioData(await _videoAudioFile.arrayBuffer());
+            actx.close();
+        } catch { /* waveform optional */ }
+    }
+
+    buildFlatSymbols();
+    steps.forEach((s, i) => {
+        const sym = appState.symbols[i];
+        if (!sym) return;
+        sym.startTime = s.startTime;
+        sym.endTime = i + 1 < steps.length ? steps[i + 1].startTime : s.startTime + medianStepGap;
+    });
+
+    undoStack.length = 0; redoStack.length = 0;
+    saveHistoryState();
+    setupSyncView();
+    switchView('sync-view');
+
+    return { regionCount: regions.length, stepCount: steps.length, totalSpan };
 }
 
 // Drag to move the crop box, or drag a corner handle to resize it. Bound once.
@@ -4845,6 +5224,9 @@ function syncStyleControls() {
     set(dom.result.stylePrevScale as HTMLInputElement, c.prevScale);
     set(dom.result.stylePrevOpacity as HTMLInputElement, c.prevOpacity);
     set(dom.result.styleSpacing as HTMLInputElement, c.spacing);
+    (dom.result.styleDurationFill as HTMLInputElement).checked = !!c.durationFill;
+    (dom.result.styleActiveCard as HTMLInputElement).checked = !!c.activeCard;
+    (dom.result.styleBeatPulse as HTMLInputElement).checked = !!c.beatPulse;
     set(dom.result.styleRoundGap as HTMLInputElement, c.roundGap);
     // Round feature controls.
     (dom.result.styleRoundEnabled as HTMLInputElement).checked = !!c.roundEnabled;
@@ -4858,10 +5240,14 @@ function syncStyleControls() {
     segSet('canonVoices', c.canonVoices || 2);
     segSet('nextCount', c.nextCount);
     segSet('prevCount', c.prevCount);
-    segSet('displayMode', c.sheetMode ? 1 : 0);
+    segSet('displayMode', Math.max(0, PRESENTATION_MODES.indexOf(c.presentationMode)));
     segSet('exportRes', parseInt(c.exportRes || '720', 10));
     segSet('canonLoopRepeats', c.canonLoopRepeats || 0);
-    document.querySelector('#result-view details')?.classList.toggle('sheet-active', !!c.sheetMode);
+    // Conveyor-only settings (Main tile, Next/Previous tiles, Extra cues) only
+    // make sense for the conveyor itself — every other presentation mode owns
+    // its whole frame the way Follow-the-sheet always did, so the same class
+    // that used to mean "sheet mode" now means "any full-frame mode".
+    document.querySelector('#result-view details')?.classList.toggle('sheet-active', c.presentationMode !== 'conveyor');
     (dom.result.styleRoundGap as HTMLInputElement).disabled = !c.roundEnabled || hasRoundLoop();
     if (dom.result.roundSettings) {
         dom.result.roundSettings.style.opacity = c.roundEnabled ? '1' : '0.5';
@@ -4884,6 +5270,21 @@ function normalizeRoundConfig() {
     if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
     c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
+}
+
+const PRESENTATION_MODES = ['conveyor', 'sheet', 'spotlight', 'phraseLine', 'nowNext', 'vertical'] as const;
+
+// A project saved before presentationMode existed only ever had the
+// sheetMode boolean; anything else not in the known list (a future version's
+// mode this build doesn't understand, or garbage) falls back to the plain
+// conveyor rather than silently picking an arbitrary mode. sheetMode is kept
+// in sync afterwards purely for the field's own sake — nothing live reads it.
+function normalizePresentationMode() {
+    const c = appState.styleConfig;
+    if (!(PRESENTATION_MODES as readonly string[]).includes(c.presentationMode)) {
+        c.presentationMode = c.sheetMode ? 'sheet' : 'conveyor';
+    }
+    c.sheetMode = c.presentationMode === 'sheet';
 }
 
 // Clamp the stored canon entries to the available tiles and keep them in
@@ -5368,6 +5769,11 @@ function frameScale(ctx: CanvasRenderingContext2D): number {
  */
 const CONVEYOR_ANCHOR = 0.39;
 
+// Shared accent for the conveyor's optional cues (active card/ring, duration
+// fill, beat pulse) — the app's own brand indigo, matching the primary button
+// colour, so a cue reads as "this app" rather than an arbitrary new colour.
+const CONVEYOR_ACCENT = '#4f46e5';
+
 // The preview canvas stays small — it only has to be legible on this page. The
 // EXPORT is what ends up on a classroom whiteboard, so it renders at a real
 // resolution. Every drawn size is multiplied by frameScale, so the composition
@@ -5414,11 +5820,16 @@ function drawPreviewFrame(rawTime: number) {
     // Title Card / Intro Logic
     const firstStart = appState.symbols.length > 0 ? appState.symbols[0].startTime : 0;
 
-    // "Follow the sheet" mode shows the whole songsheet with a glowing
-    // highlight that scrolls down — a full-frame alternative to the conveyor.
-    if (cfg.sheetMode && appState.symbols.length > 0) {
-        drawSheetFrame(ctx, w, h, time);
-        return;
+    // Full-frame presentation modes — alternatives to the conveyor that own the
+    // whole picture themselves, the same way Follow-the-sheet always has.
+    if (cfg.presentationMode !== 'conveyor' && appState.symbols.length > 0) {
+        switch (cfg.presentationMode) {
+            case 'sheet': drawSheetFrame(ctx, w, h, time); return;
+            case 'spotlight': drawSpotlightFrame(ctx, w, h, time, firstStart); return;
+            case 'phraseLine': drawPhraseLineFrame(ctx, w, h, time, firstStart); return;
+            case 'nowNext': drawNowNextFrame(ctx, w, h, time, firstStart); return;
+            case 'vertical': drawVerticalConveyorFrame(ctx, w, h, time, firstStart); return;
+        }
     }
 
     // Canon: each following voice is fired at its own chosen point and sings the
@@ -5491,21 +5902,92 @@ function drawPreviewFrame(rawTime: number) {
     let activeIndex = activeIndexAt(time);
 
     const scaffoldLevel = currentScaffoldLevel();
-    const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
+    // Checked once per frame, not per tile — cheap, and both the pop and the
+    // hopping dot key off it the same way.
+    const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const drawSym = (idx: number, cx: number, scale: number, opacity: number, active: boolean = false) => {
         if (!appState.preview.loadedImages.has(idx)) return;
         const img = appState.preview.loadedImages.get(idx);
+        const sym = appState.symbols[idx];
         const baseSize = 220 * k;
-        const size = baseSize * scale;
+
+        // Beat pulse: a brief pop on the active tile that decays over the first
+        // 150ms of its window, so a change reads as a beat rather than a plain
+        // swap. Active-tile-only, and skipped under reduced-motion — the tile
+        // just holds its normal size instead of animating.
+        let pop = 1;
+        if (active && cfg.beatPulse && !reduceMotion && sym) {
+            const elapsed = time - (sym.startTime || 0);
+            if (elapsed >= 0 && elapsed < 0.15) pop = 1 + 0.12 * (1 - elapsed / 0.15);
+        }
+        const size = baseSize * scale * pop;
+
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
 
         const ratio = Math.min(size/img.width, size/img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
         const dx = cx - dw/2, dy = (h/2) - dh/2;
+
+        // Active card and ring: a coloured card behind the tile and a ring
+        // around it, so "which one is now" isn't signalled by size alone —
+        // matters at a distance and for low vision, and gives a scaffold-masked
+        // tile somewhere to sit instead of vanishing into the background. Drawn
+        // in its own save/restore so it never inherits the tile's drop shadow.
+        if (active && cfg.activeCard) {
+            const pad = 12 * k;
+            ctx.save();
+            ctx.globalAlpha = opacity * 0.22;
+            ctx.fillStyle = CONVEYOR_ACCENT;
+            roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+            ctx.fill();
+            ctx.globalAlpha = opacity;
+            ctx.strokeStyle = CONVEYOR_ACCENT;
+            ctx.lineWidth = 3 * k;
+            roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
         ctx.drawImage(img, dx, dy, dw, dh);
         // Staged scaffold removal: cover the content, keep the footprint/opacity.
-        maskTileIfHidden(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
+        maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+
+        // Duration fill: a translucent wash rises up over the active tile as its
+        // recorded window elapses — the video shows how long to hold it, not
+        // just which one, free from timings already recorded. A wash rather
+        // than an opaque wipe so the symbol stays legible underneath.
+        if (active && cfg.durationFill && sym && (sym.endTime || 0) > (sym.startTime || 0)) {
+            const frac = Math.max(0, Math.min(1,
+                (time - (sym.startTime || 0)) / ((sym.endTime || 0) - (sym.startTime || 0))));
+            if (frac > 0) {
+                ctx.save();
+                ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
+                ctx.globalAlpha = opacity * 0.32;
+                ctx.fillStyle = CONVEYOR_ACCENT;
+                ctx.fillRect(dx, dy + dh * (1 - frac), dw, dh * frac);
+                ctx.restore();
+            }
+        }
+
+        // Beat pulse's other half: a small marker that hops up and back down
+        // above the tile across the same window as the pop — a rhythm cue for
+        // a class that cannot yet read the timing off the words.
+        if (active && cfg.beatPulse && !reduceMotion && sym) {
+            const elapsed = time - (sym.startTime || 0);
+            if (elapsed >= 0 && elapsed < 0.3) {
+                const hop = Math.sin((elapsed / 0.3) * Math.PI);
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = CONVEYOR_ACCENT;
+                ctx.beginPath();
+                ctx.arc(cx, dy - 14 * k - hop * 16 * k, 5 * k, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
         ctx.restore();
     };
 
@@ -5535,7 +6017,7 @@ function drawPreviewFrame(rawTime: number) {
         
         // Draw Active
         if (activeIndex !== -1) {
-            drawSym(activeIndex, cx, cfg.activeScale, 1.0);
+            drawSym(activeIndex, cx, cfg.activeScale, 1.0, true);
             
             // Draw Musical Direction (New)
             const sym = appState.symbols[activeIndex];
@@ -5550,7 +6032,7 @@ function drawPreviewFrame(rawTime: number) {
 
         } else if (introFadeIn > 0 && appState.symbols.length > 0) {
              // Fade in first symbol as title fades out
-             drawSym(0, cx, cfg.activeScale, introFadeIn);
+             drawSym(0, cx, cfg.activeScale, introFadeIn, true);
         }
         
         // Draw Prev (already-played tiles scrolling past the main tile)
@@ -5603,6 +6085,215 @@ function pageContentBox(pageIdx: number) {
     };
     _bboxCache.set(pageIdx, box);
     return box;
+}
+
+// ---- Full-frame presentation modes (Spotlight, Phrase line, Now/Next, Vertical) --
+//
+// Four alternatives to the conveyor, each showing the tiles a different way but
+// sharing one drawing primitive and one intro-fade curve so they read as
+// variations on the same app rather than four disconnected demos.
+
+// Same fade every conveyor-family mode uses for the moment before the song
+// starts: hidden until the last second, then rising to full opacity right as
+// the first tile begins. Shared so "how the video opens" feels consistent
+// across modes even though what it opens ONTO differs.
+function introFadeAt(time: number, firstStart: number): number {
+    if (time >= firstStart) return 1;
+    const timeUntilStart = firstStart - time;
+    return timeUntilStart > 1.0 ? 0 : 1.0 - timeUntilStart;
+}
+
+// One image, centred at (cx,cy), at most `size` px on its long side, with the
+// same card-and-ring treatment the conveyor's "Active card and ring" option
+// uses — so a ring always means the same thing everywhere in the app, not a
+// different visual language per mode.
+function drawModeTile(
+    ctx: CanvasRenderingContext2D, idx: number, cx: number, cy: number,
+    maxW: number, maxH: number, opacity: number, ring: boolean, scaffoldLevel: number, k: number,
+) {
+    if (!appState.preview.loadedImages.has(idx) || opacity <= 0) return;
+    const img = appState.preview.loadedImages.get(idx)!;
+    const sym = appState.symbols[idx];
+    const ratio = Math.min(maxW / img.width, maxH / img.height);
+    const dw = img.width * ratio, dh = img.height * ratio;
+    const dx = cx - dw / 2, dy = cy - dh / 2;
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    if (ring) {
+        const pad = 12 * k;
+        ctx.save();
+        ctx.globalAlpha = opacity * 0.22;
+        ctx.fillStyle = CONVEYOR_ACCENT;
+        roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+        ctx.fill();
+        ctx.globalAlpha = opacity;
+        ctx.strokeStyle = CONVEYOR_ACCENT;
+        ctx.lineWidth = 3 * k;
+        roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+        ctx.stroke();
+        ctx.restore();
+    }
+    ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
+    ctx.drawImage(img, dx, dy, dw, dh);
+    maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+    ctx.restore();
+}
+
+// The active tile, or the intro fade-in of tile 0 before the song starts, or
+// nothing. Every mode below starts with this same three-way branch — factored
+// out so each mode's own function is just its own layout.
+function activeOrIntro(time: number, firstStart: number): { idx: number; opacity: number } | null {
+    const idx = activeIndexAt(time);
+    if (idx !== -1) return { idx, opacity: 1 };
+    if (appState.symbols.length === 0) return null;
+    const opacity = introFadeAt(time, firstStart);
+    return opacity > 0 ? { idx: 0, opacity } : null;
+}
+
+// Spotlight: one symbol, as large as the frame allows, nothing else on screen.
+// For learners who cannot filter out neighbouring tiles, or who need the
+// largest possible image — the cheapest mode to build and probably the most
+// useful for a child who finds the conveyor busy.
+function drawSpotlightFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    // Bound width and height independently, not by a single square side — on
+    // a 16:9 frame a symbol whose own aspect ratio is wide should be able to
+    // use most of the frame's width rather than being capped by its height.
+    drawModeTile(ctx, cur.idx, w / 2, h / 2, w * 0.82, h * 0.86, cur.opacity, true, currentScaffoldLevel(), k);
+}
+
+// Group the flat symbol list into "lines": maximal runs of consecutive
+// reading-order steps sitting on the same physical row of the same page — the
+// shape a real songboard actually reads in, not just a rolling window. A step
+// starts a new line whenever the page changes or its own y jumps by more than
+// half a tile's height from the line's current row. Source tile x/y/height are
+// already carried onto the flat entries (buildFlatSymbolFor spreads them),
+// so this needs no extra data.
+function computePhraseLines(): number[][] {
+    const syms = appState.symbols;
+    const lines: number[][] = [];
+    let cur: number[] = [];
+    let curPage = -1, curY = -1, curH = 0;
+    for (let i = 0; i < syms.length; i++) {
+        const s = syms[i];
+        const page = s.pageIndex ?? 0;
+        const y = s.y ?? 0, symH = s.height || 1;
+        const sameRow = cur.length > 0 && page === curPage && Math.abs(y - curY) < curH * 0.5;
+        if (!sameRow) { if (cur.length) lines.push(cur); cur = []; curPage = page; curY = y; curH = symH; }
+        cur.push(i);
+    }
+    if (cur.length) lines.push(cur);
+    return lines;
+}
+
+// Phrase line: the current physical row of the songboard laid out as a row,
+// read left to right, each symbol lighting as it's sung, then the line slides
+// away and the next arrives. Shows the shape of a phrase rather than a rolling
+// window — how a songboard actually reads.
+function drawPhraseLineFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+    const lines = computePhraseLines();
+    const line = lines.find(l => l.includes(cur.idx)) || lines[0] || [cur.idx];
+
+    // Slide the whole line in from the right the moment it becomes current.
+    // Skipped under reduced motion — the line simply appears in place.
+    const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const lineStartTime = appState.symbols[line[0]]?.startTime || 0;
+    const sinceLineStart = Math.max(0, time - lineStartTime);
+    const slideIn = reduceMotion ? 0 : Math.max(0, 1 - Math.min(1, sinceLineStart / 0.4));
+    const ease = slideIn * slideIn;   // ease-out feel, not a linear slide
+
+    const n = line.length;
+    // Reserve extra width per tile (+1.4 rather than a bare fit) and add a
+    // flat margin to the gap: the active tile draws 1.12x scale plus a ring
+    // pad and a drop shadow that both bleed a few px past its own box, and
+    // without this room it can visually collide with its neighbour.
+    const tileSize = Math.min(w / (n + 1.4), h * 0.42);
+    const gap = tileSize * 1.12 + 20 * k;
+    const x0 = w / 2 - (n - 1) * gap / 2 + ease * w * 0.5;
+    line.forEach((symIdx, pos) => {
+        const on = symIdx === cur.idx;
+        const opacity = cur.opacity * (1 - ease * 0.7) * (on ? 1 : 0.55);
+        const s = tileSize * (on ? 1.12 : 0.9);
+        drawModeTile(ctx, symIdx, x0 + pos * gap, h * 0.54, s, s, opacity, on, scaffoldLevel, k);
+    });
+}
+
+// Now / Next: a large NOW panel and a small NEXT panel, captioned. The
+// conveyor leaves "which one is current" implicit in scale and position; this
+// states it outright — familiar to anyone using now-and-next boards elsewhere
+// in the school day.
+function drawNowNextFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const cur = activeOrIntro(time, firstStart);
+    if (!cur) return;
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+
+    ctx.save();
+    ctx.globalAlpha = cur.opacity;
+    ctx.fillStyle = 'rgba(20,20,40,.5)';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${13 * k}px sans-serif`;
+    ctx.fillText('NOW', w * 0.34, h * 0.12);
+    ctx.fillText('NEXT', w * 0.74, h * 0.12);
+    ctx.strokeStyle = 'rgba(20,20,40,.15)'; ctx.lineWidth = 1 * k;
+    ctx.beginPath(); ctx.moveTo(w * 0.56, h * 0.1); ctx.lineTo(w * 0.56, h * 0.92); ctx.stroke();
+    ctx.restore();
+
+    const nowSize = Math.min(w * 0.44, h * 0.62);
+    drawModeTile(ctx, cur.idx, w * 0.34, h * 0.56, nowSize, nowSize, cur.opacity, true, scaffoldLevel, k);
+    const nextIdx = cur.idx + 1;
+    if (nextIdx < appState.symbols.length) {
+        drawModeTile(ctx, nextIdx, w * 0.76, h * 0.56, nowSize * 0.62, nowSize * 0.62, cur.opacity * 0.8, false, scaffoldLevel, k);
+    }
+}
+
+// Vertical conveyor: the same conveyor maths with the axes swapped, symbols
+// rising past a fixed mark instead of sliding across one. Some learners track
+// vertical motion more reliably than horizontal, and it fits a portrait screen
+// or a tablet stood on end — neither of which the horizontal layout serves.
+function drawVerticalConveyorFrame(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, firstStart: number) {
+    const k = frameScale(ctx);
+    const scaffoldLevel = currentScaffoldLevel();
+    const size = Math.min(h * 0.30, w * 0.6);
+    const yMark = h * 0.52;
+
+    const activeIdx = activeIndexAt(time);
+    if (activeIdx === -1) {
+        const opacity = introFadeAt(time, firstStart);
+        if (opacity > 0 && appState.symbols.length > 0) {
+            drawModeTile(ctx, 0, w / 2, yMark, size, size, opacity, true, scaffoldLevel, k);
+        }
+        return;
+    }
+
+    const sym = appState.symbols[activeIdx];
+    const dur = Math.max(0.05, (sym.endTime || 0) - (sym.startTime || 0));
+    const frac = Math.max(0, Math.min(1, (time - (sym.startTime || 0)) / dur));
+    const gap = size * 1.15;
+    const off = frac * gap;
+    for (let d = -2; d <= 2; d++) {
+        const j = activeIdx + d;
+        if (j < 0 || j >= appState.symbols.length) continue;
+        const y = yMark + d * gap - off;
+        if (y < -size || y > h + size) continue;
+        const on = d === 0 && frac < 0.98;
+        const s = size * (on ? 1.15 : 0.92);
+        drawModeTile(ctx, j, w / 2, y, s, s, on ? 1 : 0.4, on, scaffoldLevel, k);
+    }
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(79,70,229,.35)';
+    ctx.setLineDash([6 * k, 5 * k]); ctx.lineWidth = 2 * k;
+    ctx.beginPath(); ctx.moveTo(w * 0.12, yMark); ctx.lineTo(w * 0.88, yMark); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
 }
 
 // "Follow the sheet": draw the current page cropped to its content, glow-
@@ -6907,8 +7598,19 @@ function handleProjectLoadFile(e: Event) {
                 (dom.upload.titleInput as HTMLInputElement).value = appState.songTitle;
             }
             appState.mode = data.mode || "karaoke";
+            // A file saved before presentationMode existed has only sheetMode;
+            // spreading it over the current defaults leaves presentationMode
+            // at its default 'conveyor', which is itself a valid mode and so
+            // would look "already set" to normalizePresentationMode() below.
+            // Detect that case from the raw save data, before the merge hides it.
+            const hadPresentationMode = !!data.styleConfig &&
+                Object.prototype.hasOwnProperty.call(data.styleConfig, 'presentationMode');
             if (data.styleConfig) appState.styleConfig = { ...appState.styleConfig, ...data.styleConfig };
+            if (data.styleConfig && !hadPresentationMode) {
+                appState.styleConfig.presentationMode = appState.styleConfig.sheetMode ? 'sheet' : 'conveyor';
+            }
             normalizeRoundConfig();
+            normalizePresentationMode();
             if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
             // Staged scaffold removal: merge over defaults so pre-feature files
             // load with it disabled. Fresh board → drop stale detected colours.
@@ -7184,6 +7886,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         // fields (e.g. prevCount) keep their defaults.
         appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
         normalizeRoundConfig();
+        normalizePresentationMode();
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;
         appState.globalSequence = Array.isArray(data.globalSequence) ? data.globalSequence : [];
