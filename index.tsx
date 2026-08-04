@@ -144,6 +144,9 @@ const appState: AppState = {
         prevCount: 1,
         prevScale: 0.7,
         prevOpacity: 0.4,
+        durationFill: false,
+        activeCard: false,
+        beatPulse: false,
         roundEnabled: false,
         roundVoices: 2,
         roundGap: 4,
@@ -494,6 +497,9 @@ function init() {
             stylePrevScale: document.getElementById('style-prev-scale'),
             stylePrevOpacity: document.getElementById('style-prev-opacity'),
             styleSpacing: document.getElementById('style-spacing'),
+            styleDurationFill: document.getElementById('style-duration-fill'),
+            styleActiveCard: document.getElementById('style-active-card'),
+            styleBeatPulse: document.getElementById('style-beat-pulse'),
             // Round feature (equal spacing, loops to a unison finish).
             styleRoundEnabled: document.getElementById('style-round-enabled'),
             styleRoundGap: document.getElementById('style-round-gap'),
@@ -950,6 +956,9 @@ function setupEventListeners() {
         appState.styleConfig.prevScale = parseFloat(dom.result.stylePrevScale.value);
         appState.styleConfig.prevOpacity = parseFloat(dom.result.stylePrevOpacity.value);
         appState.styleConfig.spacing = parseInt(dom.result.styleSpacing.value);
+        appState.styleConfig.durationFill = (dom.result.styleDurationFill as HTMLInputElement).checked;
+        appState.styleConfig.activeCard = (dom.result.styleActiveCard as HTMLInputElement).checked;
+        appState.styleConfig.beatPulse = (dom.result.styleBeatPulse as HTMLInputElement).checked;
         // Round feature.
         appState.styleConfig.roundEnabled = (dom.result.styleRoundEnabled as HTMLInputElement).checked;
         appState.styleConfig.roundVoices = segGet('roundVoices') || 2;
@@ -1017,6 +1026,9 @@ function setupEventListeners() {
     dom.result.stylePrevScale.addEventListener('input', updateStyle);
     dom.result.stylePrevOpacity.addEventListener('input', updateStyle);
     dom.result.styleSpacing.addEventListener('input', updateStyle);
+    dom.result.styleDurationFill.addEventListener('change', updateStyle);
+    dom.result.styleActiveCard.addEventListener('change', updateStyle);
+    dom.result.styleBeatPulse.addEventListener('change', updateStyle);
     // Round and Canon are two different forms; only one can drive the video at a
     // time, so turning one on turns the other off.
     dom.result.styleRoundEnabled.addEventListener('change', () => {
@@ -5207,6 +5219,9 @@ function syncStyleControls() {
     set(dom.result.stylePrevScale as HTMLInputElement, c.prevScale);
     set(dom.result.stylePrevOpacity as HTMLInputElement, c.prevOpacity);
     set(dom.result.styleSpacing as HTMLInputElement, c.spacing);
+    (dom.result.styleDurationFill as HTMLInputElement).checked = !!c.durationFill;
+    (dom.result.styleActiveCard as HTMLInputElement).checked = !!c.activeCard;
+    (dom.result.styleBeatPulse as HTMLInputElement).checked = !!c.beatPulse;
     set(dom.result.styleRoundGap as HTMLInputElement, c.roundGap);
     // Round feature controls.
     (dom.result.styleRoundEnabled as HTMLInputElement).checked = !!c.roundEnabled;
@@ -5730,6 +5745,11 @@ function frameScale(ctx: CanvasRenderingContext2D): number {
  */
 const CONVEYOR_ANCHOR = 0.39;
 
+// Shared accent for the conveyor's optional cues (active card/ring, duration
+// fill, beat pulse) — the app's own brand indigo, matching the primary button
+// colour, so a cue reads as "this app" rather than an arbitrary new colour.
+const CONVEYOR_ACCENT = '#4f46e5';
+
 // The preview canvas stays small — it only has to be legible on this page. The
 // EXPORT is what ends up on a classroom whiteboard, so it renders at a real
 // resolution. Every drawn size is multiplied by frameScale, so the composition
@@ -5853,21 +5873,92 @@ function drawPreviewFrame(rawTime: number) {
     let activeIndex = activeIndexAt(time);
 
     const scaffoldLevel = currentScaffoldLevel();
-    const drawSym = (idx: number, cx: number, scale: number, opacity: number) => {
+    // Checked once per frame, not per tile — cheap, and both the pop and the
+    // hopping dot key off it the same way.
+    const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const drawSym = (idx: number, cx: number, scale: number, opacity: number, active: boolean = false) => {
         if (!appState.preview.loadedImages.has(idx)) return;
         const img = appState.preview.loadedImages.get(idx);
+        const sym = appState.symbols[idx];
         const baseSize = 220 * k;
-        const size = baseSize * scale;
+
+        // Beat pulse: a brief pop on the active tile that decays over the first
+        // 150ms of its window, so a change reads as a beat rather than a plain
+        // swap. Active-tile-only, and skipped under reduced-motion — the tile
+        // just holds its normal size instead of animating.
+        let pop = 1;
+        if (active && cfg.beatPulse && !reduceMotion && sym) {
+            const elapsed = time - (sym.startTime || 0);
+            if (elapsed >= 0 && elapsed < 0.15) pop = 1 + 0.12 * (1 - elapsed / 0.15);
+        }
+        const size = baseSize * scale * pop;
+
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
 
         const ratio = Math.min(size/img.width, size/img.height);
         const dw = img.width * ratio, dh = img.height * ratio;
         const dx = cx - dw/2, dy = (h/2) - dh/2;
+
+        // Active card and ring: a coloured card behind the tile and a ring
+        // around it, so "which one is now" isn't signalled by size alone —
+        // matters at a distance and for low vision, and gives a scaffold-masked
+        // tile somewhere to sit instead of vanishing into the background. Drawn
+        // in its own save/restore so it never inherits the tile's drop shadow.
+        if (active && cfg.activeCard) {
+            const pad = 12 * k;
+            ctx.save();
+            ctx.globalAlpha = opacity * 0.22;
+            ctx.fillStyle = CONVEYOR_ACCENT;
+            roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+            ctx.fill();
+            ctx.globalAlpha = opacity;
+            ctx.strokeStyle = CONVEYOR_ACCENT;
+            ctx.lineWidth = 3 * k;
+            roundRect(ctx, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2, 14 * k);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
         ctx.drawImage(img, dx, dy, dw, dh);
         // Staged scaffold removal: cover the content, keep the footprint/opacity.
-        maskTileIfHidden(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
+        maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+
+        // Duration fill: a translucent wash rises up over the active tile as its
+        // recorded window elapses — the video shows how long to hold it, not
+        // just which one, free from timings already recorded. A wash rather
+        // than an opaque wipe so the symbol stays legible underneath.
+        if (active && cfg.durationFill && sym && (sym.endTime || 0) > (sym.startTime || 0)) {
+            const frac = Math.max(0, Math.min(1,
+                (time - (sym.startTime || 0)) / ((sym.endTime || 0) - (sym.startTime || 0))));
+            if (frac > 0) {
+                ctx.save();
+                ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
+                ctx.globalAlpha = opacity * 0.32;
+                ctx.fillStyle = CONVEYOR_ACCENT;
+                ctx.fillRect(dx, dy + dh * (1 - frac), dw, dh * frac);
+                ctx.restore();
+            }
+        }
+
+        // Beat pulse's other half: a small marker that hops up and back down
+        // above the tile across the same window as the pop — a rhythm cue for
+        // a class that cannot yet read the timing off the words.
+        if (active && cfg.beatPulse && !reduceMotion && sym) {
+            const elapsed = time - (sym.startTime || 0);
+            if (elapsed >= 0 && elapsed < 0.3) {
+                const hop = Math.sin((elapsed / 0.3) * Math.PI);
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = CONVEYOR_ACCENT;
+                ctx.beginPath();
+                ctx.arc(cx, dy - 14 * k - hop * 16 * k, 5 * k, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
         ctx.restore();
     };
 
@@ -5897,7 +5988,7 @@ function drawPreviewFrame(rawTime: number) {
         
         // Draw Active
         if (activeIndex !== -1) {
-            drawSym(activeIndex, cx, cfg.activeScale, 1.0);
+            drawSym(activeIndex, cx, cfg.activeScale, 1.0, true);
             
             // Draw Musical Direction (New)
             const sym = appState.symbols[activeIndex];
@@ -5912,7 +6003,7 @@ function drawPreviewFrame(rawTime: number) {
 
         } else if (introFadeIn > 0 && appState.symbols.length > 0) {
              // Fade in first symbol as title fades out
-             drawSym(0, cx, cfg.activeScale, introFadeIn);
+             drawSym(0, cx, cfg.activeScale, introFadeIn, true);
         }
         
         // Draw Prev (already-played tiles scrolling past the main tile)

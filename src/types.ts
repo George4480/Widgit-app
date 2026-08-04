@@ -66,6 +66,14 @@ export interface StyleConfig {
     prevCount: number;
     prevScale: number;
     prevOpacity: number;
+    // Three small, independent refinements to the default (non-sheet) tile
+    // renderer. Each is its own on/off switch and they compose freely — a
+    // teacher can have all three, one, or none. All default off: they change
+    // how the active tile reads, and an existing project's look shouldn't
+    // shift under it because the app learned a new trick.
+    durationFill: boolean;   // a wipe crosses the active tile over its recorded window
+    activeCard: boolean;     // a card + ring behind the active tile, not just its size
+    beatPulse: boolean;      // a pop and a hopping dot on each change
     // Round: identical melody at EQUAL spacing that LOOPS a marked phrase to a
     // unison finish (e.g. "Row, Row, Row Your Boat"). A cyclic form.
     roundEnabled: boolean;
