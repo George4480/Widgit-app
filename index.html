@@ -898,6 +898,15 @@
             box-shadow: 0 10px 25px rgba(0,0,0,0.25);
             border-top: 8px solid #fbbc04;
             animation: slideUp 0.3s ease;
+            /* The video-import picker in particular can stack a crop image, a
+               frame stepper, a sensitivity slider, and a 65-frame grid taller
+               than the viewport — with no scroll here, the "Create project"
+               button at the bottom becomes literally unreachable, not just
+               hard to find. Every warning-modal shares this fix since any of
+               them could grow past a short viewport (a phone, a laptop lid). */
+            max-height: 90vh;
+            overflow-y: auto;
+            box-sizing: border-box;
         }
         @keyframes slideUp {
             from { opacity: 0; transform: translateY(20px); }
@@ -1652,8 +1661,11 @@
         }
         #round-settings[aria-disabled="true"] .seg-group button,
         #canon-settings[aria-disabled="true"] .seg-group button { pointer-events: none; }
-        .seg-group.seg-wide { display: flex; width: 100%; }
-        .seg-group.seg-wide button { flex: 1 1 0; white-space: normal; line-height: 1.25; }
+        /* flex-wrap: six presentation-mode buttons no longer fit one row without
+           being squeezed illegible; wrapping keeps each button's label readable
+           at the cost of a taller control on narrow panels. */
+        .seg-group.seg-wide { display: flex; flex-wrap: wrap; width: 100%; }
+        .seg-group.seg-wide button { flex: 1 1 150px; white-space: normal; line-height: 1.25; }
         /* Conveyor-only settings collapse away in follow-the-sheet mode. */
         details.sheet-active [data-hide-in-sheet] { display: none; }
 
@@ -2344,8 +2356,12 @@
                     <div class="seg-group seg-wide" data-style="displayMode" aria-label="Presentation style">
                         <button type="button" data-value="0">Conveyor — tiles slide across</button>
                         <button type="button" data-value="1">Follow the sheet — highlight &amp; scroll</button>
+                        <button type="button" data-value="2">Spotlight — one symbol, full size</button>
+                        <button type="button" data-value="3">Phrase line — the current row, left to right</button>
+                        <button type="button" data-value="4">Now / Next — two panels</button>
+                        <button type="button" data-value="5">Vertical — rising past a mark</button>
                     </div>
-                    <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one. Follow-the-sheet shows the whole songsheet, glows the current tile, and scrolls down as it plays.</p>
+                    <p class="section-note" style="margin-left:0; margin-top:6px;">Conveyor pans tiles one-by-one; Follow-the-sheet shows the whole songsheet and scrolls down as it plays. Spotlight, Phrase line, Now/Next and Vertical are full-frame alternatives — each shows the tiles a different way, but only one at a time.</p>
                 </div>
             </div>
 
@@ -2464,6 +2480,28 @@
                         <div class="slider-ends"><span>Faint</span><span>Solid</span></div>
                     </div>
                 </div>
+            </div>
+
+            <div class="settings-section" data-hide-in-sheet>
+                <h4 class="settings-section-title">Extra cues <span class="section-note">small, independent — any or all at once</span></h4>
+                <label class="round-toggle" style="align-items:center;">
+                    <input type="checkbox" id="style-duration-fill">
+                    <span><strong>Duration fill</strong>
+                        <span class="section-note" style="display:block; font-weight:400;">A wipe crosses the active tile over exactly its recorded window, so the video shows how long to hold it, not just which one.</span>
+                    </span>
+                </label>
+                <label class="round-toggle" style="align-items:center; margin-top:8px;">
+                    <input type="checkbox" id="style-active-card">
+                    <span><strong>Active card and ring</strong>
+                        <span class="section-note" style="display:block; font-weight:400;">A card behind the current tile and a ring around it, so size isn't the only signal for which one is now.</span>
+                    </span>
+                </label>
+                <label class="round-toggle" style="align-items:center; margin-top:8px;">
+                    <input type="checkbox" id="style-beat-pulse">
+                    <span><strong>Beat pulse</strong>
+                        <span class="section-note" style="display:block; font-weight:400;">The active tile pops on each change with a small beat marker above it.</span>
+                    </span>
+                </label>
             </div>
 
             <div class="settings-section" data-hide-in-sheet>
@@ -2628,6 +2666,27 @@
         <div class="loader" style="border-top-color: var(--primary-text); width: 60px; height: 60px;"></div>
         <h3 style="color: white; margin-top: 20px;">Analysing video…</h3>
         <p id="video-processing-text" style="color: #ddd;">Starting…</p>
+    </div>
+
+    <!-- Video Import: full-page-board confirmation. Shown INSTEAD of the manual
+         picker below when the capture looks like a whole songboard with a
+         highlight moving between tiles, rather than a conveyor showing one
+         symbol per frame. Cropping to one tile and repeating it across every
+         frame is the wrong model there — the tiles are detected once and the
+         reading order + timing are worked out from the highlight instead. -->
+    <div id="fullpage-picker-overlay" class="warning-modal-overlay" style="display: none;">
+        <div class="warning-modal-content" style="max-width: 520px; border-top-color: var(--primary);">
+            <h3 class="warning-modal-title" style="color: var(--primary-text);">📋 This looks like a full songboard</h3>
+            <div class="warning-modal-body">
+                <p style="margin-top:0;">The whole board stays on screen and a highlight moves between tiles, rather than each frame showing one symbol on its own. We can find every tile once and work out the reading order and timing from where the highlight goes, instead of asking you to crop one tile and repeat it.</p>
+                <p id="fullpage-analysis" style="font-weight:600; margin:14px 0 0;"></p>
+                <p class="section-note" style="margin:6px 0 0;">This lands you on the Sync screen with everything already timed, ready to check and fine-tune — not a finished, unreviewable result.</p>
+            </div>
+            <div class="warning-modal-buttons">
+                <button id="btn-fullpage-manual" class="button secondary" style="margin:0;">No, let me pick tiles myself</button>
+                <button id="btn-fullpage-reconstruct" class="button" style="margin:0;">Reconstruct automatically</button>
+            </div>
+        </div>
     </div>
 
     <!-- Video Import: frame picker modal -->
