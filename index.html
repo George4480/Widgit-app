@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <!-- Zoom disabled: pinch/double-tap zoom was firing off quick successive
+         taps on the order/define canvases (marking reading order, tagging
+         tiles) and compounding across taps with no app state to reset it —
+         switching pages didn't help because the browser's zoom isn't
+         something the app controls. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>See Song — symbol karaoke maker</title>
     <meta name="description" content="See Song turns symbol songboards into audio-synced karaoke videos. Everything runs in your browser — your files never leave your device.">
     <meta name="theme-color" content="#4f46e5">
@@ -384,6 +389,9 @@
         canvas {
             background-color: white;
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            /* Belt-and-braces alongside the viewport meta's user-scalable=no:
+               stops a double-tap on a tile from being read as double-tap-zoom. */
+            touch-action: manipulation;
         }
 
         /* Sync View */
