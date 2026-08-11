@@ -4003,6 +4003,7 @@ function setupSyncView() {
     const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
     dom.sync.visualCue.style.display = hasTimings ? 'none' : 'flex';
     dom.sync.containerFineTuning.style.display = hasTimings ? 'block' : 'none';
+    updateNavStripVisibility();
 
     dom.sync.audio.playbackRate = syncPlaybackRate; // keep chosen speed on re-entry
     updateSyncButtonUI();
@@ -4037,6 +4038,17 @@ function setupSyncView() {
         }
     };
     appState.preview.animationId = requestAnimationFrame(animate);
+}
+
+// The nav strip is normally a fine-tuning tool, hidden until timings exist —
+// but staged scaffold removal assigns stages by tapping these same tiles,
+// and that assignment is tile-based, not time-based, so it needs the strip
+// available even before the first recording pass finishes.
+function updateNavStripVisibility() {
+    if (!dom.sync.navStrip) return;
+    const hasTimings = appState.symbols.some(s => (s.startTime || 0) > 0 || (s.endTime || 0) > 0);
+    const show = hasTimings || appState.scaffold.enabled;
+    (dom.sync.navStrip as HTMLElement).style.display = show ? 'flex' : 'none';
 }
 
 // NEW: Render the Symbol Navigation Strip
@@ -4362,6 +4374,7 @@ function renderScaffoldControls() {
     const sc = appState.scaffold;
     if (dom.scaffold.enabled) dom.scaffold.enabled.checked = sc.enabled;
     if (dom.scaffold.body) dom.scaffold.body.style.display = sc.enabled ? 'block' : 'none';
+    updateNavStripVisibility();
 
     // Assignment level buttons (1..levelCount).
     const lb = dom.scaffold.levelButtons;
@@ -4594,7 +4607,8 @@ function handleSyncTapAction() {
         // UI: Recording Mode Active
         dom.sync.visualCue.style.display = 'flex';
         dom.sync.containerFineTuning.style.display = 'none';
-        
+        updateNavStripVisibility();
+
         dom.sync.audio.currentTime = 0;
         dom.sync.audio.playbackRate = syncPlaybackRate;
         dom.sync.audio.play();
@@ -4684,7 +4698,8 @@ function finishSync() {
     // Transition to Edit Mode
     dom.sync.visualCue.style.display = 'none';
     dom.sync.containerFineTuning.style.display = 'block';
-    
+    updateNavStripVisibility();
+
     updateSyncButtonUI();
     renderSymbolNavStrip(); // Refresh strip
     // Select first symbol to start editing
@@ -4702,7 +4717,8 @@ function resetSync() {
     // Reset UI to Record Mode
     dom.sync.visualCue.style.display = 'flex';
     dom.sync.containerFineTuning.style.display = 'none';
-    
+    updateNavStripVisibility();
+
     updateSyncButtonUI();
 }
 

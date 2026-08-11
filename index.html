@@ -2187,13 +2187,16 @@
             </div>
         </div>
 
+        <!-- Symbol Navigation Strip: its own visibility, not tied to fine-tuning —
+             staged scaffold removal assigns stages by tapping these tiles, and
+             that doesn't need timing to exist yet, so it also shows whenever
+             scaffold removal is enabled, even mid-recording. -->
+        <div id="symbol-nav-strip" class="symbol-nav-strip">
+            <!-- Items injected by JS -->
+        </div>
+
         <!-- 5b. Fine Tuning Phase Tools (Hidden during recording) -->
         <div id="sync-fine-tuning">
-            <!-- Symbol Navigation Strip -->
-            <div id="symbol-nav-strip" class="symbol-nav-strip">
-                <!-- Items injected by JS -->
-            </div>
-
             <!-- Timeline Navigation Toolbar -->
             <div class="timeline-toolbar">
                 <button id="btn-tl-prev" class="button secondary small" title="Previous Tile">⬅</button>
