@@ -155,6 +155,7 @@ const appState: AppState = {
         canonEnabled: false,
         canonVoices: 2,
         canonEntries: [2, 4, 6],
+        canonPhrasesEnabled: false,
         canonStarts: [0, 0, 0],
         canonEnds: [-1, -1, -1],
         canonLoopStart: -1,
@@ -522,6 +523,8 @@ function init() {
             canonPicker: document.getElementById('canon-picker'),
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
+            styleCanonPhrases: document.getElementById('style-canon-phrases') as HTMLInputElement,
+            canonPhraseBlock: document.getElementById('canon-phrase-block'),
             canonPhraseStrip: document.getElementById('canon-phrase-strip'),
             canonLoopStrip: document.getElementById('canon-loop-strip'),
             canonLoopStatus: document.getElementById('canon-loop-status'),
@@ -985,6 +988,9 @@ function setupEventListeners() {
             (dom.result.canonCountinItem as HTMLElement).style.opacity = appState.styleConfig.canonCountdown ? '1' : '0.45';
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
+        if (dom.result.styleCanonPhrases) {
+            appState.styleConfig.canonPhrasesEnabled = (dom.result.styleCanonPhrases as HTMLInputElement).checked;
+        }
         appState.styleConfig.presentationMode = PRESENTATION_MODES[segGet('displayMode')] || 'conveyor';
         appState.styleConfig.sheetMode = appState.styleConfig.presentationMode === 'sheet';
         // Export resolution only affects the rendered file, never the preview.
@@ -1062,6 +1068,16 @@ function setupEventListeners() {
         afterTriggerPointChange();
     });
     dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
+    // Per-voice phrases are an opt-in extra; toggling redraws the pickers and
+    // the preview, since it changes what every following voice sings.
+    if (dom.result.styleCanonPhrases) {
+        dom.result.styleCanonPhrases.addEventListener('change', () => {
+            updateStyle();
+            updateCanonEntryUI();
+            refreshTriggerBadges();
+            afterTriggerPointChange();
+        });
+    }
     dom.result.styleCanonCountin.addEventListener('change', updateStyle);
 
     // Reflect the current styleConfig onto every control (sliders + segments +
@@ -4828,8 +4844,15 @@ function updateRoundUI() {
 //     canonEnds), i.e. WHAT it sings from that moment on.
 // v is 1-based over the following voices: v=1 is Voice 2.
 
+// Are per-voice phrases switched on? When they aren't, every following voice
+// sings the whole line and the stored picks are simply parked, not applied.
+function canonPhrasesOn(): boolean {
+    return !!appState.styleConfig.canonPhrasesEnabled;
+}
+
 // First tile of voice v's sung phrase.
 function canonPhraseStart(v: number): number {
+    if (!canonPhrasesOn()) return 0;
     const maxIdx = Math.max(0, appState.symbols.length - 1);
     const s = appState.styleConfig.canonStarts?.[v - 1] ?? 0;
     return Math.max(0, Math.min(maxIdx, s));
@@ -4838,6 +4861,7 @@ function canonPhraseStart(v: number): number {
 // Last tile of voice v's sung phrase (inclusive). -1 stored = sing to the end.
 function canonPhraseEnd(v: number): number {
     const maxIdx = Math.max(0, appState.symbols.length - 1);
+    if (!canonPhrasesOn()) return maxIdx;
     const e = appState.styleConfig.canonEnds?.[v - 1] ?? -1;
     if (e < 0) return maxIdx;
     return Math.max(canonPhraseStart(v), Math.min(maxIdx, e));
@@ -5318,12 +5342,30 @@ function syncStyleControls() {
 
 // Backfill the round/canon fields for projects/snapshots saved before the two
 // features were split, so drawing and the controls never hit undefined values.
-function normalizeRoundConfig() {
+/**
+ * `savedStyle` is the raw styleConfig from a project file or history snapshot,
+ * when this call follows a load. It is needed because the merge onto the live
+ * defaults hides which keys the file actually carried — a field the file never
+ * had still reads as a boolean afterwards.
+ */
+function normalizeRoundConfig(savedStyle?: any) {
     const c = appState.styleConfig;
     if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
     if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
     c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
+    // Per-voice phrases became opt-in after they shipped always-on. A file saved
+    // before the switch existed carries no flag, so infer it from its picks:
+    // anything other than "every voice sings the whole line" means a phrase was
+    // deliberately set up, and it has to keep playing that way.
+    const hadFlag = !!savedStyle && Object.prototype.hasOwnProperty.call(savedStyle, 'canonPhrasesEnabled');
+    if (savedStyle && !hadFlag) {
+        const starts = Array.isArray(savedStyle.canonStarts) ? savedStyle.canonStarts : [];
+        const ends = Array.isArray(savedStyle.canonEnds) ? savedStyle.canonEnds : [];
+        c.canonPhrasesEnabled = starts.some((s: number) => (s ?? 0) > 0) || ends.some((e: number) => (e ?? -1) >= 0);
+    } else if (typeof c.canonPhrasesEnabled !== 'boolean') {
+        c.canonPhrasesEnabled = false;
+    }
 }
 
 const PRESENTATION_MODES = ['conveyor', 'sheet', 'spotlight', 'phraseLine', 'nowNext', 'vertical'] as const;
@@ -5647,6 +5689,9 @@ function updateRoundCanonStatus() {
     const ra = dom.result.roundActions as HTMLElement | null;
     if (dom.result.roundPicker) (dom.result.roundPicker as HTMLElement).style.display = cfg.roundEnabled ? 'block' : 'none';
     if (dom.result.canonPicker) (dom.result.canonPicker as HTMLElement).style.display = cfg.canonEnabled ? 'block' : 'none';
+    // The phrase pickers only appear once per-voice phrases are switched on.
+    if (dom.result.styleCanonPhrases) (dom.result.styleCanonPhrases as HTMLInputElement).checked = !!cfg.canonPhrasesEnabled;
+    if (dom.result.canonPhraseBlock) (dom.result.canonPhraseBlock as HTMLElement).style.display = cfg.canonPhrasesEnabled ? 'block' : 'none';
     if (rs && ra) {
         rs.style.display = cfg.roundEnabled ? 'block' : 'none';
         ra.style.display = cfg.roundEnabled ? 'flex' : 'none';
@@ -5674,12 +5719,17 @@ function updateRoundCanonStatus() {
                 const s = canonPhraseStart(v);
                 const e = canonPhraseEnd(v);
                 const openEnded = (cfg.canonEnds?.[v - 1] ?? -1) < 0;
-                const sings = openEnded
-                    ? `sings from tile <strong>${s + 1}</strong> to the end`
-                    : `sings tiles <strong>${s + 1} → ${e + 1}</strong>`;
+                const sings = !canonPhrasesOn()
+                    ? 'sings the whole line'
+                    : openEnded
+                        ? `sings from tile <strong>${s + 1}</strong> to the end`
+                        : `sings tiles <strong>${s + 1} → ${e + 1}</strong>`;
                 parts.push(`<strong>Voice ${v + 1}</strong> comes in at tile <strong>${tile}</strong> (~${at.toFixed(1)}s) and ${sings}`);
             }
-            cs.innerHTML = `🎯 ${parts.join('. ')}. Entries are kept in singing order automatically; each voice's phrase is set separately.`;
+            const tail = canonPhrasesOn()
+                ? 'Entries are kept in singing order automatically; each voice\'s phrase is set separately.'
+                : 'Entries are kept in singing order automatically. Turn on “Give each voice its own phrase” to choose what each one sings.';
+            cs.innerHTML = `🎯 ${parts.join('. ')}. ${tail}`;
         }
     }
 
@@ -7686,7 +7736,7 @@ function handleProjectLoadFile(e: Event) {
             if (data.styleConfig && !hadPresentationMode) {
                 appState.styleConfig.presentationMode = appState.styleConfig.sheetMode ? 'sheet' : 'conveyor';
             }
-            normalizeRoundConfig();
+            normalizeRoundConfig(data.styleConfig);
             normalizePresentationMode();
             if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
             // Staged scaffold removal: merge over defaults so pre-feature files
@@ -7962,7 +8012,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         // Merge (not replace) so snapshots from older versions missing newer
         // fields (e.g. prevCount) keep their defaults.
         appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
-        normalizeRoundConfig();
+        normalizeRoundConfig(data.styleConfig);
         normalizePresentationMode();
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;

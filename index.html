@@ -2611,10 +2611,20 @@
                     </div>
                     <label style="font-weight:600; font-size:0.85rem;">1. Comes in at <span class="section-note">tap the tile the leader is on when this voice starts</span></label>
                     <div id="canon-pick-strip" class="trigger-strip" role="group" aria-label="Pick the entry tile for the chosen voice"></div>
-                    <label style="font-weight:600; font-size:0.85rem; margin-top:10px; display:block;">2. Sings <span class="section-note">tap the first tile of its phrase, then the last — this is a separate choice from when it comes in</span></label>
-                    <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+                    <div class="round-toggle-row" style="padding-top:12px;">
+                        <label class="round-toggle">
+                            <input type="checkbox" id="style-canon-phrases">
+                            <span>2. <strong>Give each voice its own phrase</strong>
+                                <span class="section-note" style="display:block; font-weight:400;">Off, every voice sings the whole line from the top — the plain canon, and all a song needs if it simply cycles round until the voices meet in unison. Turn it on to choose what each voice sings, separately from when it comes in.</span>
+                            </span>
+                        </label>
+                    </div>
+                    <div id="canon-phrase-block" style="display:none;">
+                        <label style="font-weight:600; font-size:0.85rem; display:block;">Sings <span class="section-note">tap the first tile of its phrase, then the last</span></label>
+                        <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+                    </div>
 
-                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a short phrase the voices repeat so the canon finishes together</span></label>
+                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a phrase the voices repeat over and over until every voice has caught up and they finish in unison</span></label>
                     <div id="canon-loop-strip" class="trigger-strip" role="group" aria-label="Pick the tail phrase the voices repeat at the end"></div>
                     <div class="scaffold-row" style="margin-top:6px;">
                         <span style="font-weight:600; font-size:0.85rem;">Repeat it</span>
