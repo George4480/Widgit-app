@@ -3503,6 +3503,9 @@ function insertSequenceSteps(at: number, steps: SequenceStep[], opts: { stamp?: 
     const r = appState.round;
     if (r.start !== -1 && r.start >= slot) r.start += steps.length;
     if (r.end !== -1 && r.end >= slot) r.end += steps.length;
+    // Tell the strip which steps just arrived so it rolls to them and flashes
+    // them, wherever in the order they landed.
+    _orderStripReveal = { at: slot, count: steps.length };
     saveHistoryState();
     drawOrderCanvas();
     renderOrderSequenceStrip();
@@ -3590,6 +3593,12 @@ function updateOrderInsertUI() {
 function renderOrderSequenceStrip() {
     const strip = dom.order.sequenceStrip;
     if (!strip) return;
+    // Rolling view: rebuilding wipes the browser's scroll position. Remember it,
+    // and take (and clear) any pending reveal so the strip can roll to steps
+    // that were just added instead of snapping back to the start.
+    const prevScroll = strip.scrollLeft;
+    const reveal = _orderStripReveal;
+    _orderStripReveal = null;
     strip.innerHTML = '';
 
     if (appState.globalSequence.length === 0) {
@@ -3710,7 +3719,36 @@ function renderOrderSequenceStrip() {
 
         strip.appendChild(item);
     });
+
+    // Keep the view rolling with the work. Steps that were just added scroll
+    // into view and pulse — targeted by INDEX, not "the last tile", so this is
+    // right for an append, for a tile spliced in via insert mode, and for a
+    // whole page added at once by Auto. Any other rebuild (reorder, removal,
+    // page switch, loop marking) restores the position the user was at,
+    // instantly so the strip's smooth scrolling doesn't swoosh from the start.
+    const items = strip.children as HTMLCollectionOf<HTMLElement>;
+    if (reveal && items.length) {
+        const first = items[Math.max(0, Math.min(items.length - 1, reveal.at))];
+        for (let i = reveal.at; i < reveal.at + reveal.count && i < items.length; i++) {
+            items[i].classList.add('just-added');
+        }
+        // Centre the insertion point rather than scrollIntoView, which would
+        // also scroll the page itself.
+        const target = first.offsetLeft - (strip.clientWidth - first.offsetWidth) / 2;
+        strip.scrollLeft = Math.max(0, Math.min(strip.scrollWidth - strip.clientWidth, target));
+    } else {
+        strip.style.scrollBehavior = 'auto';
+        strip.scrollLeft = prevScroll;
+        strip.style.scrollBehavior = '';
+    }
 }
+
+/**
+ * Steps added by the last insertSequenceSteps() call, for the strip to roll to
+ * and flash on its next render. Cleared as soon as that render consumes it, so
+ * only a genuine addition moves the view.
+ */
+let _orderStripReveal: { at: number; count: number } | null = null;
 
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const pos = getPointerPos(e, dom.order.canvas);
@@ -6623,7 +6661,9 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             // rather than running on through the rest of the line.
             const activeIdx = Math.max(pStart, Math.min(pEnd, target));
             if (activeIdx >= 0 && activeIdx < syms.length) {
-                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
+                // Bound the context tiles to this voice's phrase too, not just
+                // the active one.
+                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint, pStart, pEnd);
             }
         }
 
@@ -6644,7 +6684,12 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
 // One voice's conveyor (prev / active / next) in a band centred at cy, with the
 // tiles sat on colour-coded cards so each group can follow its own colour.
-function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
+// `minIndex`/`maxIndex` bound the tiles this voice may show at all. A canon
+// follower sings only its own phrase, so the faded prev/next context tiles must
+// stay inside it — otherwise a voice whose phrase starts at tile 10 shows tile 9
+// beside it, a tile that voice never sings. Defaults span the whole line, which
+// is what the round (every voice sings everything) wants.
+function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string, minIndex: number = 0, maxIndex: number = Number.MAX_SAFE_INTEGER) {
     const cfg = appState.styleConfig;
     const scaffoldLevel = currentScaffoldLevel();
     const k = frameScale(ctx);
@@ -6684,15 +6729,16 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
         ctx.restore();
     };
 
-    // Next
+    // Next — never past this voice's own last sung tile.
+    const lastIdx = Math.min(maxIndex, appState.symbols.length - 1);
     for (let i = cfg.nextCount; i >= 1; i--) {
-        if (activeIndex + i < appState.symbols.length) {
+        if (activeIndex + i <= lastIdx) {
             drawTile(activeIndex + i, cx + i * spacing, cfg.nextScale * Math.pow(0.9, i - 1), cfg.nextOpacity * Math.pow(0.8, i - 1), false);
         }
     }
-    // Prev
+    // Prev — never before this voice's own first sung tile.
     for (let i = 1; i <= cfg.prevCount; i++) {
-        if (activeIndex - i >= 0) {
+        if (activeIndex - i >= minIndex) {
             drawTile(activeIndex - i, cx - i * spacing, cfg.prevScale * Math.pow(0.9, i - 1), cfg.prevOpacity * Math.pow(0.8, i - 1), false);
         }
     }
