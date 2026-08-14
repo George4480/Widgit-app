@@ -5614,8 +5614,23 @@ function refreshTriggerBadges() {
                 b.textContent = isStart ? `V${canonPickVoice + 1} sings` : 'to here';
                 b.style.background = tint;
                 el.appendChild(b);
-            } else if (i > s && i <= e) {
-                el.classList.add('loop-in');
+            } else {
+                if (i > s && i <= e) el.classList.add('loop-in');
+                // Where the OTHER voices start singing, marked faintly in their
+                // own colours. The armed voice keeps the detailed start/end
+                // pair; these let you read the whole scheme at a glance instead
+                // of clicking through each voice to find out.
+                const followers = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2)) - 1;
+                for (let v = 1; v <= followers; v++) {
+                    if (v === canonPickVoice) continue;
+                    if (canonPhraseStart(v) !== i) continue;
+                    const o = document.createElement('span');
+                    o.className = 'trigger-badge trigger-badge-ghost';
+                    o.textContent = 'V' + (v + 1);
+                    o.title = `Voice ${v + 1} starts singing here`;
+                    o.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
+                    el.appendChild(o);
+                }
             }
         });
     }
