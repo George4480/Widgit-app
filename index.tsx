@@ -161,6 +161,7 @@ const appState: AppState = {
         canonLoopStart: -1,
         canonLoopEnd: -1,
         canonLoopRepeats: 0,   // 0 = auto
+        canonUnisonFinish: false,
         canonCountdown: true,
         exportRes: '720',
         canonCountInBeats: 4,
@@ -213,6 +214,8 @@ let dom = {} as any;
     voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
     loopReps: (v: number) => canonLoopRepeatsFor(v),
     loopBounds: () => canonLoopBounds(),
+    unisonOn: () => canonUnisonOn(),
+    unisonStart: () => canonUnisonStartTime(),
     maxOffset: () => canonMaxOffset(),
     leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
@@ -527,6 +530,7 @@ function init() {
             canonPhraseBlock: document.getElementById('canon-phrase-block'),
             canonPhraseStrip: document.getElementById('canon-phrase-strip'),
             canonLoopStrip: document.getElementById('canon-loop-strip'),
+            styleCanonUnison: document.getElementById('style-canon-unison') as HTMLInputElement,
             canonLoopStatus: document.getElementById('canon-loop-status'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
@@ -991,6 +995,9 @@ function setupEventListeners() {
         if (dom.result.styleCanonPhrases) {
             appState.styleConfig.canonPhrasesEnabled = (dom.result.styleCanonPhrases as HTMLInputElement).checked;
         }
+        if (dom.result.styleCanonUnison) {
+            appState.styleConfig.canonUnisonFinish = (dom.result.styleCanonUnison as HTMLInputElement).checked;
+        }
         appState.styleConfig.presentationMode = PRESENTATION_MODES[segGet('displayMode')] || 'conveyor';
         appState.styleConfig.sheetMode = appState.styleConfig.presentationMode === 'sheet';
         // Export resolution only affects the rendered file, never the preview.
@@ -1070,6 +1077,9 @@ function setupEventListeners() {
     dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
     // Per-voice phrases are an opt-in extra; toggling redraws the pickers and
     // the preview, since it changes what every following voice sings.
+    if (dom.result.styleCanonUnison) {
+        dom.result.styleCanonUnison.addEventListener('change', () => { updateStyle(); afterTriggerPointChange(); });
+    }
     if (dom.result.styleCanonPhrases) {
         dom.result.styleCanonPhrases.addEventListener('change', () => {
             updateStyle();
@@ -4980,6 +4990,13 @@ function canonTileAtLeadEnd(v: number): number {
 function canonVoiceTileAt(v: number, t: number): number {
     const syms = appState.symbols;
     if (!syms.length) return -1;
+    // The unison finish overrides everything once it starts: from that instant
+    // every voice sings the same tile, which is what makes it a unison rather
+    // than three voices happening to stop at once.
+    if (canonUnisonOn()) {
+        const u = canonUnisonTileAt(t);
+        if (u >= 0) return u;
+    }
     const lastIdx = syms.length - 1;
     const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
     const loop = canonLoopBounds();
@@ -5060,7 +5077,52 @@ function canonPhraseEndTime(v: number): number {
 // When voice v stops singing altogether: its phrase, plus its share of the
 // ending loop. This is what an export has to run to.
 function canonVoiceEndTime(v: number): number {
-    return canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
+    const base = canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
+    // With a unison finish every voice runs to the same end: the shared final
+    // pass, which starts only once the last of them has run out.
+    if (canonUnisonOn()) return canonUnisonStartTime() + canonLoopDuration();
+    return base;
+}
+
+// Is the optional unison finish actually in play? It needs an ending loop to
+// sing — without one there is no phrase for the voices to meet on.
+function canonUnisonOn(): boolean {
+    return !!appState.styleConfig.canonUnisonFinish && !!canonLoopBounds();
+}
+
+/**
+ * When the round-out ends and the shared unison pass begins: the moment the
+ * LAST voice has finished its own share of the loop. Everyone waits on that
+ * instant, so the final phrase lands on the same tile for every voice — which
+ * is the whole point of ending in unison rather than merely at the same time.
+ */
+function canonUnisonStartTime(): number {
+    const voices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+    const loopDur = canonLoopDuration();
+    let t = 0;
+    for (let v = 0; v < voices; v++) {
+        t = Math.max(t, canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * loopDur);
+    }
+    return t;
+}
+
+// Which tile the shared unison pass is on at time t, or -1 if it has not begun.
+// Every voice reads this, so they move together by construction.
+function canonUnisonTileAt(t: number): number {
+    const loop = canonLoopBounds();
+    const syms = appState.symbols;
+    if (!loop || !syms.length) return -1;
+    const start = canonUnisonStartTime();
+    if (t < start) return -1;
+    let x = t - start;
+    const dur = canonLoopDuration();
+    if (dur <= 0 || x >= dur) return loop.end;   // pass complete: hold, together
+    for (let i = loop.start; i <= loop.end; i++) {
+        const d = Math.max(0.02, (syms[i].endTime || 0) - (syms[i].startTime || 0));
+        if (x < d) return i;
+        x -= d;
+    }
+    return loop.end;
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -5365,6 +5427,14 @@ function normalizeRoundConfig(savedStyle?: any) {
         c.canonPhrasesEnabled = starts.some((s: number) => (s ?? 0) > 0) || ends.some((e: number) => (e ?? -1) >= 0);
     } else if (typeof c.canonPhrasesEnabled !== 'boolean') {
         c.canonPhrasesEnabled = false;
+    }
+    // The unison finish has no legacy equivalent to infer — a file that predates
+    // it simply never had one. Reset rather than merge, or a project loaded
+    // after one that used it would silently inherit an ending it never had.
+    if (savedStyle && !Object.prototype.hasOwnProperty.call(savedStyle, 'canonUnisonFinish')) {
+        c.canonUnisonFinish = false;
+    } else if (typeof c.canonUnisonFinish !== 'boolean') {
+        c.canonUnisonFinish = false;
     }
 }
 
@@ -5691,6 +5761,7 @@ function updateRoundCanonStatus() {
     if (dom.result.canonPicker) (dom.result.canonPicker as HTMLElement).style.display = cfg.canonEnabled ? 'block' : 'none';
     // The phrase pickers only appear once per-voice phrases are switched on.
     if (dom.result.styleCanonPhrases) (dom.result.styleCanonPhrases as HTMLInputElement).checked = !!cfg.canonPhrasesEnabled;
+    if (dom.result.styleCanonUnison) (dom.result.styleCanonUnison as HTMLInputElement).checked = !!cfg.canonUnisonFinish;
     if (dom.result.canonPhraseBlock) (dom.result.canonPhraseBlock as HTMLElement).style.display = cfg.canonPhrasesEnabled ? 'block' : 'none';
     if (rs && ra) {
         rs.style.display = cfg.roundEnabled ? 'block' : 'none';
@@ -5753,11 +5824,16 @@ function updateRoundCanonStatus() {
             }
             const maxOff = canonMaxOffset();
             const exact = loop.len > 0 && maxOff % loop.len === 0;
+            const finish = canonUnisonOn()
+                // With the unison pass the offsets stop mattering: everyone waits
+                // for the last voice, then sings the phrase together.
+                ? ` Then <strong>all ${voices} voices sing tiles ${loop.start + 1} → ${loop.end + 1} together</strong> and end in unison.`
+                : (exact
+                    ? ' — every voice runs out of music together, though each on its own tile. Turn on “Finish in unison” to bring them onto the same one.'
+                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly, or turn on “Finish in unison”.`);
             ls.innerHTML = `⟲ Ending loop: tiles <strong>${loop.start + 1} → ${loop.end + 1}</strong> (${loop.len} tile${loop.len === 1 ? '' : 's'}). `
                 + `${bits.join(', ')}. ${auto ? 'Worked out' : 'Set by you'} from the last voice being <strong>${maxOff}</strong> tile${maxOff === 1 ? '' : 's'} behind`
-                + (exact
-                    ? ' — every voice runs out of music together.'
-                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly.`);
+                + finish;
         }
     }
 }
