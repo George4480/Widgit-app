@@ -93,6 +93,19 @@ export interface StyleConfig {
      */
     canonEntries: number[];
     /**
+     * Whether per-voice phrases are in play at all. Off (the default) every
+     * following voice sings the whole line from the top — the plain canon, and
+     * the only thing many songs need, especially one that just cycles round
+     * until the voices land in unison. On, canonStarts/canonEnds decide what
+     * each voice sings, chosen separately from when it comes in.
+     *
+     * Kept separate from the picks themselves so turning it off parks a phrase
+     * setup rather than erasing it. Absent in older projects: those load with it
+     * on if they carry any non-default phrase, off otherwise, so either way they
+     * sound exactly as they did.
+     */
+    canonPhrasesEnabled: boolean;
+    /**
      * First tile of the phrase each FOLLOWING voice sings, as a 0-based index
      * into its own line. Deliberately separate from canonEntries: that decides
      * WHEN a voice fires, this decides WHAT it sings at that moment, and the two
@@ -122,6 +135,18 @@ export interface StyleConfig {
      * out of music at the same moment.
      */
     canonLoopRepeats: number;
+    /**
+     * Optional unison finish. The ending loop alone leaves the voices where the
+     * round put them — still a bar apart, each holding a different tile — so
+     * they stop together without ever meeting. With this on, once every voice
+     * has run out its share of the loop they all sing the phrase ONE more time
+     * together, on the same tiles at the same moment, and end in unison.
+     *
+     * Off by default: plenty of canons are meant to peter out in their offset,
+     * and this is a deliberate way to end, not a correction. Absent in older
+     * projects, which load with it off and sound exactly as they did.
+     */
+    canonUnisonFinish: boolean;
     canonCountdown: boolean;    // show a beat countdown before each voice enters
     canonCountInBeats: number;  // beats to count (from the song's time signature)
     /**

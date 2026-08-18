@@ -155,11 +155,13 @@ const appState: AppState = {
         canonEnabled: false,
         canonVoices: 2,
         canonEntries: [2, 4, 6],
+        canonPhrasesEnabled: false,
         canonStarts: [0, 0, 0],
         canonEnds: [-1, -1, -1],
         canonLoopStart: -1,
         canonLoopEnd: -1,
         canonLoopRepeats: 0,   // 0 = auto
+        canonUnisonFinish: false,
         canonCountdown: true,
         exportRes: '720',
         canonCountInBeats: 4,
@@ -212,6 +214,8 @@ let dom = {} as any;
     voiceTileAt: (v: number, t: number) => canonVoiceTileAt(v, t),
     loopReps: (v: number) => canonLoopRepeatsFor(v),
     loopBounds: () => canonLoopBounds(),
+    unisonOn: () => canonUnisonOn(),
+    unisonStart: () => canonUnisonStartTime(),
     maxOffset: () => canonMaxOffset(),
     leadEnd: () => canonLeadEndTime(),
     normalize: () => normalizeCanonEntries(),
@@ -522,8 +526,11 @@ function init() {
             canonPicker: document.getElementById('canon-picker'),
             canonVoiceButtons: document.getElementById('canon-voice-buttons'),
             canonPickStrip: document.getElementById('canon-pick-strip'),
+            styleCanonPhrases: document.getElementById('style-canon-phrases') as HTMLInputElement,
+            canonPhraseBlock: document.getElementById('canon-phrase-block'),
             canonPhraseStrip: document.getElementById('canon-phrase-strip'),
             canonLoopStrip: document.getElementById('canon-loop-strip'),
+            styleCanonUnison: document.getElementById('style-canon-unison') as HTMLInputElement,
             canonLoopStatus: document.getElementById('canon-loop-status'),
             styleCanonCountdown: document.getElementById('style-canon-countdown'),
             styleCanonCountin: document.getElementById('style-canon-countin'),
@@ -985,6 +992,12 @@ function setupEventListeners() {
             (dom.result.canonCountinItem as HTMLElement).style.opacity = appState.styleConfig.canonCountdown ? '1' : '0.45';
             (dom.result.styleCanonCountin as HTMLSelectElement).disabled = !appState.styleConfig.canonCountdown;
         }
+        if (dom.result.styleCanonPhrases) {
+            appState.styleConfig.canonPhrasesEnabled = (dom.result.styleCanonPhrases as HTMLInputElement).checked;
+        }
+        if (dom.result.styleCanonUnison) {
+            appState.styleConfig.canonUnisonFinish = (dom.result.styleCanonUnison as HTMLInputElement).checked;
+        }
         appState.styleConfig.presentationMode = PRESENTATION_MODES[segGet('displayMode')] || 'conveyor';
         appState.styleConfig.sheetMode = appState.styleConfig.presentationMode === 'sheet';
         // Export resolution only affects the rendered file, never the preview.
@@ -1062,6 +1075,19 @@ function setupEventListeners() {
         afterTriggerPointChange();
     });
     dom.result.styleCanonCountdown.addEventListener('change', updateStyle);
+    // Per-voice phrases are an opt-in extra; toggling redraws the pickers and
+    // the preview, since it changes what every following voice sings.
+    if (dom.result.styleCanonUnison) {
+        dom.result.styleCanonUnison.addEventListener('change', () => { updateStyle(); afterTriggerPointChange(); });
+    }
+    if (dom.result.styleCanonPhrases) {
+        dom.result.styleCanonPhrases.addEventListener('change', () => {
+            updateStyle();
+            updateCanonEntryUI();
+            refreshTriggerBadges();
+            afterTriggerPointChange();
+        });
+    }
     dom.result.styleCanonCountin.addEventListener('change', updateStyle);
 
     // Reflect the current styleConfig onto every control (sliders + segments +
@@ -3503,6 +3529,9 @@ function insertSequenceSteps(at: number, steps: SequenceStep[], opts: { stamp?: 
     const r = appState.round;
     if (r.start !== -1 && r.start >= slot) r.start += steps.length;
     if (r.end !== -1 && r.end >= slot) r.end += steps.length;
+    // Tell the strip which steps just arrived so it rolls to them and flashes
+    // them, wherever in the order they landed.
+    _orderStripReveal = { at: slot, count: steps.length };
     saveHistoryState();
     drawOrderCanvas();
     renderOrderSequenceStrip();
@@ -3590,6 +3619,12 @@ function updateOrderInsertUI() {
 function renderOrderSequenceStrip() {
     const strip = dom.order.sequenceStrip;
     if (!strip) return;
+    // Rolling view: rebuilding wipes the browser's scroll position. Remember it,
+    // and take (and clear) any pending reveal so the strip can roll to steps
+    // that were just added instead of snapping back to the start.
+    const prevScroll = strip.scrollLeft;
+    const reveal = _orderStripReveal;
+    _orderStripReveal = null;
     strip.innerHTML = '';
 
     if (appState.globalSequence.length === 0) {
@@ -3710,7 +3745,36 @@ function renderOrderSequenceStrip() {
 
         strip.appendChild(item);
     });
+
+    // Keep the view rolling with the work. Steps that were just added scroll
+    // into view and pulse — targeted by INDEX, not "the last tile", so this is
+    // right for an append, for a tile spliced in via insert mode, and for a
+    // whole page added at once by Auto. Any other rebuild (reorder, removal,
+    // page switch, loop marking) restores the position the user was at,
+    // instantly so the strip's smooth scrolling doesn't swoosh from the start.
+    const items = strip.children as HTMLCollectionOf<HTMLElement>;
+    if (reveal && items.length) {
+        const first = items[Math.max(0, Math.min(items.length - 1, reveal.at))];
+        for (let i = reveal.at; i < reveal.at + reveal.count && i < items.length; i++) {
+            items[i].classList.add('just-added');
+        }
+        // Centre the insertion point rather than scrollIntoView, which would
+        // also scroll the page itself.
+        const target = first.offsetLeft - (strip.clientWidth - first.offsetWidth) / 2;
+        strip.scrollLeft = Math.max(0, Math.min(strip.scrollWidth - strip.clientWidth, target));
+    } else {
+        strip.style.scrollBehavior = 'auto';
+        strip.scrollLeft = prevScroll;
+        strip.style.scrollBehavior = '';
+    }
 }
+
+/**
+ * Steps added by the last insertSequenceSteps() call, for the strip to roll to
+ * and flash on its next render. Cleared as soon as that render consumes it, so
+ * only a genuine addition moves the view.
+ */
+let _orderStripReveal: { at: number; count: number } | null = null;
 
 function handleOrderCanvasClick(e: MouseEvent | TouchEvent) {
     const pos = getPointerPos(e, dom.order.canvas);
@@ -4790,8 +4854,15 @@ function updateRoundUI() {
 //     canonEnds), i.e. WHAT it sings from that moment on.
 // v is 1-based over the following voices: v=1 is Voice 2.
 
+// Are per-voice phrases switched on? When they aren't, every following voice
+// sings the whole line and the stored picks are simply parked, not applied.
+function canonPhrasesOn(): boolean {
+    return !!appState.styleConfig.canonPhrasesEnabled;
+}
+
 // First tile of voice v's sung phrase.
 function canonPhraseStart(v: number): number {
+    if (!canonPhrasesOn()) return 0;
     const maxIdx = Math.max(0, appState.symbols.length - 1);
     const s = appState.styleConfig.canonStarts?.[v - 1] ?? 0;
     return Math.max(0, Math.min(maxIdx, s));
@@ -4800,6 +4871,7 @@ function canonPhraseStart(v: number): number {
 // Last tile of voice v's sung phrase (inclusive). -1 stored = sing to the end.
 function canonPhraseEnd(v: number): number {
     const maxIdx = Math.max(0, appState.symbols.length - 1);
+    if (!canonPhrasesOn()) return maxIdx;
     const e = appState.styleConfig.canonEnds?.[v - 1] ?? -1;
     if (e < 0) return maxIdx;
     return Math.max(canonPhraseStart(v), Math.min(maxIdx, e));
@@ -4918,6 +4990,13 @@ function canonTileAtLeadEnd(v: number): number {
 function canonVoiceTileAt(v: number, t: number): number {
     const syms = appState.symbols;
     if (!syms.length) return -1;
+    // The unison finish overrides everything once it starts: from that instant
+    // every voice sings the same tile, which is what makes it a unison rather
+    // than three voices happening to stop at once.
+    if (canonUnisonOn()) {
+        const u = canonUnisonTileAt(t);
+        if (u >= 0) return u;
+    }
     const lastIdx = syms.length - 1;
     const pEnd = v === 0 ? lastIdx : canonPhraseEnd(v);
     const loop = canonLoopBounds();
@@ -4998,7 +5077,52 @@ function canonPhraseEndTime(v: number): number {
 // When voice v stops singing altogether: its phrase, plus its share of the
 // ending loop. This is what an export has to run to.
 function canonVoiceEndTime(v: number): number {
-    return canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
+    const base = canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * canonLoopDuration();
+    // With a unison finish every voice runs to the same end: the shared final
+    // pass, which starts only once the last of them has run out.
+    if (canonUnisonOn()) return canonUnisonStartTime() + canonLoopDuration();
+    return base;
+}
+
+// Is the optional unison finish actually in play? It needs an ending loop to
+// sing — without one there is no phrase for the voices to meet on.
+function canonUnisonOn(): boolean {
+    return !!appState.styleConfig.canonUnisonFinish && !!canonLoopBounds();
+}
+
+/**
+ * When the round-out ends and the shared unison pass begins: the moment the
+ * LAST voice has finished its own share of the loop. Everyone waits on that
+ * instant, so the final phrase lands on the same tile for every voice — which
+ * is the whole point of ending in unison rather than merely at the same time.
+ */
+function canonUnisonStartTime(): number {
+    const voices = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2));
+    const loopDur = canonLoopDuration();
+    let t = 0;
+    for (let v = 0; v < voices; v++) {
+        t = Math.max(t, canonPhraseEndTime(v) + canonLoopRepeatsFor(v) * loopDur);
+    }
+    return t;
+}
+
+// Which tile the shared unison pass is on at time t, or -1 if it has not begun.
+// Every voice reads this, so they move together by construction.
+function canonUnisonTileAt(t: number): number {
+    const loop = canonLoopBounds();
+    const syms = appState.symbols;
+    if (!loop || !syms.length) return -1;
+    const start = canonUnisonStartTime();
+    if (t < start) return -1;
+    let x = t - start;
+    const dur = canonLoopDuration();
+    if (dur <= 0 || x >= dur) return loop.end;   // pass complete: hold, together
+    for (let i = loop.start; i <= loop.end; i++) {
+        const d = Math.max(0.02, (syms[i].endTime || 0) - (syms[i].startTime || 0));
+        if (x < d) return i;
+        x -= d;
+    }
+    return loop.end;
 }
 
 // Average time between consecutive tiles — used to give the canon count-in a
@@ -5280,12 +5404,38 @@ function syncStyleControls() {
 
 // Backfill the round/canon fields for projects/snapshots saved before the two
 // features were split, so drawing and the controls never hit undefined values.
-function normalizeRoundConfig() {
+/**
+ * `savedStyle` is the raw styleConfig from a project file or history snapshot,
+ * when this call follows a load. It is needed because the merge onto the live
+ * defaults hides which keys the file actually carried — a field the file never
+ * had still reads as a boolean afterwards.
+ */
+function normalizeRoundConfig(savedStyle?: any) {
     const c = appState.styleConfig;
     if (!Array.isArray(c.canonEntries)) c.canonEntries = [2, 4, 6];
     if (typeof c.canonEnabled !== 'boolean') c.canonEnabled = false;
     c.roundVoices = Math.max(2, Math.min(3, c.roundVoices || 2));
     c.canonVoices = Math.max(2, Math.min(4, c.canonVoices || 2));
+    // Per-voice phrases became opt-in after they shipped always-on. A file saved
+    // before the switch existed carries no flag, so infer it from its picks:
+    // anything other than "every voice sings the whole line" means a phrase was
+    // deliberately set up, and it has to keep playing that way.
+    const hadFlag = !!savedStyle && Object.prototype.hasOwnProperty.call(savedStyle, 'canonPhrasesEnabled');
+    if (savedStyle && !hadFlag) {
+        const starts = Array.isArray(savedStyle.canonStarts) ? savedStyle.canonStarts : [];
+        const ends = Array.isArray(savedStyle.canonEnds) ? savedStyle.canonEnds : [];
+        c.canonPhrasesEnabled = starts.some((s: number) => (s ?? 0) > 0) || ends.some((e: number) => (e ?? -1) >= 0);
+    } else if (typeof c.canonPhrasesEnabled !== 'boolean') {
+        c.canonPhrasesEnabled = false;
+    }
+    // The unison finish has no legacy equivalent to infer — a file that predates
+    // it simply never had one. Reset rather than merge, or a project loaded
+    // after one that used it would silently inherit an ending it never had.
+    if (savedStyle && !Object.prototype.hasOwnProperty.call(savedStyle, 'canonUnisonFinish')) {
+        c.canonUnisonFinish = false;
+    } else if (typeof c.canonUnisonFinish !== 'boolean') {
+        c.canonUnisonFinish = false;
+    }
 }
 
 const PRESENTATION_MODES = ['conveyor', 'sheet', 'spotlight', 'phraseLine', 'nowNext', 'vertical'] as const;
@@ -5576,8 +5726,23 @@ function refreshTriggerBadges() {
                 b.textContent = isStart ? `V${canonPickVoice + 1} sings` : 'to here';
                 b.style.background = tint;
                 el.appendChild(b);
-            } else if (i > s && i <= e) {
-                el.classList.add('loop-in');
+            } else {
+                if (i > s && i <= e) el.classList.add('loop-in');
+                // Where the OTHER voices start singing, marked faintly in their
+                // own colours. The armed voice keeps the detailed start/end
+                // pair; these let you read the whole scheme at a glance instead
+                // of clicking through each voice to find out.
+                const followers = Math.max(2, Math.min(4, appState.styleConfig.canonVoices || 2)) - 1;
+                for (let v = 1; v <= followers; v++) {
+                    if (v === canonPickVoice) continue;
+                    if (canonPhraseStart(v) !== i) continue;
+                    const o = document.createElement('span');
+                    o.className = 'trigger-badge trigger-badge-ghost';
+                    o.textContent = 'V' + (v + 1);
+                    o.title = `Voice ${v + 1} starts singing here`;
+                    o.style.background = VOICE_COLORS[v % VOICE_COLORS.length];
+                    el.appendChild(o);
+                }
             }
         });
     }
@@ -5594,6 +5759,10 @@ function updateRoundCanonStatus() {
     const ra = dom.result.roundActions as HTMLElement | null;
     if (dom.result.roundPicker) (dom.result.roundPicker as HTMLElement).style.display = cfg.roundEnabled ? 'block' : 'none';
     if (dom.result.canonPicker) (dom.result.canonPicker as HTMLElement).style.display = cfg.canonEnabled ? 'block' : 'none';
+    // The phrase pickers only appear once per-voice phrases are switched on.
+    if (dom.result.styleCanonPhrases) (dom.result.styleCanonPhrases as HTMLInputElement).checked = !!cfg.canonPhrasesEnabled;
+    if (dom.result.styleCanonUnison) (dom.result.styleCanonUnison as HTMLInputElement).checked = !!cfg.canonUnisonFinish;
+    if (dom.result.canonPhraseBlock) (dom.result.canonPhraseBlock as HTMLElement).style.display = cfg.canonPhrasesEnabled ? 'block' : 'none';
     if (rs && ra) {
         rs.style.display = cfg.roundEnabled ? 'block' : 'none';
         ra.style.display = cfg.roundEnabled ? 'flex' : 'none';
@@ -5621,12 +5790,17 @@ function updateRoundCanonStatus() {
                 const s = canonPhraseStart(v);
                 const e = canonPhraseEnd(v);
                 const openEnded = (cfg.canonEnds?.[v - 1] ?? -1) < 0;
-                const sings = openEnded
-                    ? `sings from tile <strong>${s + 1}</strong> to the end`
-                    : `sings tiles <strong>${s + 1} → ${e + 1}</strong>`;
+                const sings = !canonPhrasesOn()
+                    ? 'sings the whole line'
+                    : openEnded
+                        ? `sings from tile <strong>${s + 1}</strong> to the end`
+                        : `sings tiles <strong>${s + 1} → ${e + 1}</strong>`;
                 parts.push(`<strong>Voice ${v + 1}</strong> comes in at tile <strong>${tile}</strong> (~${at.toFixed(1)}s) and ${sings}`);
             }
-            cs.innerHTML = `🎯 ${parts.join('. ')}. Entries are kept in singing order automatically; each voice's phrase is set separately.`;
+            const tail = canonPhrasesOn()
+                ? 'Entries are kept in singing order automatically; each voice\'s phrase is set separately.'
+                : 'Entries are kept in singing order automatically. Turn on “Give each voice its own phrase” to choose what each one sings.';
+            cs.innerHTML = `🎯 ${parts.join('. ')}. ${tail}`;
         }
     }
 
@@ -5650,11 +5824,16 @@ function updateRoundCanonStatus() {
             }
             const maxOff = canonMaxOffset();
             const exact = loop.len > 0 && maxOff % loop.len === 0;
+            const finish = canonUnisonOn()
+                // With the unison pass the offsets stop mattering: everyone waits
+                // for the last voice, then sings the phrase together.
+                ? ` Then <strong>all ${voices} voices sing tiles ${loop.start + 1} → ${loop.end + 1} together</strong> and end in unison.`
+                : (exact
+                    ? ' — every voice runs out of music together, though each on its own tile. Turn on “Finish in unison” to bring them onto the same one.'
+                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly, or turn on “Finish in unison”.`);
             ls.innerHTML = `⟲ Ending loop: tiles <strong>${loop.start + 1} → ${loop.end + 1}</strong> (${loop.len} tile${loop.len === 1 ? '' : 's'}). `
                 + `${bits.join(', ')}. ${auto ? 'Worked out' : 'Set by you'} from the last voice being <strong>${maxOff}</strong> tile${maxOff === 1 ? '' : 's'} behind`
-                + (exact
-                    ? ' — every voice runs out of music together.'
-                    : ` — that is not a whole number of ${loop.len}-tile loops, so the finish will be within a tile or so. A ${maxOff}-tile loop would land it exactly.`);
+                + finish;
         }
     }
 }
@@ -6623,7 +6802,9 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
             // rather than running on through the rest of the line.
             const activeIdx = Math.max(pStart, Math.min(pEnd, target));
             if (activeIdx >= 0 && activeIdx < syms.length) {
-                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint);
+                // Bound the context tiles to this voice's phrase too, not just
+                // the active one.
+                drawVoiceConveyor(ctx, activeIdx, w, cy, bandH, tint, pStart, pEnd);
             }
         }
 
@@ -6644,7 +6825,12 @@ function drawCanonFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
 
 // One voice's conveyor (prev / active / next) in a band centred at cy, with the
 // tiles sat on colour-coded cards so each group can follow its own colour.
-function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string) {
+// `minIndex`/`maxIndex` bound the tiles this voice may show at all. A canon
+// follower sings only its own phrase, so the faded prev/next context tiles must
+// stay inside it — otherwise a voice whose phrase starts at tile 10 shows tile 9
+// beside it, a tile that voice never sings. Defaults span the whole line, which
+// is what the round (every voice sings everything) wants.
+function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w: number, cy: number, bandH: number, tint: string, minIndex: number = 0, maxIndex: number = Number.MAX_SAFE_INTEGER) {
     const cfg = appState.styleConfig;
     const scaffoldLevel = currentScaffoldLevel();
     const k = frameScale(ctx);
@@ -6684,15 +6870,16 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
         ctx.restore();
     };
 
-    // Next
+    // Next — never past this voice's own last sung tile.
+    const lastIdx = Math.min(maxIndex, appState.symbols.length - 1);
     for (let i = cfg.nextCount; i >= 1; i--) {
-        if (activeIndex + i < appState.symbols.length) {
+        if (activeIndex + i <= lastIdx) {
             drawTile(activeIndex + i, cx + i * spacing, cfg.nextScale * Math.pow(0.9, i - 1), cfg.nextOpacity * Math.pow(0.8, i - 1), false);
         }
     }
-    // Prev
+    // Prev — never before this voice's own first sung tile.
     for (let i = 1; i <= cfg.prevCount; i++) {
-        if (activeIndex - i >= 0) {
+        if (activeIndex - i >= minIndex) {
             drawTile(activeIndex - i, cx - i * spacing, cfg.prevScale * Math.pow(0.9, i - 1), cfg.prevOpacity * Math.pow(0.8, i - 1), false);
         }
     }
@@ -7625,7 +7812,7 @@ function handleProjectLoadFile(e: Event) {
             if (data.styleConfig && !hadPresentationMode) {
                 appState.styleConfig.presentationMode = appState.styleConfig.sheetMode ? 'sheet' : 'conveyor';
             }
-            normalizeRoundConfig();
+            normalizeRoundConfig(data.styleConfig);
             normalizePresentationMode();
             if (data.gridConfig) appState.gridConfig = { ...appState.gridConfig, ...data.gridConfig };
             // Staged scaffold removal: merge over defaults so pre-feature files
@@ -7901,7 +8088,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         // Merge (not replace) so snapshots from older versions missing newer
         // fields (e.g. prevCount) keep their defaults.
         appState.styleConfig = { ...appState.styleConfig, ...(data.styleConfig || {}) };
-        normalizeRoundConfig();
+        normalizeRoundConfig(data.styleConfig);
         normalizePresentationMode();
         appState.gridConfig = data.gridConfig || appState.gridConfig;
         appState.interaction.latencyOffset = data.latencyOffset || 0;

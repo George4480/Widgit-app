@@ -1491,13 +1491,31 @@
         .crop-handle[data-h="se"] { right: -9px; bottom: -9px; cursor: nwse-resize; }
 
         /* ---- Cross-page sequence strip ---- */
-        .order-sequence-strip { min-height: 118px; align-items: center; padding: 14px 10px; }
+        .order-sequence-strip {
+            min-height: 118px;
+            align-items: center;
+            padding: 14px 10px;
+            /* One rolling row — a long order scrolls sideways rather than
+               folding into a tall block. (nowrap is the flex default; stated
+               explicitly so a future wrap rule can't quietly reshape it.) */
+            flex-wrap: nowrap;
+        }
         .order-sequence-item {
             flex: 0 0 96px;
             height: 96px;
             cursor: grab;
         }
         .order-sequence-item.dragging { opacity: 0.4; }
+        /* Flash whichever step(s) were just added, so the eye lands on them as
+           the strip rolls into place. */
+        .order-sequence-item.just-added { animation: seq-added-pulse 0.9s ease-out 1; }
+        @keyframes seq-added-pulse {
+            0%   { box-shadow: 0 0 0 4px var(--primary); }
+            100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .order-sequence-item.just-added { animation: none; }
+        }
         /* ---- Round-loop markers on the order sequence strip ---- */
         .order-sequence-item.loop-start, .order-sequence-item.loop-end {
             box-shadow: inset 0 0 0 3px var(--primary), 0 2px 6px rgba(0,0,0,0.2);
@@ -1800,6 +1818,17 @@
             border-radius: 3px;
             background: var(--primary);
         }
+        /* Another voice's start, shown alongside the armed voice's own marks —
+           quieter, and top-left so it can't collide with the main badge. */
+        .trigger-tile .trigger-badge-ghost {
+            bottom: auto;
+            right: auto;
+            top: 1px;
+            left: 1px;
+            opacity: 0.75;
+            font-size: 0.55rem;
+            padding: 0 3px;
+        }
         .trigger-tile.loop-in { border-color: #818cf8; background: rgba(129,140,248,0.18); }
         .trigger-tile.picked { border-color: var(--primary); }
         .trigger-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
@@ -1851,17 +1880,17 @@
             /* Touch-sized unconditionally. The 62x50 enlargement used to live only
                in @media (max-width: 600px), which never matches on a phone asking
                for the desktop site. Harmless with a mouse. */
-            width: 62px; min-width: 62px; height: 52px; padding: 4px 2px; margin: 0;
-            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+            width: 68px; min-width: 68px; height: 68px; padding: 5px 3px; margin: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
             background: var(--surface); color: var(--text);
-            border: 1px solid var(--border); border-radius: 12px;
+            border: 1px solid var(--border); border-radius: 14px;
             cursor: pointer; line-height: 1; transition: background 0.15s, border-color 0.15s, transform 0.05s;
         }
         .rail-btn:hover { background: var(--surface-2); border-color: var(--primary); }
         .rail-btn:active { transform: translateY(1px); }
         .rail-btn.is-active { background: var(--primary); color: #fff; border-color: var(--primary); }
-        .rail-btn .rail-ico { font-size: 1.2rem; }
-        .rail-btn .rail-lbl { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+        .rail-btn .rail-ico { font-size: 1.55rem; }
+        .rail-btn .rail-lbl { font-size: 0.64rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
         .rail-btn.danger { color: #c5221f; }
         .rail-btn.danger:hover { border-color: #c5221f; background: rgba(197,34,31,0.08); }
 
@@ -1902,7 +1931,7 @@
 
             /* Roomier rail tap targets when folded to a horizontal strip */
             .stage-rail { gap: 6px; }
-            .rail-btn { width: 62px; min-width: 62px; height: 50px; }
+            .rail-btn { width: 68px; min-width: 68px; height: 60px; }
 
             /* Bottom action bar: full-width stacked groups */
             .stage-bottom { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -2582,10 +2611,20 @@
                     </div>
                     <label style="font-weight:600; font-size:0.85rem;">1. Comes in at <span class="section-note">tap the tile the leader is on when this voice starts</span></label>
                     <div id="canon-pick-strip" class="trigger-strip" role="group" aria-label="Pick the entry tile for the chosen voice"></div>
-                    <label style="font-weight:600; font-size:0.85rem; margin-top:10px; display:block;">2. Sings <span class="section-note">tap the first tile of its phrase, then the last — this is a separate choice from when it comes in</span></label>
-                    <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+                    <div class="round-toggle-row" style="padding-top:12px;">
+                        <label class="round-toggle">
+                            <input type="checkbox" id="style-canon-phrases">
+                            <span>2. <strong>Give each voice its own phrase</strong>
+                                <span class="section-note" style="display:block; font-weight:400;">Off, every voice sings the whole line from the top — the plain canon, and all a song needs if it simply cycles round until the voices meet in unison. Turn it on to choose what each voice sings, separately from when it comes in.</span>
+                            </span>
+                        </label>
+                    </div>
+                    <div id="canon-phrase-block" style="display:none;">
+                        <label style="font-weight:600; font-size:0.85rem; display:block;">Sings <span class="section-note">tap the first tile of its phrase, then the last</span></label>
+                        <div id="canon-phrase-strip" class="trigger-strip" role="group" aria-label="Pick the phrase the chosen voice sings"></div>
+                    </div>
 
-                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a short phrase the voices repeat so the canon finishes together</span></label>
+                    <label style="font-weight:600; font-size:0.85rem; margin-top:12px; display:block;">3. Ending loop <span class="section-note">optional — tap the first and last tile of a phrase the voices repeat over and over until every voice has caught up and they finish in unison</span></label>
                     <div id="canon-loop-strip" class="trigger-strip" role="group" aria-label="Pick the tail phrase the voices repeat at the end"></div>
                     <div class="scaffold-row" style="margin-top:6px;">
                         <span style="font-weight:600; font-size:0.85rem;">Repeat it</span>
@@ -2597,6 +2636,14 @@
                             <button type="button" data-value="4">4&times;</button>
                         </span>
                         <button id="btn-canon-loop-clear" type="button" class="button secondary small" style="margin:0; color:#c5221f;">Clear loop</button>
+                    </div>
+                    <div class="round-toggle-row" style="padding-top:6px;">
+                        <label class="round-toggle">
+                            <input type="checkbox" id="style-canon-unison">
+                            <span><strong>Finish in unison</strong>
+                                <span class="section-note" style="display:block; font-weight:400;">The loop alone leaves the voices a phrase apart, each holding a different tile — together in time but never actually meeting. Turn this on and, once every voice has run its share of the loop, they all sing the phrase once more <em>together</em> and end on the same tile.</span>
+                            </span>
+                        </label>
                     </div>
                     <p id="canon-loop-status" class="settings-note" role="status" style="margin:.35em 0 0;"></p>
                 </div>
