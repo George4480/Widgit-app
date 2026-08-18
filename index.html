@@ -392,6 +392,14 @@
             /* Belt-and-braces alongside the viewport meta's user-scalable=no:
                stops a double-tap on a tile from being read as double-tap-zoom. */
             touch-action: manipulation;
+            /* A second line of defence if the JS fit-to-width calculation
+               (setupOrderView/resizeCanvas) ever comes out wrong: a canvas
+               that's wider than its container would otherwise prop the
+               container open and push the layout past the viewport, rather
+               than just being visibly too big. height:auto alongside keeps
+               it proportional instead of squashing it. */
+            max-width: 100%;
+            height: auto;
         }
 
         /* Sync View */
