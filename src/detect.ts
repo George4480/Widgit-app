@@ -181,16 +181,12 @@ export function detectTiles(
 
     // --- 4. Giant components: table? frame? -------------------------------
     // A bordered table (gridlines, zero gaps) is one component covering much
-    // of the page: split it at its internal gridlines and keep the cells that
-    // contain anything. A decorative frame with an empty interior is dropped.
-    const contentFrac = (bx: number, by: number, bw: number, bh: number) => {
-        let m = 0, t = 0;
-        const step = Math.max(1, Math.round(Math.min(bw, bh) / 64));
-        for (let y = by; y < by + bh; y += step) for (let x = bx; x < bx + bw; x += step) {
-            t++; if (mask[y * w + x]) m++;
-        }
-        return t ? m / t : 0;
-    };
+    // of the page: split it at its internal gridlines into ALL of its cells.
+    // Blank cells are kept deliberately — on a real songboard an empty cell
+    // is a rest / a position to be filled, and it carries the grid's pitch,
+    // so dropping it would break calibration and subdivision of the board.
+    // For the same reason an empty rounded frame IS a tile (a blank template
+    // card), not decoration to discard.
     const expanded: Cand[] = [];
     for (const b of clusters) {
         if (b.w * b.h < pageArea * 0.30) { expanded.push(b); continue; }
@@ -228,20 +224,14 @@ export function detectTiles(
                     const cx = xCuts[xi], cy = yCuts[yi];
                     const cw = xCuts[xi + 1] - cx, chh = yCuts[yi + 1] - cy;
                     if (cw < 12 || chh < 12) continue;
-                    const m = Math.max(2, Math.round(Math.min(cw, chh) * 0.08));
-                    // Keep cells that hold anything (ink or a coloured fill).
-                    if (contentFrac(cx + m, cy + m, cw - 2 * m, chh - 2 * m) > 0.04) {
-                        expanded.push({ x: cx, y: cy, w: cw, h: chh, n: cw * chh });
-                    }
+                    // Every cell — blank ones included — is a board position.
+                    expanded.push({ x: cx, y: cy, w: cw, h: chh, n: cw * chh });
                 }
             }
         } else {
-            // No internal grid. Empty decorative frame → drop; a genuine
-            // full-card tile (frame WITH content inside) → keep whole.
-            const m = Math.round(Math.min(b.w, b.h) * 0.10);
-            const inner = contentFrac(b.x + m, b.y + m, b.w - 2 * m, b.h - 2 * m);
-            if (inner > 0.08) expanded.push(b);
-            // else: hollow frame — dropped
+            // No internal grid: keep whole. A full-card tile obviously; an
+            // EMPTY frame just as much — it's a blank template card.
+            expanded.push(b);
         }
     }
 
