@@ -6,6 +6,7 @@ import { inject as injectVercelAnalytics } from "@vercel/analytics";
 import {
     hasWebCodecs, pickVideoCodec, calibrateEncoder, renderFast, FastRenderCancelled,
 } from "./src/render";
+import { detectTiles } from "./src/detect";
 import {
     isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
     levelMaskMode, resolveMaskMode, clampWordBand,
@@ -204,6 +205,7 @@ let dom = {} as any;
 // over the tile list, so it is worth being able to assert on directly rather
 // than by eyeballing a rendered frame. Exposed for tests only — nothing in the
 // app reads this.
+(window as any).__detectTiles = detectTiles;   // exposed for automated tests
 (window as any).__canonProbe = {
     tileOffset: (v: number) => canonTileOffset(v),
     entryTime: (v: number) => canonEntryTime(v),
@@ -3099,8 +3101,20 @@ function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: b
     pruneGlobalSequence(pageIndex, { clearPage: true });
     invalidatePageThumbs(pageIndex);
 
-    const data = imagePixels(page.image, page.width, page.height);
-    page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+    // Object detection first (handles coloured backgrounds, staggered rows,
+    // touching tiles, and ignores titles/logos); the legacy row-band scan only
+    // as a fallback, so a page it can't read is never worse off than before.
+    const smart = detectTiles(page.image, page.width, page.height, {
+        threshold: appState.gridConfig.contentThreshold,
+        minWidth: 20,    // page px — matches the legacy scan's floor
+        minHeight: 20,
+    });
+    if (smart.length >= 2) {
+        page.symbols = smart;
+    } else {
+        const data = imagePixels(page.image, page.width, page.height);
+        page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+    }
     if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
