@@ -2,32 +2,39 @@
 //
 // The original detector was a projection profile: any-dark-pixel row bands,
 // then column bands inside them. That only works for dark tiles on a white
-// page laid out in strict rows — a coloured background, a staggered layout,
-// touching tiles, or a header/logo all defeat it.
+// page laid out in strict rows. This detector recognises structures instead,
+// tuned against real WidgitOnline songboards:
 //
-// This detector recognises the tiles as OBJECTS instead:
-//   1. model the page background from the page's own frame,
-//   2. mark pixels that differ from it (tolerance driven by the sensitivity
-//      slider), 3. group them into connected components,
-//   4. merge nested/overlapping fragments (a tile whose fill matches the
-//      background still yields its border ring + inner symbol as one box),
-//   5. use grid statistics to reject non-tile outliers (titles, logos) and to
-//      split runs of tiles that touch with no gap between them.
-// The caller falls back to the legacy scan if this finds too little, so the
-// worst case is exactly the old behaviour.
+//   1. model the page background from the page's own frame;
+//   2. mark pixels that differ from it (tolerance from the sensitivity
+//      slider) and group them into connected components;
+//   3. cluster nearby fragments (a borderless symbol arrives as several
+//      pieces — picture, label — that belong together; a title's letters glue
+//      into one long line that the aspect filter then rejects);
+//   4. giant components get looked INSIDE: a bordered table (black gridlines,
+//      no gaps) is split into its cells, keeping the ones with content; a
+//      decorative page frame with an empty interior is dropped entirely;
+//   5. tile population by ink share (a title's letter-blobs outnumber tiles
+//      but never out-ink them), plus acceptance of secondary size-clusters
+//      with >=3 similar members, so repeated borderless symbols (beats,
+//      notes) survive while one-off logos do not;
+//   6. runs of tiles touching with no gap are split evenly.
+//
+// The legacy scan remains a fallback when this finds nothing but the page
+// plausibly has a grid, so no page detects worse than before.
 
 export interface DetectedBox { x: number; y: number; width: number; height: number; }
 
 interface DetectOpts {
-    /** The Define stage's sensitivity slider value (~150..255, higher = keener). */
+    /** The Define stage's sensitivity slider (~150..255, higher = keener). */
     threshold: number;
     minWidth: number;
     minHeight: number;
 }
 
-// Work at a bounded resolution — plenty for tile geometry, and keeps the
-// flood fill fast on multi-thousand-pixel PDF renders.
-const MAX_W = 1000;
+interface Cand { x: number; y: number; w: number; h: number; n: number; }
+
+const MAX_W = 1000;   // working resolution cap — geometry doesn't need more
 
 export function detectTiles(
     img: HTMLImageElement | HTMLCanvasElement,
@@ -44,8 +51,7 @@ export function detectTiles(
     g.drawImage(img, 0, 0, w, h);
     const data = g.getImageData(0, 0, w, h).data;
 
-    // --- 1. Background model: dominant coarse colour of the page frame. ----
-    // Tiles sit inside the page; the outer frame is almost always background.
+    // --- 1. Background: dominant coarse colour of the page's outer ring. ---
     const bins = new Map<number, { n: number; r: number; g: number; b: number }>();
     const ring = Math.max(2, Math.round(Math.min(w, h) * 0.02));
     const addSample = (x: number, y: number) => {
@@ -60,20 +66,20 @@ export function detectTiles(
     let bg = { r: 255, g: 255, b: 255 }, best = -1;
     bins.forEach(b => { if (b.n > best) { best = b.n; bg = { r: b.r / b.n, g: b.g / b.n, b: b.b / b.n }; } });
 
-    // --- 2. Content mask: distance from background beyond the tolerance. ---
-    // Slider semantics preserved: a higher threshold means keener detection.
+    // --- 2. Content mask (colour distance beyond the slider's tolerance). --
     const sens = Math.max(0, Math.min(1, (opts.threshold - 150) / 100));
-    const tol = 95 - 65 * sens;                      // 245 default → ~33
+    const tol = 95 - 65 * sens;
     const tol2 = tol * tol;
     const mask = new Uint8Array(w * h);
     for (let p = 0, i = 0; p < w * h; p++, i += 4) {
         const dr = data[i] - bg.r, dg = data[i + 1] - bg.g, db = data[i + 2] - bg.b;
         if (dr * dr + dg * dg + db * db > tol2) mask[p] = 1;
     }
+    const lum = (p: number) => (data[p * 4] + data[p * 4 + 1] + data[p * 4 + 2]) / 3;
 
-    // --- 3. Connected components (8-way, scanline flood with a stack). -----
-    const label = new Int32Array(w * h);            // 0 = unvisited
-    const boxes: { x0: number; y0: number; x1: number; y1: number; n: number }[] = [];
+    // --- 3. Connected components (8-way scanline flood). -------------------
+    const label = new Int32Array(w * h);
+    const raw: Cand[] = [];
     const stack: number[] = [];
     let next = 0;
     for (let start = 0; start < w * h; start++) {
@@ -95,25 +101,119 @@ export function detectTiles(
                 if (mask[q] && !label[q]) { label[q] = next; stack.push(q); }
             }
         }
-        boxes.push({ x0, y0, x1, y1, n });
+        if (n >= 12) raw.push({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, n });
     }
 
-    // --- 4. Candidate filter + nested-box merging. --------------------------
+    // --- 3.5 Text-line gluing. ---------------------------------------------
+    // A title or caption arrives as one blob per letter; glued into their line
+    // they become long and thin and the aspect filter rejects them. Gluing is
+    // ONLY for small, baseline-aligned neighbours — tile-sized components never
+    // glue, so tight grids (cells a few pixels apart) stay individual.
+    const maxGlueH = h * 0.085;
+    let clusters: Cand[] = raw.map(r => ({ ...r }));
+    for (let changed = true; changed;) {
+        changed = false;
+        outer:
+        for (let i = 0; i < clusters.length; i++) {
+            for (let j = i + 1; j < clusters.length; j++) {
+                const a = clusters[i], b = clusters[j];
+                if (a.h > maxGlueH || b.h > maxGlueH) continue;
+                const yOverlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+                if (yOverlap < Math.min(a.h, b.h) * 0.55) continue;
+                const gap = Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w);
+                if (gap > Math.min(a.h, b.h) * 0.9) continue;
+                const nx = Math.min(a.x, b.x), ny = Math.min(a.y, b.y);
+                a.w = Math.max(a.x + a.w, b.x + b.w) - nx;
+                a.h = Math.max(a.y + a.h, b.y + b.h) - ny;
+                a.x = nx; a.y = ny; a.n += b.n;
+                clusters.splice(j, 1);
+                changed = true;
+                break outer;
+            }
+        }
+    }
+
+    // --- 4. Giant components: table? frame? -------------------------------
+    // A bordered table (gridlines, zero gaps) is one component covering much
+    // of the page: split it at its internal gridlines and keep the cells that
+    // contain anything. A decorative frame with an empty interior is dropped.
+    const pageArea = w * h;
+    const contentFrac = (bx: number, by: number, bw: number, bh: number) => {
+        let m = 0, t = 0;
+        const step = Math.max(1, Math.round(Math.min(bw, bh) / 64));
+        for (let y = by; y < by + bh; y += step) for (let x = bx; x < bx + bw; x += step) {
+            t++; if (mask[y * w + x]) m++;
+        }
+        return t ? m / t : 0;
+    };
+    const expanded: Cand[] = [];
+    for (const b of clusters) {
+        if (b.w * b.h < pageArea * 0.30) { expanded.push(b); continue; }
+        // Gridline profile: strongly dark rows/columns spanning the component.
+        const darkFracCol = (x: number) => {
+            let d = 0, t = 0;
+            for (let y = b.y; y < b.y + b.h; y += 2) { t++; if (lum(y * w + x) < 140) d++; }
+            return t ? d / t : 0;
+        };
+        const darkFracRow = (y: number) => {
+            let d = 0, t = 0;
+            for (let x = b.x; x < b.x + b.w; x += 2) { t++; if (lum(y * w + x) < 140) d++; }
+            return t ? d / t : 0;
+        };
+        const inset = Math.round(Math.min(b.w, b.h) * 0.04);
+        const findLines = (from: number, to: number, frac: (v: number) => number) => {
+            const lines: { s: number; e: number }[] = [];
+            let inL = false, s = 0;
+            for (let v = from + inset; v <= to - inset; v++) {
+                const on = frac(v) > 0.72;
+                if (on && !inL) { inL = true; s = v; }
+                else if (!on && inL) { inL = false; lines.push({ s, e: v - 1 }); }
+            }
+            if (inL) lines.push({ s, e: to - inset });
+            return lines;
+        };
+        const vLines = findLines(b.x, b.x + b.w - 1, darkFracCol);
+        const hLines = findLines(b.y, b.y + b.h - 1, darkFracRow);
+        if (vLines.length >= 1 && hLines.length >= 1) {
+            // A table: cells are the spans between the gridlines (and edges).
+            const xCuts = [b.x, ...vLines.flatMap(l => [l.s, l.e + 1]), b.x + b.w];
+            const yCuts = [b.y, ...hLines.flatMap(l => [l.s, l.e + 1]), b.y + b.h];
+            for (let yi = 0; yi + 1 < yCuts.length; yi += 2) {
+                for (let xi = 0; xi + 1 < xCuts.length; xi += 2) {
+                    const cx = xCuts[xi], cy = yCuts[yi];
+                    const cw = xCuts[xi + 1] - cx, chh = yCuts[yi + 1] - cy;
+                    if (cw < 12 || chh < 12) continue;
+                    const m = Math.max(2, Math.round(Math.min(cw, chh) * 0.08));
+                    // Keep cells that hold anything (ink or a coloured fill).
+                    if (contentFrac(cx + m, cy + m, cw - 2 * m, chh - 2 * m) > 0.04) {
+                        expanded.push({ x: cx, y: cy, w: cw, h: chh, n: cw * chh });
+                    }
+                }
+            }
+        } else {
+            // No internal grid. Empty decorative frame → drop; a genuine
+            // full-card tile (frame WITH content inside) → keep whole.
+            const m = Math.round(Math.min(b.w, b.h) * 0.10);
+            const inner = contentFrac(b.x + m, b.y + m, b.w - 2 * m, b.h - 2 * m);
+            if (inner > 0.08) expanded.push(b);
+            // else: hollow frame — dropped
+        }
+    }
+
+    // --- 4.5 Shape filter + nested merge. -----------------------------------
     const minW = Math.max(8, opts.minWidth * scale);
     const minH = Math.max(8, opts.minHeight * scale);
-    let cands = boxes.filter(b => {
-        const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
-        if (bw < minW || bh < minH) return false;
-        if (bw > w * 0.92 && bh > h * 0.92) return false;   // the whole page
-        const aspect = bw / bh;
-        if (aspect < 0.25 || aspect > 4.5) return false;    // rules, text lines
-        return true;
-    }).map(b => ({ x: b.x0, y: b.y0, w: b.x1 - b.x0 + 1, h: b.y1 - b.y0 + 1, n: b.n }));
-
-    // Largest first; absorb any candidate whose centre falls inside an accepted
-    // box (a tile's inner symbol, or its border ring's fragments).
+    let cands = expanded.filter(b => {
+        if (b.w < minW || b.h < minH) return false;
+        if (b.w > w * 0.92 && b.h > h * 0.92) return false;
+        // Page furniture floor: a footer logo or a stray mark is far smaller
+        // than any singable tile. 0.1% of the page.
+        if (b.w * b.h < pageArea * 0.001) return false;
+        const aspect = b.w / b.h;
+        return aspect >= 0.22 && aspect <= 4.6;
+    });
     cands.sort((a, b) => b.w * b.h - a.w * a.h);
-    const merged: typeof cands = [];
+    const merged: Cand[] = [];
     for (const cand of cands) {
         const cx = cand.x + cand.w / 2, cy = cand.y + cand.h / 2;
         const host = merged.find(m => cx >= m.x && cx <= m.x + m.w && cy >= m.y && cy <= m.y + m.h);
@@ -122,53 +222,57 @@ export function detectTiles(
             host.w = Math.max(host.x + host.w, cand.x + cand.w) - nx0;
             host.h = Math.max(host.y + host.h, cand.y + cand.h) - ny0;
             host.x = nx0; host.y = ny0; host.n += cand.n;
-        } else {
-            merged.push({ ...cand });
-        }
+        } else merged.push({ ...cand });
     }
 
-    // --- 5. Grid statistics: find the tile population, reject outliers,
-    //        split touching runs. ------------------------------------------
-    let out = merged;
+    // --- 5. Population: dominant ink cluster + repeated-pattern clusters. ---
     const med = (arr: number[]) => arr.slice().sort((a, b) => a - b)[Math.floor(arr.length / 2)];
+    let out = merged;
     if (out.length >= 3) {
-        // Which candidates are "the tiles"? Not the most numerous — a big title
-        // splits into more letter-blobs than there are tiles — but the cluster
-        // that owns the most page ink. Bucket by log2(area) and pick the bucket
-        // family with the largest SUMMED area.
-        const buckets = new Map<number, { sum: number; areas: number[] }>();
+        const key = (b: Cand) => Math.round(Math.log2(b.w * b.h) * 2);
+        const groups = new Map<number, Cand[]>();
         for (const b of out) {
-            const a = b.w * b.h;
-            const key = Math.round(Math.log2(a) * 2);   // half-octave granularity
-            let bk = buckets.get(key);
-            if (!bk) { bk = { sum: 0, areas: [] }; buckets.set(key, bk); }
-            bk.sum += a; bk.areas.push(a);
+            const k = key(b);
+            if (!groups.has(k)) groups.set(k, []);
+            groups.get(k)!.push(b);
         }
-        let refAreas: number[] = [], bestSum = -1;
-        buckets.forEach((bk, key) => {
-            // A tile population can straddle a bucket edge; join neighbours.
-            const lo = buckets.get(key - 1), hi = buckets.get(key + 1);
-            const sum = bk.sum + (lo?.sum || 0) + (hi?.sum || 0);
-            if (sum > bestSum) {
-                bestSum = sum;
-                refAreas = [...bk.areas, ...(lo?.areas || []), ...(hi?.areas || [])];
-            }
+        // Family = bucket + neighbours. Dominant family = the one owning the
+        // most ink; secondary families survive with >=3 similar members (a
+        // repeated symbol is a pattern; a one-off logo is not).
+        const famOf = (k: number) => [...(groups.get(k - 1) || []), ...(groups.get(k) || []), ...(groups.get(k + 1) || [])];
+        let domK = 0, bestInk = -1;
+        groups.forEach((_, k) => {
+            const ink = famOf(k).reduce((s, b) => s + b.w * b.h, 0);
+            if (ink > bestInk) { bestInk = ink; domK = k; }
         });
-        const ref = med(refAreas);
-        out = out.filter(b => { const a = b.w * b.h; return a > ref / 4 && a < ref * 4; });
+        const domFam = famOf(domK);
+        const domRef = med(domFam.map(b => b.w * b.h));
+        const kept = new Set<Cand>();
+        domFam.forEach(b => kept.add(b));
+        groups.forEach((_, k) => {
+            if (Math.abs(k - domK) <= 1) return;
+            const fam = famOf(k);
+            const ref = med(fam.map(b => b.w * b.h));
+            if (fam.length >= 3 && ref >= domRef / 14) fam.forEach(b => kept.add(b));
+        });
+        out = out.filter(b => {
+            if (kept.has(b)) return true;
+            const a = b.w * b.h;
+            return a > domRef / 4 && a < domRef * 4;
+        });
     }
-    // A run of tiles touching with no gap arrives as one box roughly n tiles
-    // wide and one tile tall — split it evenly. With a surviving population,
-    // the population's median width says how many; a lone run falls back to
-    // its own aspect ratio (>=3 tiles wide, so a genuine 2:1 phrase tile is
-    // never guessed apart).
+
+    // --- 5.5 Split runs of tiles touching with no gap. ----------------------
     if (out.length >= 1) {
         const mh = med(out.map(b => b.h));
         const mw = med(out.map(b => b.w));
-        const split: typeof out = [];
+        const split: Cand[] = [];
         for (const b of out) {
             let k = 0;
-            if (out.length >= 4) {
+            // Only a box markedly wider than tall can be a run of tiles — a
+            // normal tile in a MIXED population (small symbols + big bordered
+            // tiles) must never be carved to the small population's width.
+            if (out.length >= 4 && b.w / b.h >= 1.8) {
                 const est = Math.round(b.w / mw);
                 if (est >= 2 && b.h < mh * 1.6 && Math.abs(b.w - est * mw) < mw * 0.35) k = est;
             }
@@ -178,14 +282,12 @@ export function detectTiles(
             }
             if (k >= 2) {
                 for (let i = 0; i < k; i++) split.push({ x: b.x + (b.w * i) / k, y: b.y, w: b.w / k, h: b.h, n: b.n / k });
-            } else {
-                split.push(b);
-            }
+            } else split.push(b);
         }
         out = split;
     }
 
-    // --- 6. Back to page coordinates. ---------------------------------------
+    // --- 6. Back to page coordinates, reading order. ------------------------
     return out
         .map(b => ({
             x: Math.max(0, Math.round(b.x / scale)),

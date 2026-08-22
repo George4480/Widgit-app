@@ -3109,11 +3109,16 @@ function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: b
         minWidth: 20,    // page px — matches the legacy scan's floor
         minHeight: 20,
     });
-    if (smart.length >= 2) {
+    if (smart.length >= 1) {
         page.symbols = smart;
     } else {
+        // Nothing recognised. That is the RIGHT answer for an empty template
+        // (a decorative frame, a blank card) — only fall back to the legacy
+        // row-band scan when it finds a plausible board (3+ boxes), so it can
+        // rescue an exotic layout without re-boxing empty page furniture.
         const data = imagePixels(page.image, page.width, page.height);
-        page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+        const legacy = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+        page.symbols = legacy.length >= 3 ? legacy : [];
     }
     if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
