@@ -133,11 +133,56 @@ export function detectTiles(
         }
     }
 
+    // --- 3.7 Caption attach. ------------------------------------------------
+    // A borderless Widgit symbol carries its word BELOW it as a separate
+    // component; a bordered tile keeps the word inside its border, so this
+    // never fires for those. Fold a text-sized, text-shaped line into the
+    // symbol directly above it, so the tile crop keeps its word.
+    const pageArea = w * h;
+    const capGapMax = h * 0.06;
+    for (let ti = clusters.length - 1; ti >= 0; ti--) {
+        const t = clusters[ti];
+        // Text-sized and not tall-thin — a short word ("ta") is square, so the
+        // floor is below 1, not a strict wider-than-tall test.
+        if (t.h > maxGlueH || t.w / t.h < 0.7) continue;
+        if (t.y + t.h > h * 0.94) continue;                   // page-footer strip, never a caption
+        const tcx = t.x + t.w / 2, tcy = t.y + t.h / 2;
+        let host = -1, bestD = Infinity;
+        for (let ai = 0; ai < clusters.length; ai++) {
+            if (ai === ti) continue;
+            const a = clusters[ai];
+            if (a.w * a.h >= pageArea * 0.30) continue;       // giants: stage 4's problem
+            // Content whose centre sits INSIDE a box belongs to that box (a
+            // bordered tile's own word/picture) — it must never be read as a
+            // caption for a touching neighbour above.
+            if (tcx > a.x && tcx < a.x + a.w && tcy > a.y && tcy < a.y + a.h) { host = ai; break; }
+            if (a.h <= t.h * 2.2) continue;                   // host must dwarf its caption
+            const gap = t.y - (a.y + a.h);
+            if (gap > capGapMax || gap < -t.h) continue;      // directly below (slight overlap ok)
+            const dx = Math.abs(tcx - (a.x + a.w / 2));
+            if (dx > Math.max(a.w, t.w) * 0.5) continue;      // centred under it
+            // A caption hugs its symbol's footprint; a line that would grow
+            // the host far sideways is page text, not this tile's word. The
+            // height term keeps tall thin glyphs (a crotchet stem) able to
+            // take a word wider than themselves.
+            const uw = Math.max(a.x + a.w, t.x + t.w) - Math.min(a.x, t.x);
+            if (uw > Math.max(a.w * 1.35, a.h * 0.9)) continue;
+            const d = dx + Math.max(0, gap);
+            if (d < bestD) { bestD = d; host = ai; }
+        }
+        if (host < 0) continue;
+        const a = clusters[host];
+        const nx = Math.min(a.x, t.x), ny = Math.min(a.y, t.y);
+        a.w = Math.max(a.x + a.w, t.x + t.w) - nx;
+        a.h = Math.max(a.y + a.h, t.y + t.h) - ny;
+        a.x = nx; a.y = ny; a.n += t.n;
+        clusters.splice(ti, 1);
+    }
+
     // --- 4. Giant components: table? frame? -------------------------------
     // A bordered table (gridlines, zero gaps) is one component covering much
     // of the page: split it at its internal gridlines and keep the cells that
     // contain anything. A decorative frame with an empty interior is dropped.
-    const pageArea = w * h;
     const contentFrac = (bx: number, by: number, bw: number, bh: number) => {
         let m = 0, t = 0;
         const step = Math.max(1, Math.round(Math.min(bw, bh) / 64));
