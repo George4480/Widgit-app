@@ -6,6 +6,7 @@ import { inject as injectVercelAnalytics } from "@vercel/analytics";
 import {
     hasWebCodecs, pickVideoCodec, calibrateEncoder, renderFast, FastRenderCancelled,
 } from "./src/render";
+import { detectTiles } from "./src/detect";
 import {
     isMasked, tileMaskColor, drawContentMask, clearMaskColorCache,
     levelMaskMode, resolveMaskMode, clampWordBand,
@@ -204,6 +205,7 @@ let dom = {} as any;
 // over the tile list, so it is worth being able to assert on directly rather
 // than by eyeballing a rendered frame. Exposed for tests only — nothing in the
 // app reads this.
+(window as any).__detectTiles = detectTiles;   // exposed for automated tests
 (window as any).__canonProbe = {
     tileOffset: (v: number) => canonTileOffset(v),
     entryTime: (v: number) => canonEntryTime(v),
@@ -763,7 +765,9 @@ function setupEventListeners() {
     // --- Define View ---
     dom.define.btnPrev.addEventListener('click', () => changePage(-1));
     dom.define.btnNext.addEventListener('click', () => changePage(1));
-    dom.define.btnAuto.addEventListener('click', runGridDetection);
+    // Wrapped: bound directly, the MouseEvent lands in runGridDetection's
+    // pageIndex parameter and it returns without doing anything.
+    dom.define.btnAuto.addEventListener('click', () => { runGridDetection(); saveHistoryState(); });
     dom.define.btnClear.addEventListener('click', () => {
         const page = appState.pages[appState.currentPageIndex];
         if (!page || page.symbols.length === 0) { clearCurrentPageSymbols(); return; }
@@ -785,6 +789,9 @@ function setupEventListeners() {
         dom.define.labelSensitivity.textContent = val > 245 ? "Very High" : val > 230 ? "High" : val > 200 ? "Medium" : "Low";
         runGridDetection(); // Auto re-detect on slider change
     });
+    // Re-detection replaces the page's tiles and drops their ordering and any
+    // scaffold stages with them; snapshot once per drag so Undo can recover.
+    dom.define.inputSensitivity.addEventListener('change', () => saveHistoryState());
     dom.define.btnPanUp.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: -100, behavior: 'smooth'}));
     dom.define.btnPanDown.addEventListener('click', () => dom.define.canvasContainer.scrollBy({top: 100, behavior: 'smooth'}));
     
@@ -3094,8 +3101,25 @@ function runGridDetection(pageIndex: number = appState.currentPageIndex, draw: b
     pruneGlobalSequence(pageIndex, { clearPage: true });
     invalidatePageThumbs(pageIndex);
 
-    const data = imagePixels(page.image, page.width, page.height);
-    page.symbols = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+    // Object detection first (handles coloured backgrounds, staggered rows,
+    // touching tiles, and ignores titles/logos); the legacy row-band scan only
+    // as a fallback, so a page it can't read is never worse off than before.
+    const smart = detectTiles(page.image, page.width, page.height, {
+        threshold: appState.gridConfig.contentThreshold,
+        minWidth: 20,    // page px — matches the legacy scan's floor
+        minHeight: 20,
+    });
+    if (smart.length >= 1) {
+        page.symbols = smart;
+    } else {
+        // Nothing recognised. That is the RIGHT answer for an empty template
+        // (a decorative frame, a blank card) — only fall back to the legacy
+        // row-band scan when it finds a plausible board (3+ boxes), so it can
+        // rescue an exotic layout without re-boxing empty page furniture.
+        const data = imagePixels(page.image, page.width, page.height);
+        const legacy = detectBoxes(data, page.width, page.height, appState.gridConfig.contentThreshold);
+        page.symbols = legacy.length >= 3 ? legacy : [];
+    }
     if (draw && pageIndex === appState.currentPageIndex) drawCanvas();
 }
 function handleDefineCanvasDown(e: MouseEvent | TouchEvent) {
@@ -3451,6 +3475,7 @@ function invalidatePageThumbs(pageIdx: number) {
 function moveSequenceStep(from: number, to: number) {
     const seq = appState.globalSequence;
     if (to < 0 || to >= seq.length || from === to) return;
+    scaffoldLastTile = -1;   // flat indices shift; the remembered tap is void
     const mirror = flatMatchesSequence();
     const [step] = seq.splice(from, 1);
     seq.splice(to, 0, step);
@@ -3512,6 +3537,7 @@ function flatMatchesSequence(): boolean {
 // window (see stampInsertedTimings). `at` past the end simply appends.
 function insertSequenceSteps(at: number, steps: SequenceStep[], opts: { stamp?: boolean } = {}) {
     if (steps.length === 0) return;
+    scaffoldLastTile = -1;   // flat indices shift; the remembered tap is void
     const seq = appState.globalSequence;
     const slot = Math.max(0, Math.min(at, seq.length));
     const mirror = flatMatchesSequence();
@@ -4019,20 +4045,41 @@ function scaffoldMaskModeAt(level: number, ordinal: number) {
     return resolveMaskMode(levelMaskMode(appState.scaffold.levelModes, level), ordinal);
 }
 
-// Cover the just-drawn tile image with a background-coloured inset mask when the
-// occurrence is masked at the active scaffold level. How much gets covered — all
-// of it, the word, or the picture — is the level's mask mode. `img` is the tile
-// crop (also the colour-sample source); dx,dy,dw,dh is where it was drawn.
-function maskTileIfHidden(
+// Scratch canvas for composing a masked tile at full opacity before it is
+// blitted at the caller's fade. Reused across frames.
+let _maskScratch: HTMLCanvasElement | null = null;
+
+// Draw a tile crop, covering its content when the occurrence is masked at the
+// active scaffold stage. The cover is composed OFFSCREEN at full opacity and
+// the result blitted once, because masking after a faded draw can never fully
+// hide the content: two source-over passes at alpha o leave o(1-o) of it on
+// screen — a readable ghost on every faded conveyor neighbour. Composing first
+// means the caller's fade applies to the already-covered tile. How much gets
+// covered — all of it, the word, or the picture — is the stage's mask mode;
+// the colour is sampled from the tile's own background.
+function drawTileMaybeMasked(
     ctx: CanvasRenderingContext2D,
     sym: SymbolTile | undefined,
     img: HTMLImageElement | null | undefined,
     dx: number, dy: number, dw: number, dh: number,
     level: number,
 ) {
-    if (!sym || !isMasked(sym.removalLevel, level)) return;
-    drawContentMask(ctx, tileMaskColor(img, tileSourceKey(sym)), dx, dy, dw, dh,
+    if (!img) return;
+    if (!sym || !isMasked(sym.removalLevel, level)) {
+        ctx.drawImage(img, dx, dy, dw, dh);
+        return;
+    }
+    const w = Math.max(1, Math.ceil(dw)), h = Math.max(1, Math.ceil(dh));
+    if (!_maskScratch) _maskScratch = document.createElement('canvas');
+    if (_maskScratch.width < w) _maskScratch.width = w;
+    if (_maskScratch.height < h) _maskScratch.height = h;
+    const oc = _maskScratch.getContext('2d');
+    if (!oc) { ctx.drawImage(img, dx, dy, dw, dh); return; }
+    oc.clearRect(0, 0, w, h);
+    oc.drawImage(img, 0, 0, w, h);
+    drawContentMask(oc, tileMaskColor(img, tileSourceKey(sym)), 0, 0, w, h,
         scaffoldMaskModeAt(level, sym.globalIndex ?? 0), appState.scaffold.wordBand);
+    ctx.drawImage(_maskScratch, 0, 0, w, h, dx, dy, dw, dh);
 }
 
 function finishOrderingSymbols() {
@@ -4234,25 +4281,34 @@ function assignScaffoldLevel(flatIdx: number, level: number) {
     const sym = appState.symbols[flatIdx];
     if (!step) return;
     const cur = step.removalLevel || 0;
+    let msg: string;
     if (cur === level) {
         step.removalLevel = undefined;
         if (sym) sym.removalLevel = undefined;
-        announceScaffold(`Tile ${flatIdx + 1} is shown in full again.`);
+        msg = `Tile ${flatIdx + 1} is shown in full again.`;
     } else {
         step.removalLevel = level;
         if (sym) sym.removalLevel = level;
-        announceScaffold(`Tile ${flatIdx + 1} will show ${SCAFFOLD_MODE_LABELS[levelMaskMode(appState.scaffold.levelModes, level)].says} from stage ${level} onwards.`);
+        // What actually shows depends on the ACTIVE stage's mask mode at play
+        // time, so promise only the hiding, not a specific treatment.
+        msg = `Tile ${flatIdx + 1} is stripped back from stage ${level} onwards.`;
     }
     scaffoldLastTile = flatIdx;
     saveHistoryState();
     updateNavStripScaffold();
     redrawScaffoldPreview();
+    // Announce LAST: the strip refresh above rewrites the same aria-live line
+    // with the generic status, which was clobbering every per-tap confirmation.
+    announceScaffold(msg);
 }
 
 // Apply the reference tile's current level to every occurrence of the same
 // source symbol. Opt-in only — the default stays occurrence-specific.
 function applyScaffoldToMatching() {
-    const target = scaffoldLastTile >= 0 ? scaffoldLastTile : appState.interaction.selectedSyncIndex;
+    // The remembered tap can go stale (project loaded, order edited); a stale
+    // index must fall through to the timeline selection, not act blindly.
+    const last = (scaffoldLastTile >= 0 && scaffoldLastTile < appState.symbols.length) ? scaffoldLastTile : -1;
+    const target = last >= 0 ? last : appState.interaction.selectedSyncIndex;
     if (target < 0 || !appState.symbols[target]) {
         announceScaffold('Tap a tile first, then use “Apply to matching occurrences”.');
         return;
@@ -4270,8 +4326,8 @@ function applyScaffoldToMatching() {
     updateNavStripScaffold();
     redrawScaffoldPreview();
     announceScaffold(level
-        ? `Stage ${level} applied to ${n} matching occurrence(s) of this symbol.`
-        : `Cleared ${n} matching occurrence(s) of this symbol.`);
+        ? `Stage ${level} applied to ${n} occurrence(s) of tile ${target + 1}'s symbol.`
+        : `Cleared ${n} occurrence(s) of tile ${target + 1}'s symbol.`);
 }
 
 function clearScaffoldSelectedLevel() {
@@ -4366,6 +4422,7 @@ function setScaffoldLevelMode(level: number, mode: ScaffoldMaskMode) {
 
 function setScaffoldWordBand(fraction: number) {
     appState.scaffold.wordBand = clampWordBand(fraction);
+    saveHistoryState();   // persisted field: without a snapshot, a later Undo silently reverts it
     renderScaffoldControls();
     redrawScaffoldPreview();
 }
@@ -4394,6 +4451,9 @@ function updateNavStripScaffold() {
     const previewLevel = sc.enabled ? sc.previewLevel : 0;
     const assigning = sc.enabled && sc.selectedAssignmentLevel > 0;
     strip.classList.toggle('scaffold-assigning', assigning);
+    // The hatch previews the same split the video draws, so it must follow the
+    // Word strip slider rather than a hard-coded band.
+    strip.style.setProperty('--scaffold-band', Math.round(clampWordBand(appState.scaffold.wordBand) * 100) + '%');
     const items = strip.querySelectorAll('.nav-symbol-item');
     items.forEach((item: HTMLElement, i: number) => {
         item.querySelectorAll('.scaffold-badge').forEach(b => b.remove());
@@ -5751,6 +5811,23 @@ function refreshTriggerBadges() {
 // Plain-language status for the Round and Canon sections, so a teacher can see
 // what the current setup will actually do — and, for a round, whether the loop
 // phrase marked at the Synchronize step is driving it or the fallback slider is.
+
+// Human name for a presentation mode, for messages.
+const MODE_NAMES: Record<string, string> = {
+    conveyor: 'Conveyor', sheet: 'Follow the sheet', spotlight: 'Spotlight',
+    phraseLine: 'Phrase line', nowNext: 'Now/Next', vertical: 'Vertical',
+};
+
+// Rounds and canons render voice rows only in the Conveyor presentation — every
+// other mode returns before the multi-voice paths and silently plays one voice.
+// Surface that where the feature is configured, instead of letting a teacher
+// export a "round" that isn't one.
+function roundCanonModeWarning(kind: 'round' | 'canon'): string | null {
+    const mode = appState.styleConfig.presentationMode;
+    if (mode === 'conveyor') return null;
+    return `⚠️ <strong>The ${MODE_NAMES[mode] || mode} presentation plays a single voice</strong> — the ${kind} is set up but will not be shown. Switch “How the symbols are shown” to Conveyor to see and export it.`;
+}
+
 function updateRoundCanonStatus() {
     const cfg = appState.styleConfig;
     const syms = appState.symbols;
@@ -5767,7 +5844,10 @@ function updateRoundCanonStatus() {
         rs.style.display = cfg.roundEnabled ? 'block' : 'none';
         ra.style.display = cfg.roundEnabled ? 'flex' : 'none';
         if (cfg.roundEnabled) {
-            if (hasRoundLoop()) {
+            const warn = roundCanonModeWarning('round');
+            if (warn) {
+                rs.innerHTML = warn;
+            } else if (hasRoundLoop()) {
                 const r = appState.round;
                 rs.innerHTML = `✅ Using your marked loop — tiles <strong>${r.start + 1} → ${r.end + 1}</strong>. Each voice enters <strong>${roundGapSeconds().toFixed(1)}s</strong> after the previous one, and finished voices repeat that phrase so the round ends together. (The timing slider below is ignored while a loop is marked.)`;
             } else {
@@ -5781,7 +5861,10 @@ function updateRoundCanonStatus() {
     if (cs && ca) {
         cs.style.display = cfg.canonEnabled ? 'block' : 'none';
         ca.style.display = cfg.canonEnabled ? 'flex' : 'none';
-        if (cfg.canonEnabled && syms.length) {
+        const canonWarn = cfg.canonEnabled ? roundCanonModeWarning('canon') : null;
+        if (canonWarn) {
+            cs.innerHTML = canonWarn;
+        } else if (cfg.canonEnabled && syms.length) {
             const voices = Math.max(2, Math.min(4, cfg.canonVoices || 2));
             const parts: string[] = [];
             for (let v = 1; v < voices; v++) {
@@ -6145,9 +6228,8 @@ function drawPreviewFrame(rawTime: number) {
         }
 
         ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
-        ctx.drawImage(img, dx, dy, dw, dh);
-        // Staged scaffold removal: cover the content, keep the footprint/opacity.
-        maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+        // Staged scaffold removal: cover the content, keep the footprint/fade.
+        drawTileMaybeMasked(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
 
         // Duration fill: a translucent wash rises up over the active tile as its
         // recorded window elapses — the video shows how long to hold it, not
@@ -6330,8 +6412,7 @@ function drawModeTile(
         ctx.restore();
     }
     ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 10 * k; ctx.shadowOffsetY = 5 * k;
-    ctx.drawImage(img, dx, dy, dw, dh);
-    maskTileIfHidden(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
+    drawTileMaybeMasked(ctx, sym, img, dx, dy, dw, dh, scaffoldLevel);
     ctx.restore();
 }
 
@@ -6556,6 +6637,19 @@ function drawSheetFrame(ctx: CanvasRenderingContext2D, w: number, h: number, tim
     const srcY = box.y + scroll / scale;
     const srcH = h / scale;
     ctx.drawImage(page.image, box.x, srcY, box.w, srcH, 0, 0, w, h);
+
+    // Tiles whose picture is a custom image live on the tile, not on the page
+    // bitmap — a video-imported project's page is a blank canvas and EVERY tile
+    // is one. Composite them into the sheet or those projects play as an empty
+    // frame with the glow (and any scaffold masks) painted on nothing.
+    page.symbols.forEach((s: SymbolTile) => {
+        if (!s.customImage) return;
+        const tx = (s.x - box.x) * scale;
+        const ty = (s.y - box.y) * scale - scroll;
+        const tw = s.width * scale, th = s.height * scale;
+        if (ty + th < 0 || ty > h) return;
+        ctx.drawImage(s.customImage, tx, ty, tw, th);
+    });
 
     // Staged scaffold removal in sheet mode. A physical tile appears once on the
     // sheet, so a repeated phrase can't be shown and hidden at the same instant;
@@ -6864,9 +6958,8 @@ function drawVoiceConveyor(ctx: CanvasRenderingContext2D, activeIndex: number, w
         }
         ctx.globalAlpha = opacity;
         const dx = x - dw / 2, dy = cy - dh / 2;
-        ctx.drawImage(img, dx, dy, dw, dh);
         // Staged scaffold removal (rounds/canons share the assignment per voice).
-        maskTileIfHidden(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
+        drawTileMaybeMasked(ctx, appState.symbols[idx], img, dx, dy, dw, dh, scaffoldLevel);
         ctx.restore();
     };
 
@@ -6988,7 +7081,11 @@ async function renderVideo(mode: 'full' | 'backing') {
             mode, stage: null, dur, audioBuffer: buffer, signal: ctx.signal,
             onProgress: ctx.progress,
         });
-        downloadBlob(job.blob, `${projectFileBase()}${mode === 'backing' ? '_backing' : '_full'}.${job.ext}`);
+        // The rendered file bakes in the previewed stage; the name must say so
+        // or a stage-2 video is indistinguishable from the full-support one.
+        const stageTag = (appState.scaffold.enabled && (appState.scaffold.previewLevel || 0) > 0)
+            ? `_stage${appState.scaffold.previewLevel}` : '';
+        downloadBlob(job.blob, `${projectFileBase()}${stageTag}${mode === 'backing' ? '_backing' : '_full'}.${job.ext}`);
     });
 }
 
@@ -7024,6 +7121,10 @@ async function runRenderBatch(
     } finally {
         endHiResRender();     // put the preview canvas back to its own size
         endRenderUI();
+        // The per-stage override must never outlive the batch — leaked, it pins
+        // the preview to the last exported stage and the stage buttons go dead.
+        scaffoldRenderLevelOverride = null;
+        if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime || 0);
     }
 }
 
@@ -7238,6 +7339,10 @@ function updateStageExportNote() {
     note.textContent = stages.length === 1
         ? `One video: “${projectFileBase()} - ${stageFileLabel(stages[0])}”.`
         : `${stages.length} videos in a single ZIP — ${stages.map(stageFileLabel).join(', ')}. Each is the full song, so allow roughly ${mins} min.`;
+    // A batch with no assignments renders N identical videos — say so up front.
+    if (appState.scaffold.enabled && !appState.symbols.some(sy => sy.removalLevel)) {
+        note.textContent += ' ⚠️ No tiles are assigned to any stage yet, so every video would look the same — assign tiles at the Synchronize step first.';
+    }
 }
 
 /**
@@ -7354,19 +7459,30 @@ async function renderProgressiveVideo() {
     if (!appState.files.audioVocal && !appState.files.audioBacking) { alert("No audio!"); return; }
     appState.scaffold.exportMode = 'progressive';
 
-    dom.rendering.overlay.style.display = 'flex';
-    dom.rendering.progressText.textContent = "Initializing…";
+    // Real-time by necessity (one continuous MediaRecorder take across the
+    // stages), but on the shared overlay: live bar, ETA text and a Cancel that
+    // actually stops it — this used to drive the overlay by hand, so Cancel
+    // said "Cancelling…" forever and an encoder error hung the screen.
+    const signal = beginRenderUI('Rendering the progressive practice video…');
     pausePreview();
     dom.sync.audio.currentTime = 0;
+
+    const audioCtx = new AudioContext();
+    let done = false;
+    const finish = () => {
+        if (done) return;
+        done = true;
+        scaffoldRenderLevelOverride = null;
+        endHiResRender();
+        endRenderUI();
+        audioCtx.close();
+        if (!appState.preview.isPlaying) drawPreviewFrame(dom.sync.audio.currentTime || 0);
+    };
 
     const levels: number[] = [];
     for (let n = 0; n <= appState.scaffold.levelCount; n++) levels.push(n);
 
-    const audioCtx = new AudioContext();
     const dest = audioCtx.createMediaStreamDestination();
-
-    // Decode the main track once (reused for every section). Same track choice as
-    // a normal Full export.
     const track = appState.files.audioVocal || appState.files.audioBacking;
     let buffer: AudioBuffer | null = null;
     if (track) {
@@ -7374,15 +7490,10 @@ async function renderProgressiveVideo() {
         catch (e) { console.warn('Could not decode audio for progressive export:', e); }
     }
 
-    // One performance's length: the audio, but always at least the full tile
-    // timeline plus a short tail so the last tile isn't clipped. tileTimelineDuration
-    // also carries a canon's following voices past the leader — this export used to
-    // stop with the leader and cut the later voices off mid-phrase.
     const perfDur = Math.max(buffer ? buffer.duration : 0, tileTimelineDuration());
     if (perfDur <= 0) {
+        finish();
         alert('Nothing to render yet — add an audio track or sync some tiles first.');
-        dom.rendering.overlay.style.display = 'none';
-        audioCtx.close();
         return;
     }
 
@@ -7391,8 +7502,8 @@ async function renderProgressiveVideo() {
     const total = sectionDur * levels.length;
 
     const size = beginHiResRender();
-    if (dom.rendering.progressText) {
-        dom.rendering.progressText.textContent = `Rendering at ${size.w}x${size.h}…`;
+    if (dom.rendering.title) {
+        dom.rendering.title.textContent = `Rendering the progressive practice video at ${size.w}x${size.h}…`;
     }
     const canvasStream = dom.result.canvas.captureStream(30);
     const combined = new MediaStream([...canvasStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
@@ -7401,26 +7512,31 @@ async function renderProgressiveVideo() {
     try {
         const { mime, bitrate } = pickRecorderMime();
         recorder = new MediaRecorder(combined, { mimeType: mime, videoBitsPerSecond: bitrate });
-    } catch (e) { alert("Recording not supported or codec missing."); dom.rendering.overlay.style.display = 'none'; endHiResRender(); audioCtx.close(); return; }
+    } catch (e) {
+        finish();
+        alert("Recording not supported or codec missing.");
+        return;
+    }
 
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onerror = (e: any) => {
+        finish();
+        alert('The video encoder stopped partway through: ' + (e?.error?.message || 'unknown error'));
+    };
     recorder.onstop = () => {
-        scaffoldRenderLevelOverride = null; // release the per-section override
-        const type = recorder.mimeType || "video/webm";
-        const ext = type.includes("mp4") ? "mp4" : "webm";
-        const blob = new Blob(chunks, { type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `${projectFileBase()}_progressive.${ext}`;
-        a.click();
-        dom.rendering.overlay.style.display = 'none';
-        endHiResRender();     // put the preview canvas back to its own size
-        audioCtx.close();
+        const cancelled = signal.aborted;
+        if (!cancelled) {
+            const type = recorder.mimeType || "video/webm";
+            const ext = type.includes("mp4") ? "mp4" : "webm";
+            downloadBlob(new Blob(chunks, { type }), `${projectFileBase()}_progressive.${ext}`);
+        }
+        finish();
     };
 
     recorder.start();
     const startT = audioCtx.currentTime;
+    const started = Date.now();
 
     // Schedule one audio playback per section, each starting when its title card
     // ends, and stopped before the next card so tracks don't bleed across.
@@ -7434,6 +7550,7 @@ async function renderProgressiveVideo() {
     }
 
     function renderLoop() {
+        if (signal.aborted) { recorder.stop(); return; }
         const t = audioCtx.currentTime - startT;
         if (t >= total) { recorder.stop(); return; }
         const si = Math.min(levels.length - 1, Math.floor(t / sectionDur));
@@ -7446,8 +7563,9 @@ async function renderProgressiveVideo() {
             scaffoldRenderLevelOverride = lvl;      // mask cumulative to this level
             drawPreviewFrame(localT - TITLE_DUR);   // audio for this section also starts at 0
         }
+        const frac = t / total;
         const label = lvl === 0 ? 'Full support' : `Stage ${lvl}`;
-        dom.rendering.progressText.textContent = `${label} · ${Math.round((t / total) * 100)}%`;
+        setRenderProgress(frac, `${label} · ` + etaText(Date.now() - started, frac));
         requestAnimationFrame(renderLoop);
     }
     renderLoop();
@@ -7819,6 +7937,7 @@ function handleProjectLoadFile(e: Event) {
             // load with it disabled. Fresh board → drop stale detected colours.
             appState.scaffold = normalizeScaffold(data.scaffold);
             clearMaskColorCache();
+            scaffoldLastTile = -1;   // the remembered tap belongs to the old project
             if (data.latencyOffset !== undefined) {
                 appState.interaction.latencyOffset = data.latencyOffset;
                 if (dom.result.latencySlider) {
@@ -8187,6 +8306,7 @@ async function applyHistorySnapshot(snapshotStr: string) {
         // The flat list is restored directly (not rebuilt), so re-mirror each
         // occurrence's scaffold assignment from the restored globalSequence.
         syncFlatRemovalLevels();
+        scaffoldLastTile = -1;   // flat indices may have shifted under the snapshot
 
         // Refresh currently active view
         if (appState.currentView === 'define-symbols-view') {

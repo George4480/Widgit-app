@@ -1507,6 +1507,11 @@
                folding into a tall block. (nowrap is the flex default; stated
                explicitly so a future wrap rule can't quietly reshape it.) */
             flex-wrap: nowrap;
+            /* The roll happens INSIDE the strip. Without a hard cap a flex
+               ancestor can size to the strip's content instead, and then every
+               added tile widens the whole page and the view pans right. */
+            max-width: 100%;
+            overscroll-behavior-x: contain;
         }
         .order-sequence-item {
             flex: 0 0 96px;
@@ -1766,8 +1771,10 @@
             pointer-events: none;
         }
         .nav-symbol-item.scaffold-masked.mask-blank img { opacity: 0.18; }
-        .nav-symbol-item.scaffold-masked.mask-symbol::after { top: auto; height: 30%; }
-        .nav-symbol-item.scaffold-masked.mask-word::after { bottom: auto; height: 62%; }
+        /* Band heights follow the Word strip slider (set as --scaffold-band on
+           the strip by JS); 'word' keeps the band and covers the rest. */
+        .nav-symbol-item.scaffold-masked.mask-symbol::after { top: auto; height: var(--scaffold-band, 30%); }
+        .nav-symbol-item.scaffold-masked.mask-word::after { bottom: auto; height: calc(100% - var(--scaffold-band, 30%)); }
         #scaffold-level-section .seg-group { margin-top: 4px; }
         /* Stage picker: which stages get their own video file. */
         .stage-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
@@ -1785,6 +1792,7 @@
         .trigger-strip {
             display: flex;
             gap: 6px;
+            max-width: 100%;
             overflow-x: auto;
             padding: 8px 4px;
             background: var(--surface-2);
@@ -1911,7 +1919,16 @@
         /* Narrow screens: the rail becomes a horizontal strip above the panel
            so it never squeezes the canvas. */
         @media (max-width: 760px) {
-            .stage-body { flex-direction: column; }
+            .stage-body {
+                flex-direction: column;
+                /* Row layout's align-items:flex-start means, in a COLUMN, that
+                   children shrink-to-fit their content — so a long order strip
+                   inflated .stage-main to its full content width, widening the
+                   page with every added tile and over-sizing the fitted canvas
+                   (the "zoom"). Stretch pins children to the container width so
+                   the strip scrolls inside itself instead. */
+                align-items: stretch;
+            }
             .stage-rail { flex-direction: row; flex-wrap: wrap; justify-content: center; width: 100%; position: static; }
             .stage-bottom { justify-content: center; }
         }
